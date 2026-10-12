@@ -3,6 +3,7 @@ set -euo pipefail
 
 ROOT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)
 NEXT_TAG="$ROOT_DIR/scripts/proto-next-tag.sh"
+REQUIRE_BUMP="$ROOT_DIR/scripts/proto-require-bump.sh"
 TAG_WORKFLOW="$ROOT_DIR/.github/workflows/proto-tag.yml"
 CI_WORKFLOW="$ROOT_DIR/.github/workflows/ci.yml"
 TEST_ROOT=$(mktemp -d)
@@ -71,6 +72,58 @@ side=$(commit_file proto/api.proto 'side')
 expect 'commit that does not descend from the newest tag' "$side" 1 ''
 expect 'unknown commit' 'no-such-commit' 1 ''
 
+# --- proto-require-bump.sh against scratch go.mod files -----------------------
+
+write_gomod() { # $1=name, remaining lines on stdin; prints the path
+  cat >"$TEST_ROOT/$1"
+  printf '%s\n' "$TEST_ROOT/$1"
+}
+
+expect_bump() { # $1=description $2=tag $3=go.mod $4=expected-status $5=expected-stdout
+  local out status
+  set +e
+  out=$("$REQUIRE_BUMP" "$2" "$3" 2>/dev/null)
+  status=$?
+  set -e
+  if [[ $status -ne $4 || $out != "$5" ]]; then
+    fail "$1: got status $status output '$out', expected status $4 output '$5'"
+  fi
+}
+
+block=$(write_gomod block.go.mod <<'GOMOD'
+module github.com/chaitin/agent-compose
+
+require (
+	connectrpc.com/connect v1.19.2
+	github.com/chaitin/agent-compose/proto v0.1.9
+)
+
+replace github.com/chaitin/agent-compose/proto => ./proto
+GOMOD
+)
+expect_bump 'requirement older than the tag' proto/v0.1.10 "$block" 0 'v0.1.10'
+expect_bump 'requirement already at the tag' proto/v0.1.9 "$block" 0 ''
+expect_bump 'late run for a tag older than the requirement' proto/v0.1.8 "$block" 0 ''
+expect_bump 'pre-release tag' proto/v0.2.0-rc.1 "$block" 1 ''
+expect_bump 'tag of another module' v0.1.10 "$block" 1 ''
+expect_bump 'missing go.mod' proto/v0.1.10 "$TEST_ROOT/absent.go.mod" 1 ''
+
+single=$(write_gomod single.go.mod <<'GOMOD'
+module example.com/client
+
+require github.com/chaitin/agent-compose/proto v0.1.2
+GOMOD
+)
+expect_bump 'single-line requirement' proto/v0.1.10 "$single" 0 'v0.1.10'
+
+unrequired=$(write_gomod unrequired.go.mod <<'GOMOD'
+module example.com/client
+
+replace github.com/chaitin/agent-compose/proto => ./proto
+GOMOD
+)
+expect_bump 'replace without a requirement' proto/v0.1.10 "$unrequired" 1 ''
+
 # --- workflow wiring ---------------------------------------------------------
 
 tag_workflow=$(<"$TAG_WORKFLOW")
@@ -94,7 +147,7 @@ require "$tag_workflow" "github\.ref == 'refs/heads/main'" 'main-only manual dis
 require "$tag_workflow" 'cancel-in-progress: false' 'serialized tagging'
 require "$tag_workflow" 'contents: write' 'tag push permission'
 
-# Write access belongs to the tagging job alone, not the whole workflow.
+# Write access belongs to the jobs that use it, not the whole workflow.
 top_permissions=$(awk '
   /^permissions:/ { found = 1; next }
   found && /^[^[:space:]]/ { exit }
@@ -119,6 +172,29 @@ resolve_step=$(awk '
 ' "$TAG_WORKFLOW")
 require "$resolve_step" "if: steps\.published\.outputs\.tag != ''" 'resolution gated on the tag the commit carries'
 require "$resolve_step" 'TAG: \$\{\{ steps\.published\.outputs\.tag \}\}' 'resolution of the tag the commit carries'
+
+# The bump follows a tag that this run saw resolve, and only the bump job may
+# touch pull requests.
+job() { # $1=job id; prints that job's block
+  awk -v header="  $1:" '
+    $0 == header { found = 1; print; next }
+    found && $0 ~ /^  [[:alnum:]_-]+:[[:space:]]*$/ { exit }
+    found { print }
+  ' "$TAG_WORKFLOW"
+}
+tag_job=$(job tag)
+bump_job=$(job bump)
+require "$tag_job" 'published: \$\{\{ steps\.published\.outputs\.tag \}\}' 'tag the commit carries exposed to the bump job'
+if grep -q 'pull-requests' <<<"$tag_job"; then
+  fail 'forbidden pull request access in the tagging job'
+fi
+require "$bump_job" '^    needs: tag$' 'bump after the tag resolved'
+require "$bump_job" "if: needs\.tag\.outputs\.published != ''" 'bump gated on a published tag'
+require "$bump_job" 'pull-requests: write' 'pull request permission for the bump job'
+require "$bump_job" 'ref: main$' 'bump based on main'
+require "$bump_job" 'scripts/proto-require-bump\.sh "\$TAG" go\.mod' 'bump decision for the root go.mod'
+require "$bump_job" 'scripts/proto-require-bump\.sh "\$TAG" "\$RUNNER_TEMP/pending\.go\.mod"' 'bump decision for a pending pull request'
+require "$bump_job" 'gh pr create --draft --base main' 'draft pull request against main'
 
 proto_version=$(awk '
   $0 == "  proto-version:" { found = 1; print; next }
