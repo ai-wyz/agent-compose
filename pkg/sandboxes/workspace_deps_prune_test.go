@@ -479,3 +479,30 @@ func waitForWorkspaceDepsRemoval(t *testing.T, target string) {
 	}
 	t.Fatalf("%s was not removed", target)
 }
+
+func TestWorkspaceDepsPrunerSkipsUnreadableDirectories(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("directory permissions do not restrict root")
+	}
+	_, sandbox, pruner := newWorkspaceDepsSandbox(t)
+	writeWorkspaceDepsFile(t, sandbox, "ui/package.json")
+	writeWorkspaceDepsFile(t, sandbox, "ui/node_modules/pkg/index.js")
+	locked := filepath.Dir(writeWorkspaceDepsFile(t, sandbox, "locked/package.json"))
+	writeWorkspaceDepsFile(t, sandbox, "locked/node_modules/pkg/index.js")
+	if err := os.Chmod(locked, 0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(locked, 0o755) })
+
+	result, err := pruner.Prune(context.Background(), sandbox.Summary.ID)
+	if err != nil {
+		t.Fatalf("Prune failed on an unreadable directory: %v", err)
+	}
+	if want := []string{"ui/node_modules"}; !slices.Equal(result.Dirs, want) || result.Removed != 1 {
+		t.Fatalf("Prune dirs = %v removed = %d, want %v removed", result.Dirs, result.Removed, want)
+	}
+	if err := os.Chmod(locked, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	assertWorkspaceDepsPaths(t, sandbox, []string{"locked/node_modules/pkg/index.js"}, []string{"ui/node_modules"})
+}

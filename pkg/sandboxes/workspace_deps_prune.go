@@ -144,7 +144,12 @@ func (p *WorkspaceDepsPruner) Start(ctx context.Context) {
 	queued := len(p.pending) > 0
 	p.mu.Unlock()
 	if queued {
-		wake <- struct{}{}
+		// A concurrent enqueue may already have filled the buffer, and the
+		// worker is not receiving yet, so this must not block.
+		select {
+		case wake <- struct{}{}:
+		default:
+		}
 	}
 	go func() {
 		defer close(done)
@@ -393,6 +398,11 @@ func (s workspaceDepsScan) find(ctx context.Context) ([]string, error) {
 		}
 		entries, err := s.readDir(dir)
 		if err != nil {
+			// A subdirectory the daemon cannot read or that vanished cannot be
+			// pruned either, so it is skipped instead of failing the scan.
+			if depth > 0 && (errors.Is(err, os.ErrPermission) || errors.Is(err, os.ErrNotExist)) {
+				return nil
+			}
 			return err
 		}
 		for _, entry := range entries {
