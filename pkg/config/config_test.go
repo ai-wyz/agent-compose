@@ -117,7 +117,7 @@ func TestNewConfigRejectsInvalidCleanupDurations(t *testing.T) {
 }
 
 func TestNewConfigWorkspaceDepsPrune(t *testing.T) {
-	t.Run("disabled by default", func(t *testing.T) {
+	t.Run("enabled by default", func(t *testing.T) {
 		t.Setenv("DATA_ROOT", filepath.Join(t.TempDir(), "data"))
 		di := do.New()
 		do.ProvideValue(di, slog.Default())
@@ -125,13 +125,25 @@ func TestNewConfigWorkspaceDepsPrune(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if config.WorkspaceDepsPruneOnStop || config.WorkspaceDepsPruneDryRun || config.WorkspaceDepsPruneGrace != 0 || config.WorkspaceDepsPruneExtraDirs != nil {
+		if !config.WorkspaceDepsPruneOnStop || config.WorkspaceDepsPruneDryRun || config.WorkspaceDepsPruneGrace != 0 || config.WorkspaceDepsPruneExtraDirs != nil {
 			t.Fatalf("workspace deps prune defaults = %v/%v/%s/%v", config.WorkspaceDepsPruneOnStop, config.WorkspaceDepsPruneDryRun, config.WorkspaceDepsPruneGrace, config.WorkspaceDepsPruneExtraDirs)
+		}
+	})
+	t.Run("disabled", func(t *testing.T) {
+		t.Setenv("DATA_ROOT", filepath.Join(t.TempDir(), "data"))
+		t.Setenv("WORKSPACE_DEPS_PRUNE_ON_STOP", "false")
+		di := do.New()
+		do.ProvideValue(di, slog.Default())
+		config, err := NewConfig(di)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if config.WorkspaceDepsPruneOnStop {
+			t.Fatal("WORKSPACE_DEPS_PRUNE_ON_STOP=false left the policy enabled")
 		}
 	})
 	t.Run("configured", func(t *testing.T) {
 		t.Setenv("DATA_ROOT", filepath.Join(t.TempDir(), "data"))
-		t.Setenv("WORKSPACE_DEPS_PRUNE_ON_STOP", "true")
 		t.Setenv("WORKSPACE_DEPS_PRUNE_GRACE", "90m")
 		t.Setenv("WORKSPACE_DEPS_PRUNE_DRY_RUN", "1")
 		t.Setenv("WORKSPACE_DEPS_PRUNE_EXTRA_DIRS", " .venv, target ,.venv")

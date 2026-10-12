@@ -238,12 +238,9 @@ func NewWorkspaceDepsPruner(di do.Injector) (*sandboxes.WorkspaceDepsPruner, err
 	if !config.WorkspaceDepsPruneOnStop {
 		return pruner, nil
 	}
-	// Sandboxes the pruner misses are only reclaimed by workspace cleanup, so a
-	// deployment without it, or with a longer grace period, should be told.
-	switch {
-	case config.WorkspaceCleanupTTL <= 0:
-		slog.Warn("WORKSPACE_DEPS_PRUNE_ON_STOP is enabled without WORKSPACE_CLEANUP_TTL; dependencies of sandboxes missed by the stop-time prune are never reclaimed")
-	case config.WorkspaceDepsPruneGrace >= config.WorkspaceCleanupTTL:
+	// The policy is on by default while workspace cleanup is not, so only a
+	// grace period that workspace cleanup would always win is worth a warning.
+	if config.WorkspaceCleanupTTL > 0 && config.WorkspaceDepsPruneGrace >= config.WorkspaceCleanupTTL {
 		slog.Warn("WORKSPACE_DEPS_PRUNE_GRACE is not shorter than WORKSPACE_CLEANUP_TTL; workspaces are reclaimed before their dependencies would be pruned")
 	}
 	locks.SetStopObserver(pruner.Notify)

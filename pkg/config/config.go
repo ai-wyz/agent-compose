@@ -806,7 +806,7 @@ func loadCleanupConfig(dataRoot string) (cleanupConfigValues, error) {
 	if (workspaceCleanupTTL > 0 || sandboxRetentionTTL > 0 || imageCacheCleanupTTL > 0) && cleanupInterval <= 0 {
 		return cleanupConfigValues{}, fmt.Errorf("CLEANUP_INTERVAL must be positive when automatic cleanup is enabled")
 	}
-	depsPruneOnStop, err := cleanupBoolEnv("WORKSPACE_DEPS_PRUNE_ON_STOP")
+	depsPruneOnStop, err := cleanupBoolEnv("WORKSPACE_DEPS_PRUNE_ON_STOP", true)
 	if err != nil {
 		return cleanupConfigValues{}, err
 	}
@@ -814,7 +814,7 @@ func loadCleanupConfig(dataRoot string) (cleanupConfigValues, error) {
 	if err != nil {
 		return cleanupConfigValues{}, err
 	}
-	depsPruneDryRun, err := cleanupBoolEnv("WORKSPACE_DEPS_PRUNE_DRY_RUN")
+	depsPruneDryRun, err := cleanupBoolEnv("WORKSPACE_DEPS_PRUNE_DRY_RUN", false)
 	if err != nil {
 		return cleanupConfigValues{}, err
 	}
@@ -836,10 +836,10 @@ func loadCleanupConfig(dataRoot string) (cleanupConfigValues, error) {
 	}, nil
 }
 
-func cleanupBoolEnv(name string) (bool, error) {
+func cleanupBoolEnv(name string, fallback bool) (bool, error) {
 	raw := strings.TrimSpace(os.Getenv(name))
 	if raw == "" {
-		return false, nil
+		return fallback, nil
 	}
 	parsed, err := strconv.ParseBool(raw)
 	if err != nil {
