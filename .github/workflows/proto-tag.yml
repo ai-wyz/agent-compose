@@ -137,18 +137,20 @@ jobs:
         if: steps.require.outputs.version != ''
         env:
           VERSION: ${{ steps.require.outputs.version }}
+          PENDING: ${{ steps.require.outputs.pending }}
         run: |
-          sed -i -E 's|^([[:space:]]*github\.com/chaitin/agent-compose/proto) v[0-9]+\.[0-9]+\.[0-9]+$|\1 '"$VERSION"'|' go.mod
-          # Assigned first so that a go.mod the edit broke stops the step.
-          trailing=$(./scripts/proto-require-bump.sh "$TAG" go.mod)
-          if [[ -n $trailing ]]; then
-            echo "::error::go.mod still trails $TAG after the edit"
-            exit 1
-          fi
+          ./scripts/proto-require-bump.sh --write "$TAG" go.mod >/dev/null
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git checkout -q -B "$BRANCH"
           git commit -q -am "chore(deps): bump proto module to $VERSION"
+          # A push made with the workflow token starts no workflows, so the
+          # commit refreshing a pull request someone already marked ready
+          # would carry no checks. Return it to draft first: marking it ready
+          # again is what tests the new commit.
+          if [[ -n $PENDING ]]; then
+            gh pr ready "$PENDING" --undo
+          fi
           git push --force origin "HEAD:refs/heads/$BRANCH"
       # A draft, like every other pull request here. That is also what gets it
       # tested: a pull request opened with the workflow token starts no
@@ -166,7 +168,7 @@ jobs:
 
           Move the root \`go.mod\` requirement to \`$TAG\`, which the Proto tag workflow just published. The root module builds against \`./proto\` through its replace, so only the Published proto version job on a release tag notices a requirement that trails; merge this before the next release tag.
 
-          This pull request was opened by a workflow, so its checks start only when someone marks it ready for review. If the workflow pushes a newer version here afterwards, convert it to a draft and mark it ready again.
+          This pull request was opened by a workflow, so its checks start only when someone marks it ready for review. When a newer proto tag is published before this merges, the workflow pushes it here and returns the pull request to draft; mark it ready again to test that commit.
 
           ## Testing
 

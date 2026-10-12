@@ -4,16 +4,23 @@ set -euo pipefail
 # Decides whether a go.mod should move its proto module requirement to a
 # published proto tag. Prints the version to require when the file names an
 # older one, and prints nothing when it already names that version or a newer
-# one. The Proto tag workflow edits go.mod and opens the pull request; this
-# script only decides, so it can be tested without a remote.
+# one. With --write it also moves the requirement in the file. The Proto tag
+# workflow pushes the change and opens the pull request; this script decides
+# and edits, so both can be tested without a remote.
 #
 # Requirements only move forward, for the same reason the tags do: a run for an
 # older commit finishing late must not pull the requirement back.
 
 MODULE=github.com/chaitin/agent-compose/proto
 
+write=false
+if [[ ${1:-} == --write ]]; then
+  write=true
+  shift
+fi
+
 if [[ $# -ne 2 ]]; then
-  echo "usage: $0 <proto-tag> <go.mod>" >&2
+  echo "usage: $0 [--write] <proto-tag> <go.mod>" >&2
   exit 2
 fi
 
@@ -31,10 +38,11 @@ if [[ ! -f $gomod ]]; then
   exit 1
 fi
 
-# The replace directive names the module too, but carries no version.
-required=$(sed -n -E \
-  "s|^[[:space:]]*(require[[:space:]]+)?${MODULE//./\\.}[[:space:]]+(v[0-9]+\.[0-9]+\.[0-9]+)[[:space:]]*$|\2|p" \
-  "$gomod")
+# Matches the requirement inside a require block and on a line of its own. The
+# replace directive names the module too, but carries no version.
+requirement="^([[:space:]]*(require[[:space:]]+)?${MODULE//./\\.}[[:space:]]+)(v[0-9]+\.[0-9]+\.[0-9]+)[[:space:]]*$"
+
+required=$(sed -n -E "s|$requirement|\3|p" "$gomod")
 if [[ -z $required || $required == *$'\n'* ]]; then
   echo "proto-require-bump: $gomod does not require one $MODULE vX.Y.Z" >&2
   exit 1
@@ -49,6 +57,11 @@ oldest=$(printf '%s\n%s\n' "$required" "$version" | sort -V | head -n 1)
 if [[ $oldest != "$required" ]]; then
   echo "proto-require-bump: $gomod requires $required, newer than $version" >&2
   exit 0
+fi
+
+if [[ $write == true ]]; then
+  edited=$(sed -E "s|$requirement|\1$version|" "$gomod")
+  printf '%s\n' "$edited" >"$gomod"
 fi
 
 printf '%s\n' "$version"

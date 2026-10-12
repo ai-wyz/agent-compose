@@ -124,6 +124,32 @@ GOMOD
 )
 expect_bump 'replace without a requirement' proto/v0.1.10 "$unrequired" 1 ''
 
+expect_write() { # $1=description $2=tag $3=go.mod $4=expected-stdout $5=expected requirement line
+  local copy="$TEST_ROOT/write.go.mod" out
+  cp -- "$3" "$copy"
+  out=$("$REQUIRE_BUMP" --write "$2" "$copy" 2>/dev/null) || true
+  if [[ $out != "$4" ]]; then
+    fail "$1: got output '$out', expected '$4'"
+  fi
+  if ! grep -Fxq -- "$5" "$copy"; then
+    fail "$1: missing requirement line '$5'"
+  fi
+  # Nothing but the requirement line may change.
+  if [[ $(diff -- "$3" "$copy" | grep -c '^[<>]') -gt 2 ]]; then
+    fail "$1: changed more than the requirement line"
+  fi
+}
+
+expect_write 'write to a require block' proto/v0.1.10 "$block" 'v0.1.10' \
+  $'\tgithub.com/chaitin/agent-compose/proto v0.1.10'
+expect_write 'write to a single-line requirement' proto/v0.1.10 "$single" 'v0.1.10' \
+  'require github.com/chaitin/agent-compose/proto v0.1.10'
+expect_write 'no write when the requirement is newer' proto/v0.1.8 "$block" '' \
+  $'\tgithub.com/chaitin/agent-compose/proto v0.1.9'
+if ! grep -Fxq -- 'replace github.com/chaitin/agent-compose/proto => ./proto' "$TEST_ROOT/write.go.mod"; then
+  fail 'write touched the replace directive'
+fi
+
 # --- workflow wiring ---------------------------------------------------------
 
 tag_workflow=$(<"$TAG_WORKFLOW")
@@ -194,7 +220,15 @@ require "$bump_job" 'pull-requests: write' 'pull request permission for the bump
 require "$bump_job" 'ref: main$' 'bump based on main'
 require "$bump_job" 'scripts/proto-require-bump\.sh "\$TAG" go\.mod' 'bump decision for the root go.mod'
 require "$bump_job" 'scripts/proto-require-bump\.sh "\$TAG" "\$RUNNER_TEMP/pending\.go\.mod"' 'bump decision for a pending pull request'
+require "$bump_job" 'scripts/proto-require-bump\.sh --write "\$TAG" go\.mod' 'requirement moved by the tested script'
 require "$bump_job" 'gh pr create --draft --base main' 'draft pull request against main'
+# The refreshing push starts no workflows, so a pull request already marked
+# ready goes back to draft before it.
+undo_line=$(grep -n -- 'gh pr ready "\$PENDING" --undo' <<<"$bump_job" | head -n 1 | cut -d: -f1 || true)
+push_line=$(grep -n -- 'git push --force origin' <<<"$bump_job" | head -n 1 | cut -d: -f1 || true)
+if [[ -z $undo_line || -z $push_line || $undo_line -ge $push_line ]]; then
+  fail 'missing return to draft before the refreshing push'
+fi
 
 proto_version=$(awk '
   $0 == "  proto-version:" { found = 1; print; next }
