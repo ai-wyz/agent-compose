@@ -459,6 +459,11 @@ func (l Lifecycle) stopLoadedWhileLocked(ctx context.Context, session *domain.Sa
 	if stopErr != nil {
 		return outcome, stopErr
 	}
+	// A repeated stop of an already stopped sandbox changes nothing and is not
+	// reported, so observers only ever see stops that happened in this call.
+	if session.Summary.VMStatus == domain.VMStatusStopped && (result.Stopped || result.Released) {
+		l.Locks.notifyStopped(session.Summary.ID)
+	}
 	loaded, err := l.Store.GetSandbox(ctx, session.Summary.ID)
 	if err != nil {
 		return StopOutcome{}, err

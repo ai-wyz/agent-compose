@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -121,6 +122,13 @@ type Config struct {
 	CapGRPCListen              string
 	CapGRPCTarget              string
 	Version                    string
+
+	// WorkspaceDepsPruneOnStop removes regenerable dependency directories from
+	// the workspace of a disposable sandbox as soon as it stops.
+	WorkspaceDepsPruneOnStop    bool
+	WorkspaceDepsPruneGrace     time.Duration
+	WorkspaceDepsPruneDryRun    bool
+	WorkspaceDepsPruneExtraDirs []string
 }
 
 func NewConfig(di do.Injector) (*Config, error) {
@@ -346,6 +354,11 @@ func buildConfig(sources configSources, normalized configPathsToNormalize) *Conf
 		CapGRPCListen:              strings.TrimSpace(os.Getenv("CAP_GRPC_LISTEN")),
 		CapGRPCTarget:              strings.TrimSpace(os.Getenv("CAP_GRPC_TARGET")),
 		Version:                    BuildVersion,
+
+		WorkspaceDepsPruneOnStop:    cleanup.WorkspaceDepsPruneOnStop,
+		WorkspaceDepsPruneGrace:     cleanup.WorkspaceDepsPruneGrace,
+		WorkspaceDepsPruneDryRun:    cleanup.WorkspaceDepsPruneDryRun,
+		WorkspaceDepsPruneExtraDirs: cleanup.WorkspaceDepsPruneExtraDirs,
 	}
 }
 
@@ -762,6 +775,11 @@ type cleanupConfigValues struct {
 	SandboxRetentionTTL  time.Duration
 	SandboxArchiveRoot   string
 	ImageCacheCleanupTTL time.Duration
+
+	WorkspaceDepsPruneOnStop    bool
+	WorkspaceDepsPruneGrace     time.Duration
+	WorkspaceDepsPruneDryRun    bool
+	WorkspaceDepsPruneExtraDirs []string
 }
 
 func loadCleanupConfig(dataRoot string) (cleanupConfigValues, error) {
@@ -788,13 +806,67 @@ func loadCleanupConfig(dataRoot string) (cleanupConfigValues, error) {
 	if (workspaceCleanupTTL > 0 || sandboxRetentionTTL > 0 || imageCacheCleanupTTL > 0) && cleanupInterval <= 0 {
 		return cleanupConfigValues{}, fmt.Errorf("CLEANUP_INTERVAL must be positive when automatic cleanup is enabled")
 	}
+	depsPruneOnStop, err := cleanupBoolEnv("WORKSPACE_DEPS_PRUNE_ON_STOP")
+	if err != nil {
+		return cleanupConfigValues{}, err
+	}
+	depsPruneGrace, err := cleanupDurationEnv("WORKSPACE_DEPS_PRUNE_GRACE", 0)
+	if err != nil {
+		return cleanupConfigValues{}, err
+	}
+	depsPruneDryRun, err := cleanupBoolEnv("WORKSPACE_DEPS_PRUNE_DRY_RUN")
+	if err != nil {
+		return cleanupConfigValues{}, err
+	}
+	depsPruneExtraDirs, err := workspaceDepsPruneExtraDirsEnv("WORKSPACE_DEPS_PRUNE_EXTRA_DIRS")
+	if err != nil {
+		return cleanupConfigValues{}, err
+	}
 	return cleanupConfigValues{
 		CleanupInterval:      cleanupInterval,
 		WorkspaceCleanupTTL:  workspaceCleanupTTL,
 		SandboxRetentionTTL:  sandboxRetentionTTL,
 		SandboxArchiveRoot:   sandboxArchiveRoot,
 		ImageCacheCleanupTTL: imageCacheCleanupTTL,
+
+		WorkspaceDepsPruneOnStop:    depsPruneOnStop,
+		WorkspaceDepsPruneGrace:     depsPruneGrace,
+		WorkspaceDepsPruneDryRun:    depsPruneDryRun,
+		WorkspaceDepsPruneExtraDirs: depsPruneExtraDirs,
 	}, nil
+}
+
+func cleanupBoolEnv(name string) (bool, error) {
+	raw := strings.TrimSpace(os.Getenv(name))
+	if raw == "" {
+		return false, nil
+	}
+	parsed, err := strconv.ParseBool(raw)
+	if err != nil {
+		return false, fmt.Errorf("parse %s %q: %w", name, raw, err)
+	}
+	return parsed, nil
+}
+
+// workspaceDepsPruneExtraDirsEnv parses a comma-separated list of directory
+// names. Entries are plain names matched anywhere in a workspace, so anything
+// that could address a path or the repository metadata is rejected.
+func workspaceDepsPruneExtraDirsEnv(name string) ([]string, error) {
+	raw := strings.TrimSpace(os.Getenv(name))
+	if raw == "" {
+		return nil, nil
+	}
+	var names []string
+	for _, item := range strings.Split(raw, ",") {
+		item = strings.TrimSpace(item)
+		if item == "" || item == "." || item == ".." || item == ".git" || strings.ContainsAny(item, `/\`) {
+			return nil, fmt.Errorf("%s entry %q must be a plain directory name", name, item)
+		}
+		if !slices.Contains(names, item) {
+			names = append(names, item)
+		}
+	}
+	return names, nil
 }
 
 // sandboxTimeoutsConfig holds the sandbox lifecycle timeouts and the

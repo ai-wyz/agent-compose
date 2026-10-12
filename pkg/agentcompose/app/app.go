@@ -93,6 +93,7 @@ func RegisterDependencies(di do.Injector) {
 	do.Provide(di, NewRunCompletionManager)
 	do.Provide(di, NewDeletionRecovery)
 	do.Provide(di, NewCleanupRunner)
+	do.Provide(di, NewWorkspaceDepsPruner)
 	do.Provide(di, NewRunSupervisor)
 	do.Provide(di, NewProjectController)
 }
@@ -219,6 +220,36 @@ func NewDeletionRecovery(di do.Injector) (*sandboxes.DeletionRecovery, error) {
 	), nil
 }
 
+// NewWorkspaceDepsPruner builds the stop-driven dependency pruner. When the
+// feature is enabled it also subscribes the pruner to sandbox stops.
+func NewWorkspaceDepsPruner(di do.Injector) (*sandboxes.WorkspaceDepsPruner, error) {
+	config := do.MustInvoke[*appconfig.Config](di)
+	locks := do.MustInvoke[*sandboxes.LifecycleLocks](di)
+	pruner := &sandboxes.WorkspaceDepsPruner{
+		Store:              do.MustInvoke[*sandboxstore.Store](di),
+		Locks:              locks,
+		Bindings:           do.MustInvoke[*configstore.ConfigStore](di),
+		GuestWorkspacePath: config.GuestWorkspacePath,
+		Grace:              config.WorkspaceDepsPruneGrace,
+		DryRun:             config.WorkspaceDepsPruneDryRun,
+		ExtraDirs:          config.WorkspaceDepsPruneExtraDirs,
+		Logger:             do.MustInvoke[*slog.Logger](di),
+	}
+	if !config.WorkspaceDepsPruneOnStop {
+		return pruner, nil
+	}
+	// Sandboxes the pruner misses are only reclaimed by workspace cleanup, so a
+	// deployment without it, or with a longer grace period, should be told.
+	switch {
+	case config.WorkspaceCleanupTTL <= 0:
+		slog.Warn("WORKSPACE_DEPS_PRUNE_ON_STOP is enabled without WORKSPACE_CLEANUP_TTL; dependencies of sandboxes missed by the stop-time prune are never reclaimed")
+	case config.WorkspaceDepsPruneGrace >= config.WorkspaceCleanupTTL:
+		slog.Warn("WORKSPACE_DEPS_PRUNE_GRACE is not shorter than WORKSPACE_CLEANUP_TTL; workspaces are reclaimed before their dependencies would be pruned")
+	}
+	locks.SetStopObserver(pruner.Notify)
+	return pruner, nil
+}
+
 func NewCleanupRunner(di do.Injector) (*cleanup.Runner, error) {
 	config := do.MustInvoke[*appconfig.Config](di)
 	store := do.MustInvoke[*sandboxstore.Store](di)
@@ -279,6 +310,9 @@ func StartBackground(di do.Injector) error {
 		return fmt.Errorf("start sandbox deletion recovery: %w", err)
 	}
 	runner.Start(ctx)
+	if do.MustInvoke[*appconfig.Config](di).WorkspaceDepsPruneOnStop {
+		do.MustInvoke[*sandboxes.WorkspaceDepsPruner](di).Start(ctx)
+	}
 	return nil
 }
 
@@ -308,6 +342,16 @@ func StopBackground(ctx context.Context, di do.Injector) error {
 		setupErrors = append(setupErrors, fmt.Errorf("resolve cleanup runner: %w", runnerErr))
 	} else {
 		components = append(components, backgroundComponent{name: "cleanup runner", shutdown: runner.Shutdown})
+	}
+	// The pruner is only constructed when the feature is enabled, so a disabled
+	// daemon has nothing to resolve or stop here.
+	if config, err := do.Invoke[*appconfig.Config](di); err == nil && config.WorkspaceDepsPruneOnStop {
+		pruner, prunerErr := do.Invoke[*sandboxes.WorkspaceDepsPruner](di)
+		if prunerErr != nil {
+			setupErrors = append(setupErrors, fmt.Errorf("resolve workspace dependency pruner: %w", prunerErr))
+		} else {
+			components = append(components, backgroundComponent{name: "workspace dependency pruner", shutdown: pruner.Shutdown})
+		}
 	}
 	return stopBackgroundComponents(ctx, components, setupErrors...)
 }

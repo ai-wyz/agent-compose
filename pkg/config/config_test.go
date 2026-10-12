@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -110,6 +111,60 @@ func TestNewConfigRejectsInvalidCleanupDurations(t *testing.T) {
 			do.ProvideValue(di, slog.Default())
 			if _, err := NewConfig(di); err == nil {
 				t.Fatal("NewConfig returned nil error")
+			}
+		})
+	}
+}
+
+func TestNewConfigWorkspaceDepsPrune(t *testing.T) {
+	t.Run("disabled by default", func(t *testing.T) {
+		t.Setenv("DATA_ROOT", filepath.Join(t.TempDir(), "data"))
+		di := do.New()
+		do.ProvideValue(di, slog.Default())
+		config, err := NewConfig(di)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if config.WorkspaceDepsPruneOnStop || config.WorkspaceDepsPruneDryRun || config.WorkspaceDepsPruneGrace != 0 || config.WorkspaceDepsPruneExtraDirs != nil {
+			t.Fatalf("workspace deps prune defaults = %v/%v/%s/%v", config.WorkspaceDepsPruneOnStop, config.WorkspaceDepsPruneDryRun, config.WorkspaceDepsPruneGrace, config.WorkspaceDepsPruneExtraDirs)
+		}
+	})
+	t.Run("configured", func(t *testing.T) {
+		t.Setenv("DATA_ROOT", filepath.Join(t.TempDir(), "data"))
+		t.Setenv("WORKSPACE_DEPS_PRUNE_ON_STOP", "true")
+		t.Setenv("WORKSPACE_DEPS_PRUNE_GRACE", "90m")
+		t.Setenv("WORKSPACE_DEPS_PRUNE_DRY_RUN", "1")
+		t.Setenv("WORKSPACE_DEPS_PRUNE_EXTRA_DIRS", " .venv, target ,.venv")
+		di := do.New()
+		do.ProvideValue(di, slog.Default())
+		config, err := NewConfig(di)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !config.WorkspaceDepsPruneOnStop || !config.WorkspaceDepsPruneDryRun || config.WorkspaceDepsPruneGrace != 90*time.Minute {
+			t.Fatalf("workspace deps prune = %v/%v/%s", config.WorkspaceDepsPruneOnStop, config.WorkspaceDepsPruneDryRun, config.WorkspaceDepsPruneGrace)
+		}
+		if want := []string{".venv", "target"}; !slices.Equal(config.WorkspaceDepsPruneExtraDirs, want) {
+			t.Fatalf("WorkspaceDepsPruneExtraDirs = %v, want %v", config.WorkspaceDepsPruneExtraDirs, want)
+		}
+	})
+	for name, env := range map[string][2]string{
+		"invalid switch":       {"WORKSPACE_DEPS_PRUNE_ON_STOP", "sometimes"},
+		"invalid dry run":      {"WORKSPACE_DEPS_PRUNE_DRY_RUN", "maybe"},
+		"negative grace":       {"WORKSPACE_DEPS_PRUNE_GRACE", "-1h"},
+		"path entry":           {"WORKSPACE_DEPS_PRUNE_EXTRA_DIRS", "ui/node_modules"},
+		"parent entry":         {"WORKSPACE_DEPS_PRUNE_EXTRA_DIRS", ".venv,.."},
+		"repository metadata":  {"WORKSPACE_DEPS_PRUNE_EXTRA_DIRS", ".git"},
+		"empty entry":          {"WORKSPACE_DEPS_PRUNE_EXTRA_DIRS", ".venv,,target"},
+		"windows style a path": {"WORKSPACE_DEPS_PRUNE_EXTRA_DIRS", `ui\node_modules`},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Setenv("DATA_ROOT", filepath.Join(t.TempDir(), "data"))
+			t.Setenv(env[0], env[1])
+			di := do.New()
+			do.ProvideValue(di, slog.Default())
+			if _, err := NewConfig(di); err == nil {
+				t.Fatalf("NewConfig accepted %s=%q", env[0], env[1])
 			}
 		})
 	}

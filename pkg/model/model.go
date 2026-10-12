@@ -29,6 +29,9 @@ const (
 
 	SandboxArchiveStateArchiving = "archiving"
 	SandboxArchiveStateArchived  = "archived"
+
+	SandboxWorkspaceDepsPruneStatePruning = "pruning"
+	SandboxWorkspaceDepsPruneStatePruned  = "pruned"
 )
 
 type SandboxTag struct {
@@ -185,6 +188,19 @@ type SandboxWorkspaceReclamation struct {
 	LastError   string    `json:"last_error,omitempty"`
 }
 
+// SandboxWorkspaceDepsPrune records the removal of regenerable dependency
+// directories from a stopped sandbox workspace. StoppedAt ties the record to
+// the stop it acted on, so a sandbox that is resumed and stopped again is
+// pruned again without any resume path having to clear the record.
+type SandboxWorkspaceDepsPrune struct {
+	State       string    `json:"state"`
+	StoppedAt   time.Time `json:"stopped_at"`
+	StartedAt   time.Time `json:"started_at"`
+	CompletedAt time.Time `json:"completed_at,omitempty"`
+	RemovedDirs int       `json:"removed_dirs,omitempty"`
+	LastError   string    `json:"last_error,omitempty"`
+}
+
 // SandboxArchive records the durable audit archive created when a stopped
 // sandbox reaches the workspace cleanup cutoff. The archive itself lives
 // outside the sandbox ownership tree and therefore survives sandbox removal.
@@ -205,6 +221,7 @@ type Sandbox struct {
 	Workspace             *SandboxWorkspace             `json:"workspace,omitempty"`
 	WorkspaceProvisioning *SandboxWorkspaceProvisioning `json:"workspace_provisioning,omitempty"`
 	WorkspaceReclamation  *SandboxWorkspaceReclamation  `json:"workspace_reclamation,omitempty"`
+	WorkspaceDepsPrune    *SandboxWorkspaceDepsPrune    `json:"workspace_deps_prune,omitempty"`
 	Archive               *SandboxArchive               `json:"archive,omitempty"`
 	StoppedRuntimePolicy  string                        `json:"stopped_runtime_policy,omitempty"`
 	StoppedRuntime        *StoppedRuntime               `json:"stopped_runtime,omitempty"`

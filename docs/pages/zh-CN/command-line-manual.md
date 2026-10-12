@@ -854,6 +854,10 @@ sandbox retention 归档包含 metadata、VM/proxy 状态、logs、home、state�
 
 `IMAGE_CACHE_CLEANUP_TTL` 独立清理 `IMAGE_CACHE_ROOT` 自有且未被引用的 OCI 与 materialized 数据，优先使用最后使用时间，没有时回退到拉取时间或文件修改时间；默认 `0`，即关闭该 cleaner。`CLEANUP_INTERVAL` 默认 `1h`，因此 duration 清理最多可能延迟一个 interval。自动清理不会处理 Docker daemon 镜像、BoxLite home 或 Microsandbox SDK cache，也不实现磁盘空间水位策略。
 
+`WORKSPACE_DEPS_PRUNE_ON_STOP` 是另一条由事件驱动的独立策略，默认 `false`。启用后，一次性 sandbox 在停止时就会删除 workspace 中可再生的依赖目录，源码、未提交的改动以及 workspace 之外的数据都保留。一次性 sandbox 指：没有 scheduler 通过 sticky binding 复用它，stopped runtime policy 为 `remove`，并且 workspace 归 sandbox 所有而不是从宿主机挂载。默认名单是 `node_modules`（仅当同级存在 `package.json`）和 `.pnpm-store`（仅位于 workspace 根或其下一级）；`WORKSPACE_DEPS_PRUNE_EXTRA_DIRS` 可以追加逗号分隔的纯目录名，例如 `.venv,target`。扫描最多深入 workspace 根以下四层，不进入 `.git`，不跟随 symlink，并跳过其他文件系统和挂载在 workspace 内的声明式 volume。`WORKSPACE_DEPS_PRUNE_GRACE` 让删除在停止后延迟一段时间，默认 `0`。`WORKSPACE_DEPS_PRUNE_DRY_RUN=true` 只把将要删除的目录写入日志，不做任何改动。
+
+该策略只响应保存在内存中的停止通知，也只作用于启用之后停止的 sandbox。它没有观察到的停止（队列尚未处理时 daemon 重启、runtime 意外退出、启用之前的停止）会保留依赖，直到 `WORKSPACE_CLEANUP_TTL` 回收整个 workspace，因此应当同时启用两者。已清理的 sandbox 被恢复后需要重新安装依赖；`sandbox.workspace_deps_pruned` 事件记录了这次删除，下一次停止会再次清理。
+
 兼容说明：
 
 - `image` 命令组是规范形式：`image ls`、`image pull`、`image build`、`image rm` 和 `image inspect`。

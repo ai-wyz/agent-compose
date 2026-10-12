@@ -11,6 +11,8 @@ import (
 type LifecycleLocks struct {
 	mu    sync.Mutex
 	locks map[string]*lifecycleLock
+
+	stopObserver func(sandboxID string)
 }
 
 type lifecycleLock struct {
@@ -49,5 +51,31 @@ func (l *LifecycleLocks) Lock(sandboxID string) func() {
 			delete(l.locks, sandboxID)
 		}
 		l.mu.Unlock()
+	}
+}
+
+// SetStopObserver registers the callback told about every sandbox stop that
+// completes through Lifecycle. LifecycleLocks is the one value every lifecycle
+// user in the daemon already shares, so observing stops here covers each stop
+// path without threading another dependency through them. The callback runs
+// while the stopping caller still holds the sandbox lock and must not block.
+func (l *LifecycleLocks) SetStopObserver(observer func(sandboxID string)) {
+	if l == nil {
+		return
+	}
+	l.mu.Lock()
+	l.stopObserver = observer
+	l.mu.Unlock()
+}
+
+func (l *LifecycleLocks) notifyStopped(sandboxID string) {
+	if l == nil {
+		return
+	}
+	l.mu.Lock()
+	observer := l.stopObserver
+	l.mu.Unlock()
+	if observer != nil {
+		observer(strings.TrimSpace(sandboxID))
 	}
 }

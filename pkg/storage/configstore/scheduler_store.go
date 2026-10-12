@@ -569,6 +569,20 @@ func (s *schedulerStore) GetSchedulerBinding(ctx context.Context, schedulerID, t
 	return item, true, nil
 }
 
+// SandboxHasSchedulerBinding reports whether any scheduler currently reuses the
+// sandbox through a sticky binding.
+func (s *schedulerStore) SandboxHasSchedulerBinding(ctx context.Context, sandboxID string) (bool, error) {
+	var found int
+	err := s.db.QueryRowContext(ctx, `SELECT 1 FROM scheduler_sandbox_binding WHERE sandbox_id = ? LIMIT 1`, strings.TrimSpace(sandboxID)).Scan(&found)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("query scheduler binding for sandbox: %w", err)
+	}
+	return true, nil
+}
+
 func (s *schedulerStore) UpsertSchedulerBinding(ctx context.Context, binding domain.SchedulerBinding) error {
 	binding.SchedulerID = strings.TrimSpace(binding.SchedulerID)
 	binding.TriggerID = strings.TrimSpace(binding.TriggerID)

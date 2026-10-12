@@ -629,6 +629,12 @@ func testConfigStoreCRUDCoverageWorkflows(t *testing.T) {
 	if binding, found, err := store.GetSchedulerBinding(ctx, scheduler.Summary.ID, ""); err != nil || !found || binding.SandboxID != "sandbox-1" {
 		t.Fatalf("GetSchedulerBinding binding=%#v found=%v err=%v", binding, found, err)
 	}
+	if bound, err := store.SandboxHasSchedulerBinding(ctx, " sandbox-1 "); err != nil || !bound {
+		t.Fatalf("SandboxHasSchedulerBinding bound=%v err=%v, want bound", bound, err)
+	}
+	if bound, err := store.SandboxHasSchedulerBinding(ctx, "sandbox-unbound"); err != nil || bound {
+		t.Fatalf("SandboxHasSchedulerBinding unbound sandbox bound=%v err=%v", bound, err)
+	}
 	if err := store.UpsertSchedulerBinding(ctx, domain.SchedulerBinding{SchedulerID: scheduler.Summary.ID, TriggerID: "trigger-1", SandboxID: "sandbox-2", SandboxConfigHash: "sha256:config"}); err != nil {
 		t.Fatalf("UpsertSchedulerBinding trigger scope returned error: %v", err)
 	}
