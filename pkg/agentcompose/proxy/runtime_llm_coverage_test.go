@@ -744,21 +744,35 @@ func TestRuntimeLLMFacadeHandlerEdgeBranches(t *testing.T) {
 	}
 }
 
+// A connection with generic text parts is still a Responses endpoint: both its
+// buffered and its streamed replies are Responses-shaped, and the facade
+// normalizes the generic "text" part to output_text for the guest.
 func TestRuntimeLLMFacadeTransparentGenericResponsesTextParts(t *testing.T) {
 	tests := []struct {
 		name     string
 		client   *fakeRuntimeLLMHTTPClient
 		want     int
-		contains string
+		contains []string
 	}{
 		{
 			name: "non stream",
 			client: &fakeRuntimeLLMHTTPClient{
 				status: http.StatusOK,
-				body:   `{"id":"chatcmpl-1","object":"chat.completion","created":0,"model":"gpt","choices":[{"index":0,"message":{"role":"assistant","content":"hello"},"finish_reason":"stop"}]}`,
+				body:   `{"id":"resp-1","object":"response","status":"completed","model":"gpt","output":[{"type":"message","id":"msg-1","role":"assistant","status":"completed","content":[{"type":"text","text":"buffered-hello"}]}],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}`,
 			},
 			want:     http.StatusOK,
-			contains: "chatcmpl-1",
+			contains: []string{"resp-1", `"output_text"`, "buffered-hello"},
+		},
+		{
+			// A reply in another shape would decode to an empty response; it
+			// is refused by name rather than relayed as a 200 with no content.
+			name: "non stream reply that is not a Responses object",
+			client: &fakeRuntimeLLMHTTPClient{
+				status: http.StatusOK,
+				body:   `{"id":"chatcmpl-1","object":"chat.completion","created":0,"model":"gpt","choices":[{"index":0,"message":{"role":"assistant","content":"hello"},"finish_reason":"stop"}]}`,
+			},
+			want:     http.StatusBadGateway,
+			contains: []string{"upstream llm reply is not a Responses object"},
 		},
 		{
 			name: "stream",
@@ -766,17 +780,23 @@ func TestRuntimeLLMFacadeTransparentGenericResponsesTextParts(t *testing.T) {
 				status: http.StatusOK,
 				header: http.Header{"Content-Type": []string{"text/event-stream"}},
 				body: strings.Join([]string{
-					`data: {"id":"chatcmpl-1","object":"chat.completion.chunk","created":0,"model":"gpt","choices":[{"index":0,"delta":{"role":"assistant","content":"hi"},"finish_reason":null}]}`,
+					`data: {"type":"response.created","response":{"id":"resp-1","object":"response","status":"in_progress","model":"gpt"}}`,
 					"",
-					`data: {"id":"chatcmpl-1","object":"chat.completion.chunk","created":0,"model":"gpt","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`,
+					`data: {"type":"response.output_item.added","output_index":0,"item":{"id":"msg-1","type":"message","role":"assistant","status":"in_progress","content":[]}}`,
 					"",
-					"data: [DONE]",
+					`data: {"type":"response.content_part.added","item_id":"msg-1","output_index":0,"content_index":0,"part":{"type":"text","text":""}}`,
+					"",
+					`data: {"type":"response.output_text.delta","item_id":"msg-1","output_index":0,"content_index":0,"delta":"streamed-hello"}`,
+					"",
+					`data: {"type":"response.output_text.done","item_id":"msg-1","output_index":0,"content_index":0,"text":"streamed-hello"}`,
+					"",
+					`data: {"type":"response.completed","response":{"id":"resp-1","object":"response","status":"completed","model":"gpt","output":[],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}`,
 					"",
 					"",
 				}, "\n"),
 			},
 			want:     http.StatusOK,
-			contains: "response.completed",
+			contains: []string{"streamed-hello", "response.completed"},
 		},
 		{
 			name: "read error",
@@ -785,7 +805,7 @@ func TestRuntimeLLMFacadeTransparentGenericResponsesTextParts(t *testing.T) {
 				bodyReader: errRuntimeLLMReader{},
 			},
 			want:     http.StatusBadGateway,
-			contains: "read upstream llm response failed",
+			contains: []string{"read upstream llm response failed"},
 		},
 		{
 			name: "encode error",
@@ -794,7 +814,7 @@ func TestRuntimeLLMFacadeTransparentGenericResponsesTextParts(t *testing.T) {
 				body:   `{bad json`,
 			},
 			want:     http.StatusBadRequest,
-			contains: "error",
+			contains: []string{"error"},
 		},
 	}
 	for _, tc := range tests {
@@ -817,8 +837,13 @@ func TestRuntimeLLMFacadeTransparentGenericResponsesTextParts(t *testing.T) {
 			req.Header.Set("Content-Type", "application/json")
 			rec := httptest.NewRecorder()
 			e.ServeHTTP(rec, req)
-			if rec.Code != tc.want || !strings.Contains(rec.Body.String(), tc.contains) || tc.client.calls != 1 {
-				t.Fatalf("generic responses text parts status=%d body=%s calls=%d, want status=%d contains=%q", rec.Code, rec.Body.String(), tc.client.calls, tc.want, tc.contains)
+			if rec.Code != tc.want || tc.client.calls != 1 {
+				t.Fatalf("generic responses text parts status=%d body=%s calls=%d, want status=%d", rec.Code, rec.Body.String(), tc.client.calls, tc.want)
+			}
+			for _, want := range tc.contains {
+				if !strings.Contains(rec.Body.String(), want) {
+					t.Fatalf("generic responses text parts body missing %q: %s", want, rec.Body.String())
+				}
 			}
 		})
 	}

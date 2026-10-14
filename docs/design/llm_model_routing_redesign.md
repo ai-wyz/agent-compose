@@ -395,9 +395,11 @@ family 的旧镜像会因为 403 而无法启动。
 全表 15 格全部可服务。补齐 messages→chat 后家族约束从**连接选择与转换**里消失：
 `connectionFor` 不认识 family，`PrepareAgentLLM` 只做 `Supported` 集合判断，
 `runtime_llm.go` 的转换只做 `inbound==upstream ? 透传 : 转换`。
-family 仍然留在一处：§3.6 的 token 校验 `family(token.inbound) == family(inbound)`。
+在路由与转换里，family 只留在一处：§3.6 的 token 校验 `family(token.inbound) == family(inbound)`。
 它是凭据边界而不是选路规则——一个家族的 token 不能拿去打另一家族的路由——删除它会放行
-跨家族路由，不属于"家族约束已消失"的范围。
+跨家族路由，不属于"家族约束已消失"的范围。路由之外，family 还用于校验连接与模型声明的
+一致性：模型级 `protocol` 必须与连接的协议族相同（`catalog.go` 的 `models.json` 校验、
+`provider_management.go` 的 RPC 校验），这同样不受上面这句话影响。
 
 > pi/dsh 保留全协议透传是有实测理由的：某些网关会发自定义事件
 > （`assets/.dsh/profiles/agent-compose/cordis.patch.yml:7-16` 记录的

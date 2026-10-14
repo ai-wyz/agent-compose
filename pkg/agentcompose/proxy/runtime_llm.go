@@ -345,7 +345,14 @@ func (h runtimeLLMHandler) proxyTransparent(c echo.Context, req proxyTransparent
 			h.logUpstreamFailure(c, "read upstream llm response failed", upstreamCall{Target: target, Model: req.RequestedModel, Protocol: upstreamProtocol}, err)
 			return c.JSON(http.StatusBadGateway, map[string]string{"error": "read upstream llm response failed"})
 		}
-		clientBody, err := llms.EncodeRuntimeClientResponse(protocolbridge.ProtocolOpenAIResponses, protocolbridge.ProtocolOpenAIChat, target, upstreamRespBody)
+		if !hasResponsesOutput(upstreamRespBody) {
+			err := errors.New("upstream llm reply is not a Responses object")
+			h.logUpstreamFailure(c, "upstream llm reply has no Responses output", upstreamCall{Target: target, Model: req.RequestedModel, Protocol: upstreamProtocol}, err)
+			return c.JSON(http.StatusBadGateway, map[string]string{"error": err.Error()})
+		}
+		// The upstream is the connection's Responses endpoint, as on the
+		// streaming branch above; decoding it as chat refused every reply.
+		clientBody, err := llms.EncodeRuntimeClientResponse(protocolbridge.ProtocolOpenAIResponses, protocolbridge.ProtocolOpenAIResponses, target, upstreamRespBody)
 		if err != nil {
 			adapter := protocolbridge.NewOpenAIResponsesAdapter()
 			raw, status := adapter.EncodeError(err)
@@ -405,4 +412,20 @@ func WriteRuntimeLLMEncodedError(c echo.Context, raw []byte, status int) error {
 		status = http.StatusBadRequest
 	}
 	return c.Blob(status, "application/json", raw)
+}
+
+// hasResponsesOutput reports whether a buffered reply carries the Responses
+// output list. The Responses decoder ignores fields it does not model, so a
+// reply in another shape (a chat completion, say) would decode to an empty
+// response and reach the guest as a 200 with no content; refusing it names the
+// mismatch instead. A body that is not JSON at all is left to the decoder,
+// which reports it.
+func hasResponsesOutput(body []byte) bool {
+	var reply struct {
+		Output json.RawMessage `json:"output"`
+	}
+	if err := json.Unmarshal(body, &reply); err != nil {
+		return true
+	}
+	return len(reply.Output) > 0 && string(reply.Output) != "null"
 }
