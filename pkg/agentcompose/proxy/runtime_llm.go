@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -49,6 +50,10 @@ type RuntimeLLMOptions struct {
 	// does not send max_output_tokens itself, so without this API proxies that
 	// default to a small limit silently truncate long outputs.
 	MaxOutputTokens int
+	// Logger records why a proxied call failed. The guest receives a fixed
+	// message, so the log is the only place the cause survives. Defaults to
+	// slog.Default.
+	Logger *slog.Logger
 }
 
 func RegisterRuntimeLLMFacadeRoutes(app *echo.Echo, opts RuntimeLLMOptions) {
@@ -107,7 +112,7 @@ func (h runtimeLLMHandler) authorizeAndResolveRuntimeLLMRequest(c echo.Context, 
 	if token.SandboxID != sandboxID || !token.RevokedAt.IsZero() || (!token.ExpiresAt.IsZero() && now.After(token.ExpiresAt)) {
 		return resolvedRuntimeLLMRequest{}, true, c.JSON(http.StatusForbidden, map[string]string{"error": "llm facade token is not valid for this sandbox"})
 	}
-	if token.WireAPI != "" && llms.NormalizeWireAPI(token.WireAPI) != llms.NormalizeWireAPI(facadeWireAPI) {
+	if !token.ServesWireAPI(facadeWireAPI) {
 		return resolvedRuntimeLLMRequest{}, true, c.JSON(http.StatusForbidden, map[string]string{"error": "llm facade token wire api mismatch"})
 	}
 	session, err := h.opts.Sandboxes.GetSandbox(c.Request().Context(), sandboxID)
@@ -220,6 +225,7 @@ func (h runtimeLLMHandler) handle(c echo.Context, inboundProtocol protocolbridge
 	llms.ApplyForwardHeaders(upstreamReq.Header, target.Headers)
 	resp, err := h.httpClient().Do(upstreamReq)
 	if err != nil {
+		h.logUpstreamFailure(c, "call upstream llm failed", upstreamCall{Target: target, Model: llmReq.Model, Protocol: upstreamProtocol}, err)
 		return c.JSON(http.StatusBadGateway, map[string]string{"error": "call upstream llm failed"})
 	}
 	defer func() { _ = resp.Body.Close() }()
@@ -232,6 +238,7 @@ func (h runtimeLLMHandler) handle(c echo.Context, inboundProtocol protocolbridge
 		return nil
 	}
 	if llms.RuntimeResponseShouldFlush(resp.Header) {
+		rewriteGrokResponsesStream(resp, llmReq.Model, upstreamProtocol)
 		return BridgeRuntimeLLMStreamResponse(c, resp, runtimeLLMStreamBridgeRequest{
 			InboundProtocol:  inboundProtocol,
 			UpstreamProtocol: upstreamProtocol,
@@ -240,6 +247,7 @@ func (h runtimeLLMHandler) handle(c echo.Context, inboundProtocol protocolbridge
 	}
 	upstreamRespBody, err := io.ReadAll(io.LimitReader(resp.Body, 64<<20))
 	if err != nil {
+		h.logUpstreamFailure(c, "read upstream llm response failed", upstreamCall{Target: target, Model: llmReq.Model, Protocol: upstreamProtocol}, err)
 		return c.JSON(http.StatusBadGateway, map[string]string{"error": "read upstream llm response failed"})
 	}
 	clientBody, err := llms.EncodeRuntimeClientResponse(inboundProtocol, upstreamProtocol, target, upstreamRespBody)
@@ -319,11 +327,13 @@ func (h runtimeLLMHandler) proxyTransparent(c echo.Context, req proxyTransparent
 	llms.ApplyForwardHeaders(upstreamReq.Header, target.Headers)
 	resp, err := h.httpClient().Do(upstreamReq)
 	if err != nil {
+		h.logUpstreamFailure(c, "call upstream llm failed", upstreamCall{Target: target, Model: req.RequestedModel, Protocol: upstreamProtocol}, err)
 		return c.JSON(http.StatusBadGateway, map[string]string{"error": "call upstream llm failed"})
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode >= 200 && resp.StatusCode < 300 && llms.UseGenericResponsesTextParts(target, upstreamProtocol) {
 		if llms.RuntimeResponseShouldFlush(resp.Header) {
+			rewriteGrokResponsesStream(resp, req.RequestedModel, upstreamProtocol)
 			return BridgeRuntimeLLMStreamResponse(c, resp, runtimeLLMStreamBridgeRequest{
 				InboundProtocol:  protocolbridge.ProtocolOpenAIResponses,
 				UpstreamProtocol: protocolbridge.ProtocolOpenAIResponses,
@@ -332,6 +342,7 @@ func (h runtimeLLMHandler) proxyTransparent(c echo.Context, req proxyTransparent
 		}
 		upstreamRespBody, err := io.ReadAll(io.LimitReader(resp.Body, 64<<20))
 		if err != nil {
+			h.logUpstreamFailure(c, "read upstream llm response failed", upstreamCall{Target: target, Model: req.RequestedModel, Protocol: upstreamProtocol}, err)
 			return c.JSON(http.StatusBadGateway, map[string]string{"error": "read upstream llm response failed"})
 		}
 		clientBody, err := llms.EncodeRuntimeClientResponse(protocolbridge.ProtocolOpenAIResponses, protocolbridge.ProtocolOpenAIChat, target, upstreamRespBody)
@@ -394,103 +405,4 @@ func WriteRuntimeLLMEncodedError(c echo.Context, raw []byte, status int) error {
 		status = http.StatusBadRequest
 	}
 	return c.Blob(status, "application/json", raw)
-}
-
-// runtimeLLMStreamBridgeRequest bundles the protocol/model metadata
-// BridgeRuntimeLLMStreamResponse needs to translate an upstream SSE stream
-// into the inbound wire protocol.
-type runtimeLLMStreamBridgeRequest struct {
-	InboundProtocol  protocolbridge.Protocol
-	UpstreamProtocol protocolbridge.Protocol
-	Model            string
-}
-
-func BridgeRuntimeLLMStreamResponse(c echo.Context, resp *http.Response, req runtimeLLMStreamBridgeRequest) error {
-	inboundProtocol := req.InboundProtocol
-	decoder, encoder, err := llms.RuntimeStreamBridge(req.InboundProtocol, req.UpstreamProtocol, req.Model)
-	if err != nil {
-		return err
-	}
-	llms.CopyRuntimeResponseHeaders(c.Response().Header(), resp.Header)
-	c.Response().Header().Set("Content-Type", "text/event-stream")
-	c.Response().Header().Del("Content-Length")
-	c.Response().Header().Del("Content-Encoding")
-	c.Response().WriteHeader(resp.StatusCode)
-	flusher, _ := c.Response().Writer.(http.Flusher)
-	writeEvents := func(events []protocolbridge.RawStreamEvent) error {
-		for _, event := range events {
-			if err := llms.WriteRawSSEEvent(c.Response().Writer, event); err != nil {
-				return err
-			}
-			if flusher != nil {
-				flusher.Flush()
-			}
-		}
-		return nil
-	}
-	textOpen := false
-	encodePart := func(part protocolbridge.StreamPart) error {
-		if inboundProtocol == protocolbridge.ProtocolOpenAIResponses {
-			switch part.Type {
-			case protocolbridge.StreamTextStart:
-				textOpen = true
-			case protocolbridge.StreamTextDelta:
-				textOpen = true
-			case protocolbridge.StreamTextEnd:
-				if !textOpen {
-					return nil
-				}
-				textOpen = false
-			case protocolbridge.StreamFinish:
-				if textOpen {
-					events, encodeErr := encoder.Encode(protocolbridge.StreamPart{Type: protocolbridge.StreamTextEnd})
-					if encodeErr != nil {
-						return encodeErr
-					}
-					if err := writeEvents(events); err != nil {
-						return err
-					}
-					textOpen = false
-				}
-			}
-		}
-		events, encodeErr := encoder.Encode(part)
-		if encodeErr != nil {
-			return encodeErr
-		}
-		return writeEvents(events)
-	}
-	err = llms.ReadRawSSEEvents(resp.Body, func(event protocolbridge.RawStreamEvent) error {
-		parts, decodeErr := decoder.Decode(event)
-		if decodeErr != nil {
-			return decodeErr
-		}
-		for _, part := range parts {
-			if err := encodePart(part); err != nil {
-				return err
-			}
-		}
-		return nil
-	})
-	if err != nil {
-		_ = writeEvents(encoder.EncodeError(err))
-		return nil
-	}
-	parts, err := decoder.Close()
-	if err != nil {
-		_ = writeEvents(encoder.EncodeError(err))
-		return nil
-	}
-	for _, part := range parts {
-		if err := encodePart(part); err != nil {
-			_ = writeEvents(encoder.EncodeError(err))
-			return err
-		}
-	}
-	events, err := encoder.Close()
-	if err != nil {
-		_ = writeEvents(encoder.EncodeError(err))
-		return nil
-	}
-	return writeEvents(events)
 }
