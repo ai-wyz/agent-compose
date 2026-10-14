@@ -764,6 +764,17 @@ func TestRuntimeLLMFacadeTransparentGenericResponsesTextParts(t *testing.T) {
 			contains: []string{"resp-1", `"output_text"`, "buffered-hello"},
 		},
 		{
+			// A reply in another shape would decode to an empty response; it
+			// is refused by name rather than relayed as a 200 with no content.
+			name: "non stream reply that is not a Responses object",
+			client: &fakeRuntimeLLMHTTPClient{
+				status: http.StatusOK,
+				body:   `{"id":"chatcmpl-1","object":"chat.completion","created":0,"model":"gpt","choices":[{"index":0,"message":{"role":"assistant","content":"hello"},"finish_reason":"stop"}]}`,
+			},
+			want:     http.StatusBadGateway,
+			contains: []string{"upstream llm reply is not a Responses object"},
+		},
+		{
 			name: "stream",
 			client: &fakeRuntimeLLMHTTPClient{
 				status: http.StatusOK,
