@@ -14,15 +14,37 @@ requirements in this document.
 
 ## 1. Compatibility Model
 
-There is currently no guest ABI version label and no startup handshake that
-proves that an arbitrary guest image matches a daemon release. The daemon
-selects an image, mounts sandbox state, starts the image through a runtime
-driver, and invokes commands by path and protocol convention.
+A guest image now declares the contract it was built for. Two artifacts carry
+that declaration:
+
+- the OCI label `io.agent-compose.guest-abi`, readable from the image metadata
+  without starting it; and
+- the manifest at `/etc/agent-compose/guest-abi.json`, carried in the image
+  filesystem and readable from inside a running sandbox.
+
+Both carry the same number, the **guest ABI**. This daemon release speaks one
+guest ABI value (`CurrentGuestAbi` in `pkg/guestabi`). A guest image that
+declares a different value is not a match for this daemon release.
+
+The guest ABI is deliberately independent of provider versions. Bumping Codex,
+Claude, OpenCode, Pi, or DSH changes what the image contains, not the contract
+between the daemon and the guest, so `guestAbi` stays the same and a rebuilt
+provider-only image can run under a daemon that is already deployed. Raising
+`guestAbi` means the daemon/guest contract itself changed, which is a daemon
+release rather than a guest rebuild.
+
+The daemon still selects an image, mounts sandbox state, starts the image
+through a runtime driver, and invokes commands by path and protocol convention.
+The declaration changes what the daemon can know before that happens, not how it
+starts a sandbox.
 
 Consequently:
 
 - A custom image **MUST** be tested with every `agent-compose` release and
-  runtime driver used in production.
+  runtime driver used in production. A declaration is not a proof of contents:
+  there is no startup handshake that inspects an arbitrary image, and the daemon
+  does not refuse an image whose declaration is missing, unreadable, or for a
+  different ABI. It falls back to its own compiled provider declaration instead.
 - An image containing `agent-compose-runtime` **SHOULD** build that runtime from
   the same Git tag or commit as the daemon. The runtime CLI and its stdout
   protocols are an internal release boundary and are not guaranteed to remain
@@ -36,6 +58,93 @@ This contract covers the image filesystem and process environment. KVM access,
 Docker reachability, image pulling, daemon privileges, network policy, model
 credentials, and external service health are deployment concerns, not guest
 image ABI properties.
+
+### 1.1 The Guest ABI Artifact
+
+`guest-images/providers.lock.json` is the single authoring point for what a
+repository guest image contains. It records `guestAbi`, `nodeMajor`, and a
+`packages` map; each entry names the npm package, the pinned version, the Docker
+build arg that carries it, and optionally its executable, feature list,
+companion package, or Node.js requirement. `scripts/provider-lock.sh` derives
+everything else from that lock:
+
+- `pairs` prints the `BUILDARG=version` lines;
+- `guest-abi` renders the manifest, `sync` writes it to
+  `guest-images/guest-abi.json`, and `guest-abi-version` prints the ABI number;
+- `check` fails when the lock, either guest Dockerfile's `ARG` defaults, the
+  build script's forwarding, or the generated manifest disagree; and
+- `bump K=V [K=V ...]` rewrites one provider version in the lock, both
+  Dockerfiles, and the manifest. It does not validate the new version.
+
+`guest-images/guest-abi.json` is generated from the lock and committed. Only
+packages that expose an agent executable appear under `providers`; a companion
+package such as `pi-mcp-adapter` is a build input, so it is deliberately absent.
+The daemon requires the manifest to describe every provider it knows (`codex`,
+`claude`, `opencode`, `pi`, `dsh`); a manifest that omits one is rejected in
+favor of the compiled declaration (`DeclaredProvidersFromManifest` in
+`pkg/capmatrix/provider_matrix.go`):
+
+```json
+{
+  "guestAbi": 1,
+  "providers": {
+    "codex": {
+      "version": "x.y.z",
+      "features": ["structured_output", "session_resume", "streaming"]
+    }
+  }
+}
+```
+
+Both guest Dockerfiles bake that manifest and publish the ABI:
+
+```dockerfile
+ARG GUEST_ABI=1
+LABEL io.agent-compose.guest-abi="${GUEST_ABI}"
+COPY guest-images/guest-abi.json /etc/agent-compose/guest-abi.json
+```
+
+`GUEST_ABI` defaults to `1` in the Dockerfile and is overridden to the lock's
+value by `scripts/build-agent-compose-guest.sh`. The manifest therefore travels
+with the filesystem, and the label lets a registry or an operator see the
+contract version without starting the image.
+
+On the daemon side, `pkg/guestabi` owns the contract (`CurrentGuestAbi`,
+`Parse`, `LoadFile`, `Validate`, `VerifyCompatible`, `ErrUnsupportedGuestAbi`).
+The optional `GUEST_ABI_MANIFEST` environment variable names a manifest file for
+the daemon. When it is set and valid, the provider capability matrix reported by
+`EngineService.GetCapabilities` is built from that manifest instead of the
+daemon's compiled declaration. When it is unset, unreadable, malformed, or
+declares a different ABI, the daemon logs a warning and falls back to its
+compiled declaration; it does not reject the image. Reading that file is the
+only guest-related I/O in that path, so building the snapshot still performs no
+Docker, KVM, or Kubernetes contact.
+
+### 1.2 Reading the Guest ABI from a Running Sandbox
+
+The runtime built from this repository can describe its own image:
+
+```bash
+agent-compose-runtime abi
+agent-compose-runtime abi --json
+agent-compose-runtime abi --manifest /etc/agent-compose/guest-abi.json
+```
+
+`abi` reads `/etc/agent-compose/guest-abi.json` by default; `--manifest`
+overrides the path and `--json` prints one line of JSON. The report contains:
+
+| Field | Meaning |
+| --- | --- |
+| `guestAbi` | The contract version the image declares; `0` when no usable manifest was found |
+| `providers` | Provider name to `{version, features}` for every provider the image declares |
+| `manifestPath` | The manifest path that was read |
+| `runtimeVersion` | The version of the installed `agent-compose-runtime` package |
+
+A missing, unreadable, malformed, or wrongly shaped manifest is reported as
+`guestAbi: 0` with an empty `providers` map, and the command still exits `0`.
+`0` is the documented "unknown or legacy guest" value: it means the image does
+not describe itself, not that the image is broken. Only a broken runtime
+installation (an unreadable runtime package manifest) makes the command fail.
 
 ## 2. Contract Layers
 
@@ -75,9 +184,12 @@ executes bootstrap operations that replace selected paths. There is no public
 
 Docker and BoxLite replace the image entrypoint and command when starting a
 sandbox. Microsandbox also performs explicit post-start bootstrap. `CMD`,
-`ENTRYPOINT`, `EXPOSE`, health checks, and image labels are therefore not ABI
-requirements. They may still be useful when running the image by hand, but
-required initialization **MUST** be baked into the image filesystem.
+`ENTRYPOINT`, `EXPOSE`, and health checks are therefore not ABI requirements.
+They may still be useful when running the image by hand, but required
+initialization **MUST** be baked into the image filesystem. The one label that
+carries contract meaning is `io.agent-compose.guest-abi` (Section 1.1); the
+daemon reads the baked `/etc/agent-compose/guest-abi.json` manifest, not the
+label.
 
 ### 3.2 Commands required by the control plane
 
@@ -142,6 +254,7 @@ With default daemon configuration, the guest-visible contract is:
 | `/data/state` | Prompts, schemas, cells, provider session state, artifacts | Persisted per sandbox |
 | `/data/runtime` | Runtime resources, cache, MPI, and extensions | Persisted per sandbox |
 | `/data/logs` | Jupyter and runtime logs | Persisted per sandbox |
+| `/etc/agent-compose/guest-abi.json` | Guest ABI manifest baked into the published image | Image-owned; not persisted; absent from images built without it |
 | `/root` | Image-provided real home directory | The directory itself is image-owned |
 | `/root/.codex` | Codex config and state | Persisted |
 | `/root/.agents` | Projected agent skills | Persisted/projected |
@@ -468,7 +581,16 @@ The remaining build controls are:
 | `NO_CACHE=1` | Passes Docker's `--no-cache` flag |
 | `GO_VERSION`, `GRPCURL_VERSION`, `NODE_MAJOR` | Default guest toolchain inputs; `NODE_MAJOR` applies only to the Debian guest |
 | `ARCHLINUX_TAG` | Arch Linux guest base-image tag |
-| `CODEX_VERSION`, `CLAUDE_CODE_VERSION`, `OPENCODE_VERSION`, `PI_AGENT_VERSION`, `PI_MCP_ADAPTER_VERSION`, `DSH_VERSION` | Guest provider package versions |
+| `GUEST_ABI` | Guest ABI contract version declared by the label and baked manifest; defaults to the lock's `guestAbi` |
+| `CODEX_VERSION`, `CLAUDE_CODE_VERSION`, `OPENCODE_VERSION`, `PI_AGENT_VERSION`, `PI_MCP_ADAPTER_VERSION`, `DSH_VERSION` | Guest provider package versions; each defaults to the matching pin in `guest-images/providers.lock.json` |
+
+`guest-images/providers.lock.json` is the single authoring point for provider
+versions. `scripts/build-agent-compose-guest.sh` reads the lock for every
+provider version and for `GUEST_ABI`, so leaving one of these variables unset
+still produces a pinned, reproducible build; setting it explicitly overrides the
+lock for a one-off local build. `scripts/provider-lock.sh check` fails when the
+lock, either guest Dockerfile's `ARG` defaults, the build script's forwarding,
+or the generated `guest-images/guest-abi.json` disagree.
 
 `REGISTRY_MIRROR`, `GITHUB_MIRROR`, and `ARCHLINUX_MIRROR` have no equivalent
 cross-tool standard environment variable, so they remain narrowly scoped
@@ -529,8 +651,9 @@ in image layers.
 The following example builds a Codex-only guest from the current repository
 checkout. It intentionally omits Jupyter, Python, Go, compilers, other provider
 CLIs, and the offline SDK tarball. The Docker build context **MUST** be the
-repository root, and `CODEX_VERSION` should match the value in the same
-checkout's published guest Dockerfile.
+repository root, and `CODEX_VERSION` **SHOULD** match the pin in the same
+checkout's `guest-images/providers.lock.json`, which `scripts/provider-lock.sh`
+keeps consistent with the guest Dockerfiles' `ARG` defaults.
 
 ```dockerfile
 FROM node:22-bookworm-slim
@@ -568,7 +691,7 @@ Build it from the matching checkout:
 
 ```bash
 docker build \
-  --build-arg CODEX_VERSION=<version-from-guest-Dockerfile> \
+  --build-arg CODEX_VERSION=<codex-version-from-providers.lock.json> \
   -f Dockerfile.guest \
   -t registry.example.com/team/agent-compose-guest:custom .
 ```
@@ -667,15 +790,29 @@ and should verify resume/session state if that behavior is relied upon.
 
 ## 11. Upgrade Checklist
 
-For every daemon upgrade:
+Daemon releases and guest image builds are separate tracks. `guestAbi` decides
+whether artifacts from the two tracks may be combined, and
+`scripts/provider-lock.sh check` keeps the repository's own guest build
+consistent. Only two things still couple the tracks: a deliberate increase of
+`guestAbi`, and the DSH profile in Section 11.1.
 
-1. Rebase the custom image on the matching published guest tag, or rebuild
-   `runtime/javascript` from the matching source tag.
-2. Reconcile provider CLI versions with
-   the selected guest Dockerfile.
-3. Re-run the static probe and Docker lifecycle tests.
-4. Re-run Jupyter, provider, and selected-driver acceptance tests for enabled
-   capabilities.
+For a daemon upgrade:
+
+1. Note the guest ABI the new daemon speaks (`CurrentGuestAbi` in
+   `pkg/guestabi`; `scripts/provider-lock.sh guest-abi-version` prints the value
+   this checkout builds). It changes only when the daemon/guest contract
+   changed.
+2. If it changed, rebuild and republish the custom guest image at the new value
+   (Section 11.2) and update project/deployment image references. If it did not
+   change, an existing provider-only image keeps running; the daemon upgrade
+   alone does not require rebuilding it.
+3. Whenever the daemon release changes the runtime protocol, rebase the custom
+   image on the matching published guest tag, or rebuild `runtime/javascript`
+   from the matching source tag. The runtime CLI and its stdout protocols are
+   still a release boundary (Section 1).
+4. Re-run the static probe, the Docker lifecycle test, and the Jupyter,
+   provider, and selected-driver acceptance tests for the capabilities that are
+   enabled.
 5. Publish an immutable tag or digest and update project/deployment references
    deliberately; do not silently move a production compatibility tag.
 
@@ -718,3 +855,100 @@ The implementation sources of truth are:
 - [`pkg/agentcompose/adapters/agent_runner.go`](https://github.com/chaitin/agent-compose/blob/main/pkg/agentcompose/adapters/agent_runner.go)
 - [`pkg/execution/command_runtime.go`](https://github.com/chaitin/agent-compose/blob/main/pkg/execution/command_runtime.go)
 - [`runtime/javascript`](https://github.com/chaitin/agent-compose/tree/main/runtime/javascript)
+
+### 11.2 Upgrading a Guest Image Without a Daemon Release
+
+A provider-only rebuild is safe to publish and deploy under a daemon that is
+already deployed, provided the rebuild keeps the same `guestAbi`:
+
+- The provider versions in `guest-images/providers.lock.json` change, and
+  `scripts/provider-lock.sh bump` rewrites the lock, both guest Dockerfiles, and
+  `guest-images/guest-abi.json` in one step.
+- `guestAbi` does not change, because neither the daemon/guest contract nor the
+  runtime CLI protocol changed. `scripts/tests/test-provider-lock.sh` guards
+  that property: it bumps a provider in a copy of the lock and fails if the
+  rendered `guestAbi` moves.
+- The rebuilt image still needs the guest image acceptance tests for the
+  providers it changes. The number alone does not prove that a provider CLI
+  still behaves the way the runtime adapter expects, which is why the daily
+  check only reports and never edits a pin.
+
+This holds when the only input that changed is a provider pin. The same image
+build also packages `runtime/javascript` from its checkout, and the runtime CLI
+protocol is a release boundary that `guestAbi` does not cover (Section 1). If a
+rebuild also picks up runtime source changes, keep that image matched to the
+daemon release as usual.
+
+Anything that raises `guestAbi` is not a guest-only change. Raising it means the
+daemon/guest contract changed, so a daemon release with a matching
+`CurrentGuestAbi` has to ship before an image at the new value can be adopted.
+There is no broader version matrix: a manifest is compatible when its `guestAbi`
+equals the daemon's `CurrentGuestAbi`, and that single comparison is the whole
+rule (`VerifyCompatible` in `pkg/guestabi/compat.go`).
+
+[`.github/workflows/guest-image-release.yml`](https://github.com/chaitin/agent-compose/blob/main/.github/workflows/guest-image-release.yml)
+is the independent release path. On manual `workflow_dispatch` it verifies the
+lock, builds a loadable `linux/amd64` image, runs
+`scripts/verify-guest-image-abi.sh`, probes the baseline guest ABI, prints the
+in-image `agent-compose-runtime abi --json` report, and only then optionally
+publishes a multi-architecture image. Its tags are:
+
+- an immutable `guest-abi<N>-<YYYYMMDD>-<shortsha>`, plus an `-archlinux` suffix
+  for the optional Arch Linux variant; and
+- a moving `guest-abi<N>` alias, but only when `promote_alias` is set.
+
+It deliberately never moves `latest`: deployments default to
+`chaitin/agent-compose-guest:latest` through `DEFAULT_IMAGE`, and silently
+repointing that tag would swap the guest under every existing installation.
+
+Verify a published image against the checkout that built it before selecting it:
+
+```bash
+scripts/verify-guest-image-abi.sh \
+  registry.example.com/team/agent-compose-guest:guest-abi1-20260101-abc1234
+```
+
+The script compares the image's `io.agent-compose.guest-abi` label, its baked
+manifest, and every agent provider version against
+`guest-images/providers.lock.json`, prints the providers it found, and exits
+non-zero on any disagreement. Run it against a digest or an immutable tag, not
+against a moving alias, and use the checkout that built the image because the
+provider versions are compared against that checkout's lock.
+
+### 11.3 Daily Upstream Provider Check
+
+[`.github/workflows/provider-upstream-check.yml`](https://github.com/chaitin/agent-compose/blob/main/.github/workflows/provider-upstream-check.yml)
+runs `scripts/check-provider-upstreams.sh` daily at `17 1 * * *` UTC and on
+manual `workflow_dispatch`. It compares every package pinned in
+`guest-images/providers.lock.json` with the version npm currently publishes and
+reports where a team already looks:
+
+- one tracking issue is created or updated, labeled `provider-upgrade` with the
+  title `chore(deps): upstream provider releases pending`; when every pin is
+  current, that issue is closed instead;
+- the same report is written to the job summary; and
+- when the `DINGTALK_TARGETS_JSON` secret is configured, the report is pushed to
+  DingTalk through `scripts/notify-dingtalk.sh`. An unset secret is a skip
+  rather than a failure.
+
+The workflow never edits a pin on its own. A `workflow_dispatch` input `bump`
+additionally opens a draft pull request that applies `provider-lock.sh bump` to
+the outdated pins and then runs `scripts/provider-lock.sh check`. The draft is
+deliberate: the bump is mechanical, while deciding whether a provider release is
+safe is not. Two optional repository variables refine the report:
+`PROVIDER_UPGRADE_MENTIONS` is appended to the issue body for @-mentions, and
+`NPM_CONFIG_REGISTRY` is used for the npm queries.
+
+GitHub's scheduler is best-effort, so treat the tracking issue and the job
+summary as the durable record and a DingTalk push as a convenience:
+
+- a `cron` entry can be delayed, and scheduled workflows run only on the default
+  branch;
+- scheduled workflows are disabled after 60 days of repository inactivity; and
+- scheduled workflows do not run in forks.
+
+Run the same scan on demand with:
+
+```bash
+scripts/check-provider-upstreams.sh
+```

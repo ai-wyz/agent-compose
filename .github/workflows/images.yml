@@ -25,10 +25,12 @@ on:
       - scripts/build-agent-compose-binary.sh
       - scripts/build-agent-compose.sh
       - scripts/build-agent-compose-guest.sh
+      - scripts/provider-lock.sh
       - scripts/with-go-toolchain.sh
       - scripts/build-installer-assets.sh
       - scripts/test-image-docker-e2e.sh
       - scripts/tests/test-image-ci-contract.sh
+      - scripts/tests/test-provider-lock.sh
       - scripts/verify-agent-compose-image.sh
       - scripts/verify-image-manifest.sh
       # Test-only and documentation changes do not alter the published images.
@@ -74,6 +76,11 @@ jobs:
       - uses: actions/checkout@v4
       - name: Validate image CI contract
         run: ./scripts/tests/test-image-ci-contract.sh
+      # The provider lock decides which versions a guest image bakes, so a guest
+      # build must not start when the lock, the Dockerfiles, the build script, or
+      # the generated ABI manifest disagree.
+      - name: Validate the provider lock
+        run: ./scripts/tests/test-provider-lock.sh
       - id: platforms
         env:
           EVENT_NAME: ${{ github.event_name }}

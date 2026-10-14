@@ -31,13 +31,21 @@ type Snapshot struct {
 // The host probe runs here, once, at composition time. Every query path reads
 // the frozen result, so a GetCapabilities call never triggers a live probe.
 func BuildSnapshot(driverFacts []driver.RuntimeCapabilityFacts, capturedAt time.Time) (Snapshot, error) {
-	drivers := make([]DriverCapabilities, 0, len(driverFacts))
-	for _, facts := range driverFacts {
-		drivers = append(drivers, driverCapabilitiesFromFacts(facts))
-	}
 	providers, err := DeclaredProviders()
 	if err != nil {
 		return Snapshot{}, err
+	}
+	return BuildSnapshotWithProviders(driverFacts, providers, capturedAt)
+}
+
+// BuildSnapshotWithProviders freezes a matrix whose provider facts are supplied
+// by the caller, for example from a guest ABI manifest. Driver facts are modeled
+// and the host is probed exactly as in BuildSnapshot, so a caller-supplied
+// provider matrix cannot change what the snapshot measures.
+func BuildSnapshotWithProviders(driverFacts []driver.RuntimeCapabilityFacts, providers []ProviderCapabilities, capturedAt time.Time) (Snapshot, error) {
+	drivers := make([]DriverCapabilities, 0, len(driverFacts))
+	for _, facts := range driverFacts {
+		drivers = append(drivers, driverCapabilitiesFromFacts(facts))
 	}
 	observations, err := ProbeSystemCapabilities()
 	if err != nil {

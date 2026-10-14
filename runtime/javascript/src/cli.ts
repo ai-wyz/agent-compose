@@ -7,6 +7,7 @@ import { pathToFileURL } from "node:url";
 import { runExecCommand } from "./command.js";
 import { COMMAND_RESULT_PREFIX, RESULT_PREFIX, WORKFLOW_RESULT_PREFIX } from "./constants.js";
 import { formatError } from "./errors.js";
+import { GUEST_ABI_MANIFEST_PATH, readGuestAbiReport, type GuestAbiReport } from "./guest-abi.js";
 import { runPromptCommand } from "./prompt.js";
 import { runStreamCommand } from "./stream.js";
 import { RuntimeShutdownController } from "./shutdown.js";
@@ -112,6 +113,20 @@ export function createProgram(options: { exitOverride?: boolean } = {}): Command
     });
 
   program
+    .command("abi")
+    .description("describe the guest ABI capabilities baked into this image")
+    .option("--json", "print the report as a single line of JSON")
+    .option("--manifest <path>", "guest ABI manifest path", GUEST_ABI_MANIFEST_PATH)
+    .action(async (options: { json?: boolean; manifest: string }) => {
+      const report = await readGuestAbiReport({ manifestPath: options.manifest });
+      if (options.json) {
+        process.stdout.write(`${JSON.stringify(report)}\n`);
+        return;
+      }
+      process.stdout.write(formatGuestAbiSummary(report));
+    });
+
+  program
     .command("stream")
     .description("run the runtime NDJSON stream protocol on stdin/stdout")
     .action(async () => {
@@ -132,6 +147,24 @@ function parseNumberOption(value: string): number {
     throw new Error(`expected a finite number, received: ${value}`);
   }
   return parsed;
+}
+
+function formatGuestAbiSummary(report: GuestAbiReport): string {
+  const lines = [
+    `guest ABI: ${report.guestAbi}`,
+    `manifest: ${report.manifestPath}`,
+    `runtime version: ${report.runtimeVersion}`,
+  ];
+  const providers = Object.entries(report.providers).sort(([left], [right]) => left.localeCompare(right));
+  if (providers.length === 0) {
+    lines.push("providers: none");
+  } else {
+    lines.push("providers:");
+    for (const [name, provider] of providers) {
+      lines.push(`  ${name} ${provider.version} (${provider.features.length} features)`);
+    }
+  }
+  return `${lines.join("\n")}\n`;
 }
 
 export async function main(argv = process.argv): Promise<void> {

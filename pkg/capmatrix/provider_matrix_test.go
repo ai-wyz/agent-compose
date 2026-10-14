@@ -1,12 +1,14 @@
 package capmatrix
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
 
+	"github.com/chaitin/agent-compose/pkg/guestabi"
 	"github.com/chaitin/agent-compose/pkg/llms"
 )
 
@@ -95,4 +97,166 @@ func TestDeclaredProvidersRejectsMissingFeature(t *testing.T) {
 	if err := declaration.Validate(); err == nil {
 		t.Fatal("Validate() error = nil, want a missing-feature error")
 	}
+}
+
+// manifestWithRequiredProviders builds a manifest covering every required
+// provider so a case can vary one provider without repeating the whole set.
+func manifestWithRequiredProviders() guestabi.Manifest {
+	return guestabi.Manifest{
+		GuestAbi: guestabi.CurrentGuestAbi,
+		Providers: map[string]guestabi.Provider{
+			"codex":    {Version: "0.146.0", Features: []string{"structured_output", "session_resume", "streaming"}},
+			"claude":   {Version: "2.1.220", Features: []string{"structured_output", "session_resume", "streaming", "skill_injection"}},
+			"opencode": {Version: "1.18.9", Features: []string{"session_resume", "streaming", "skill_injection"}},
+			"pi":       {Version: "0.82.1", Features: []string{"session_resume", "streaming", "skill_injection"}},
+			"dsh":      {Version: "0.2.0-rc.1", Features: []string{"session_resume", "streaming", "skill_injection"}},
+		},
+	}
+}
+
+// TestDeclaredProvidersFromManifest asserts the manifest is mapped into the
+// canonical provider order and that only feature names this daemon understands
+// become supported.
+func TestDeclaredProvidersFromManifest(t *testing.T) {
+	manifest := manifestWithRequiredProviders()
+	// pi advertises one feature this daemon understands plus one it does not;
+	// dsh advertises none it understands.
+	manifest.Providers["pi"] = guestabi.Provider{Version: "0.82.1", Features: []string{"session_resume", "telepathy"}}
+	manifest.Providers["dsh"] = guestabi.Provider{Version: "0.2.0-rc.1"}
+
+	providers, err := DeclaredProvidersFromManifest(manifest)
+	if err != nil {
+		t.Fatalf("DeclaredProvidersFromManifest() error = %v", err)
+	}
+	gotOrder := make([]string, 0, len(providers))
+	byName := make(map[string]ProviderCapabilities, len(providers))
+	for _, provider := range providers {
+		gotOrder = append(gotOrder, provider.Provider)
+		byName[provider.Provider] = provider
+	}
+	if want := []string{"codex", "claude", "opencode", "pi", "dsh"}; !reflect.DeepEqual(gotOrder, want) {
+		t.Fatalf("provider order = %v, want the canonical order %v", gotOrder, want)
+	}
+
+	for provider, want := range map[string]map[ExecutionFeature]bool{
+		"codex":    {FeatureStructuredOutput: true, FeatureSkillInjection: false},
+		"claude":   {FeatureStructuredOutput: true, FeatureSkillInjection: true},
+		"opencode": {FeatureStructuredOutput: false, FeatureSkillInjection: true},
+		"pi":       {FeatureSessionResume: true, FeatureSkillInjection: false},
+	} {
+		for feature, wantSupported := range want {
+			if got := byName[provider].Feature(feature); got != wantSupported {
+				t.Errorf("provider %q feature %q = %v, want %v", provider, feature, got, wantSupported)
+			}
+		}
+	}
+	for _, feature := range RequiredExecutionFeatures() {
+		if byName["dsh"].Feature(feature) {
+			t.Errorf("provider %q with no understood feature reports %q = true, want false", "dsh", feature)
+		}
+	}
+}
+
+// TestDeclaredProvidersFromManifestProtocolOrderMatchesDialect pins a
+// manifest-derived matrix to the same protocol order the runtime resolution path
+// uses, so the two sources cannot drift.
+func TestDeclaredProvidersFromManifestProtocolOrderMatchesDialect(t *testing.T) {
+	providers, err := DeclaredProvidersFromManifest(manifestWithRequiredProviders())
+	if err != nil {
+		t.Fatalf("DeclaredProvidersFromManifest() error = %v", err)
+	}
+	for _, provider := range providers {
+		dialect, err := llms.DialectFor(provider.Provider)
+		if err != nil {
+			t.Fatalf("DialectFor(%q) error = %v", provider.Provider, err)
+		}
+		want := make([]string, 0, len(dialect.Supported))
+		for _, protocol := range dialect.PreferredProtocols() {
+			want = append(want, string(protocol))
+		}
+		if !reflect.DeepEqual(provider.PreferredProtocols, want) {
+			t.Errorf("provider %q PreferredProtocols = %v, want the dialect order %v", provider.Provider, provider.PreferredProtocols, want)
+		}
+	}
+}
+
+func TestDeclaredProvidersFromManifestRejectsMissingProvider(t *testing.T) {
+	manifest := manifestWithRequiredProviders()
+	delete(manifest.Providers, "pi")
+
+	providers, err := DeclaredProvidersFromManifest(manifest)
+	if err == nil {
+		t.Fatal("DeclaredProvidersFromManifest() error = nil, want a missing-provider error")
+	}
+	if !errors.Is(err, ErrInvalidCapability) {
+		t.Fatalf("error = %v, want ErrInvalidCapability", err)
+	}
+	if providers != nil {
+		t.Fatalf("providers = %v, want no partial list", providers)
+	}
+}
+
+func TestDeclaredProvidersFromManifestRejectsInvalidManifest(t *testing.T) {
+	manifest := manifestWithRequiredProviders()
+	manifest.GuestAbi = 0
+
+	providers, err := DeclaredProvidersFromManifest(manifest)
+	if err == nil {
+		t.Fatal("DeclaredProvidersFromManifest() error = nil, want a validation error")
+	}
+	if providers != nil {
+		t.Fatalf("providers = %v, want no partial list", providers)
+	}
+}
+
+// TestCommittedGuestABIManifestMatchesDeclaredFeatures is the drift guard for
+// the committed manifest: it must declare this release's ABI and exactly the
+// feature set declaredExecutionFeatures reports. The runner-source test above
+// pins that declaration to the actual guest runners, so together they stop
+// guest-images/guest-abi.json from lying about this release's runners.
+func TestCommittedGuestABIManifestMatchesDeclaredFeatures(t *testing.T) {
+	manifest := committedGuestABIManifest(t)
+	if manifest.GuestAbi != guestabi.CurrentGuestAbi {
+		t.Fatalf("guest-images/guest-abi.json declares guestAbi %d, this daemon speaks %d", manifest.GuestAbi, guestabi.CurrentGuestAbi)
+	}
+	knownFeatures := make(map[ExecutionFeature]bool, len(canonicalFeatures))
+	for _, feature := range canonicalFeatures {
+		knownFeatures[feature] = true
+	}
+	for _, provider := range canonicalProviderOrder {
+		declared, ok := manifest.Providers[provider]
+		if !ok {
+			t.Errorf("guest-images/guest-abi.json omits required provider %q", provider)
+			continue
+		}
+		want := declaredExecutionFeatures(provider)
+		if want == nil {
+			t.Errorf("provider %q has no declared execution features", provider)
+			continue
+		}
+		got := make(map[ExecutionFeature]bool, len(declared.Features))
+		for _, name := range declared.Features {
+			feature := ExecutionFeature(name)
+			if !knownFeatures[feature] {
+				t.Errorf("guest-images/guest-abi.json provider %q declares unknown feature %q", provider, name)
+			}
+			got[feature] = true
+		}
+		for _, feature := range canonicalFeatures {
+			if got[feature] != want[feature] {
+				t.Errorf("guest-images/guest-abi.json provider %q feature %q = %v, but declaredExecutionFeatures(%q) = %v; update the manifest or the declaration",
+					provider, feature, got[feature], provider, want[feature])
+			}
+		}
+	}
+}
+
+func committedGuestABIManifest(t *testing.T) guestabi.Manifest {
+	t.Helper()
+	path := filepath.Join("..", "..", "guest-images", "guest-abi.json")
+	manifest, err := guestabi.LoadFile(path)
+	if err != nil {
+		t.Fatalf("load committed guest ABI manifest %s: %v", path, err)
+	}
+	return manifest
 }

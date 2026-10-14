@@ -1,0 +1,207 @@
+name: Guest image release
+
+# Publish a guest image without cutting a daemon release.
+#
+# The daemon release pipeline (Images & Release) still owns the `latest` and
+# `vX.Y.Z` tags. This workflow deliberately never moves `latest`: deployments
+# default to `chaitin/agent-compose-guest:latest` via DEFAULT_IMAGE, so silently
+# repointing it would swap the guest under every existing installation.
+#
+# The guest ABI is what makes this safe. A provider-only rebuild keeps the same
+# guestAbi, so the published tag stays compatible with daemons already deployed.
+# The tag carries the ABI so an operator can see that before pulling.
+on:
+  workflow_dispatch:
+    inputs:
+      push:
+        description: Publish the image to Docker Hub
+        required: false
+        type: boolean
+        default: false
+      promote_alias:
+        description: Also move the moving guest-abiN alias tag
+        required: false
+        type: boolean
+        default: false
+      arch_variant:
+        description: Also publish the optional Arch Linux variant (linux/amd64 only)
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: guest-image-release
+  cancel-in-progress: false
+
+env:
+  REGISTRY: docker.io
+  IMAGE: chaitin/agent-compose-guest
+
+jobs:
+  verify:
+    name: Verify the guest image contract
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+      alias: ${{ steps.tag.outputs.alias }}
+      guest_abi: ${{ steps.tag.outputs.guest_abi }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # Fails when the lock, either Dockerfile's ARG defaults, the build script,
+      # or the generated ABI manifest disagree. The publish steps below rely on
+      # the Dockerfile defaults, so this check is what makes that safe.
+      - name: Check the provider lock
+        run: ./scripts/provider-lock.sh check
+
+      - name: Resolve the release tag
+        id: tag
+        run: |
+          set -euo pipefail
+          guest_abi=$(./scripts/provider-lock.sh guest-abi-version)
+          # A tag an operator can read: which contract, which build. Immutable by
+          # construction, and never confused with a daemon release tag.
+          tag="guest-abi${guest_abi}-$(date -u +%Y%m%d)-$(git rev-parse --short=7 HEAD)"
+          echo "guest_abi=$guest_abi" >>"$GITHUB_OUTPUT"
+          echo "tag=$tag" >>"$GITHUB_OUTPUT"
+          echo "alias=guest-abi${guest_abi}" >>"$GITHUB_OUTPUT"
+          {
+            echo "### Guest image release"
+            echo
+            echo "| | |"
+            echo "| --- | --- |"
+            echo "| Guest ABI | \`${guest_abi}\` |"
+            echo "| Tag | \`${tag}\` |"
+            echo "| Moving alias | \`guest-abi${guest_abi}\` (only when promote_alias) |"
+            echo "| Push | \`${{ inputs.push }}\` |"
+          } >>"$GITHUB_STEP_SUMMARY"
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build a loadable linux/amd64 image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: guest-images/Dockerfile.agent-compose-guest
+          platforms: linux/amd64
+          load: true
+          tags: agent-compose-guest:abi-verify
+          cache-from: type=gha,scope=guest-image-release-amd64
+          cache-to: type=gha,mode=max,scope=guest-image-release-amd64
+
+      # The ABI is only reliable if something checks the image really declares
+      # it: label, baked manifest, and provider versions all against the lock.
+      - name: Verify the baked guest ABI
+        run: ./scripts/verify-guest-image-abi.sh agent-compose-guest:abi-verify
+
+      # Section 10.1 of docs/pages/guest-image-abi.md, condensed to the parts
+      # this workflow can prove without a model provider or a KVM host.
+      - name: Probe the baseline guest ABI
+        run: |
+          set -euo pipefail
+          docker run --rm --entrypoint sh agent-compose-guest:abi-verify -lc '
+            set -eu
+            test "$(id -u)" = 0
+            test "${HOME}" = /root
+            test -d /root
+            for command in sh mkdir test rm ln readlink mountpoint tail sleep; do
+              command -v "$command" >/dev/null
+            done
+            for path in /workspace /data/state /data/runtime /data/logs; do
+              test -d "$path"
+            done
+            command -v node >/dev/null
+            command -v agent-compose-runtime >/dev/null
+            agent-compose-runtime --help >/dev/null
+            for provider in codex claude opencode pi dsh; do
+              command -v "$provider" >/dev/null
+            done
+          '
+
+      - name: Report the ABI the runtime reports from inside the image
+        run: |
+          set -euo pipefail
+          docker run --rm --entrypoint sh agent-compose-guest:abi-verify -lc \
+            'agent-compose-runtime abi --json' | tee "$RUNNER_TEMP/runtime-abi.json"
+          {
+            echo
+            echo 'Runtime self-report:'
+            echo
+            echo '```json'
+            cat "$RUNNER_TEMP/runtime-abi.json"
+            echo '```'
+          } >>"$GITHUB_STEP_SUMMARY"
+
+  publish:
+    name: Publish the guest image
+    needs: verify
+    if: inputs.push
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # The immutable tag always publishes. The moving guest-abiN alias is only
+      # added when promote_alias is set, so an ordinary provider rebuild cannot
+      # move a tag someone else already pinned.
+      - name: Resolve the tags to publish
+        id: tags
+        env:
+          TAG: ${{ needs.verify.outputs.tag }}
+          ALIAS: ${{ needs.verify.outputs.alias }}
+          PROMOTE: ${{ inputs.promote_alias }}
+        run: |
+          set -euo pipefail
+          stable="${IMAGE}:${TAG}"
+          alias_tag="${IMAGE}:${ALIAS}"
+          {
+            echo 'debian<<TAGS'
+            echo "$stable"
+            if [[ $PROMOTE == 'true' ]]; then echo "$alias_tag"; fi
+            echo 'TAGS'
+          } >>"$GITHUB_OUTPUT"
+          {
+            echo 'archlinux<<TAGS'
+            echo "${stable}-archlinux"
+            if [[ $PROMOTE == 'true' ]]; then echo "${alias_tag}-archlinux"; fi
+            echo 'TAGS'
+          } >>"$GITHUB_OUTPUT"
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ secrets.DOCKERIO_USERNAME }}
+          password: ${{ secrets.DOCKERIO_PASSWORD }}
+
+      - name: Publish the Debian guest
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: guest-images/Dockerfile.agent-compose-guest
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.tags.outputs.debian }}
+          build-args: |
+            GUEST_ABI=${{ needs.verify.outputs.guest_abi }}
+          cache-from: type=gha,scope=guest-image-release-amd64
+          cache-to: type=gha,mode=max,scope=guest-image-release-amd64
+
+      - name: Publish the Arch Linux guest
+        if: inputs.arch_variant
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: guest-images/Dockerfile.agent-compose-guest-archlinux
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.tags.outputs.archlinux }}
+          build-args: |
+            GUEST_ABI=${{ needs.verify.outputs.guest_abi }}
+          cache-from: type=gha,scope=guest-image-release-archlinux
+          cache-to: type=gha,mode=max,scope=guest-image-release-archlinux

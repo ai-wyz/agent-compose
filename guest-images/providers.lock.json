@@ -1,0 +1,73 @@
+{
+  "guestAbi": 1,
+  "nodeMajor": 22,
+  "packages": {
+    "codex": {
+      "npm": "@openai/codex",
+      "version": "0.146.0",
+      "buildArg": "CODEX_VERSION",
+      "bin": "codex",
+      "features": [
+        "structured_output",
+        "session_resume",
+        "streaming"
+      ]
+    },
+    "claude": {
+      "npm": "@anthropic-ai/claude-code",
+      "version": "2.1.220",
+      "buildArg": "CLAUDE_CODE_VERSION",
+      "bin": "claude",
+      "features": [
+        "structured_output",
+        "session_resume",
+        "streaming",
+        "skill_injection"
+      ],
+      "platformNpm": {
+        "amd64": "@anthropic-ai/claude-code-linux-x64",
+        "arm64": "@anthropic-ai/claude-code-linux-arm64"
+      }
+    },
+    "opencode": {
+      "npm": "opencode-ai",
+      "version": "1.18.9",
+      "buildArg": "OPENCODE_VERSION",
+      "bin": "opencode",
+      "features": [
+        "session_resume",
+        "streaming",
+        "skill_injection"
+      ]
+    },
+    "pi": {
+      "npm": "@earendil-works/pi-coding-agent",
+      "version": "0.82.1",
+      "buildArg": "PI_AGENT_VERSION",
+      "bin": "pi",
+      "features": [
+        "session_resume",
+        "streaming",
+        "skill_injection"
+      ]
+    },
+    "pi-mcp-adapter": {
+      "npm": "pi-mcp-adapter",
+      "version": "2.11.0",
+      "buildArg": "PI_MCP_ADAPTER_VERSION",
+      "companionOf": "pi"
+    },
+    "dsh": {
+      "npm": "@deepseek-ai/dsh",
+      "version": "0.2.0-rc.1",
+      "buildArg": "DSH_VERSION",
+      "bin": "dsh",
+      "requiresNode": "^22.19.0 || >=24.0.0",
+      "features": [
+        "session_resume",
+        "streaming",
+        "skill_injection"
+      ]
+    }
+  }
+}

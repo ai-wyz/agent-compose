@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/chaitin/agent-compose/pkg/guestabi"
 	"github.com/chaitin/agent-compose/pkg/llms"
 )
 
@@ -132,35 +133,79 @@ func declaredExecutionFeatures(provider string) map[ExecutionFeature]bool {
 	}
 }
 
+// canonicalProviderOrder is the order the capability contract exposes guest
+// providers in. The static matrix and a manifest-derived matrix both use it, so
+// the two cannot present providers in different orders.
+var canonicalProviderOrder = [...]string{"codex", "claude", "opencode", "pi", "dsh"}
+
 // DeclaredProviders returns the provider capability matrix for every guest
 // provider the engine supports. Protocol preference order is read from
 // pkg/llms Dialect.PreferredProtocols so the RPC and the runtime resolution
 // path cannot disagree.
 func DeclaredProviders() ([]ProviderCapabilities, error) {
-	providers := []string{"codex", "claude", "opencode", "pi", "dsh"}
-	out := make([]ProviderCapabilities, 0, len(providers))
-	for _, provider := range providers {
-		dialect, err := llms.DialectFor(provider)
-		if err != nil {
-			return nil, fmt.Errorf("resolve dialect for provider %q: %w", provider, err)
-		}
-		preference := dialect.PreferredProtocols()
-		protocols := make([]string, 0, len(preference))
-		for _, protocol := range preference {
-			protocols = append(protocols, string(protocol))
-		}
+	out := make([]ProviderCapabilities, 0, len(canonicalProviderOrder))
+	for _, provider := range canonicalProviderOrder {
 		features := declaredExecutionFeatures(provider)
 		if features == nil {
 			return nil, fmt.Errorf("%w: provider %q has no declared execution features", ErrInvalidCapability, provider)
 		}
-		declaration := ProviderCapabilities{Provider: provider, PreferredProtocols: protocols}
-		for _, feature := range canonicalFeatures {
-			declaration.Features = append(declaration.Features, ProviderFeature{Feature: feature, Supported: features[feature]})
-		}
-		if err := declaration.Validate(); err != nil {
+		declaration, err := providerDeclaration(provider, features)
+		if err != nil {
 			return nil, err
 		}
 		out = append(out, declaration)
 	}
 	return out, nil
+}
+
+// DeclaredProvidersFromManifest returns the provider matrix described by a guest
+// ABI manifest. Unknown feature names are ignored; a provider that declares no
+// feature this daemon understands is still included, with every feature false.
+func DeclaredProvidersFromManifest(m guestabi.Manifest) ([]ProviderCapabilities, error) {
+	if err := m.Validate(); err != nil {
+		return nil, fmt.Errorf("validate guest abi manifest: %w", err)
+	}
+	out := make([]ProviderCapabilities, 0, len(canonicalProviderOrder))
+	for _, provider := range canonicalProviderOrder {
+		declared, ok := m.Providers[provider]
+		if !ok {
+			return nil, fmt.Errorf("%w: guest abi manifest omits required provider %q", ErrInvalidCapability, provider)
+		}
+		features := make(map[ExecutionFeature]bool, len(canonicalFeatures))
+		for _, name := range declared.Features {
+			// Names this daemon does not understand land in the map but are
+			// never read, which is how they are ignored rather than rejected.
+			features[ExecutionFeature(name)] = true
+		}
+		declaration, err := providerDeclaration(provider, features)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, declaration)
+	}
+	return out, nil
+}
+
+// providerDeclaration builds one validated provider declaration from an explicit
+// feature set. Protocol preference order is read from pkg/llms
+// Dialect.PreferredProtocols so the RPC and the runtime resolution path cannot
+// disagree, whichever source supplied the features.
+func providerDeclaration(provider string, features map[ExecutionFeature]bool) (ProviderCapabilities, error) {
+	dialect, err := llms.DialectFor(provider)
+	if err != nil {
+		return ProviderCapabilities{}, fmt.Errorf("resolve dialect for provider %q: %w", provider, err)
+	}
+	preference := dialect.PreferredProtocols()
+	protocols := make([]string, 0, len(preference))
+	for _, protocol := range preference {
+		protocols = append(protocols, string(protocol))
+	}
+	declaration := ProviderCapabilities{Provider: provider, PreferredProtocols: protocols}
+	for _, feature := range canonicalFeatures {
+		declaration.Features = append(declaration.Features, ProviderFeature{Feature: feature, Supported: features[feature]})
+	}
+	if err := declaration.Validate(); err != nil {
+		return ProviderCapabilities{}, err
+	}
+	return declaration, nil
 }
