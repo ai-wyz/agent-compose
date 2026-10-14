@@ -94,9 +94,9 @@ func TestFacadeTokenResolveUpstreamModel(t *testing.T) {
 // family.
 func TestFacadeTokenServesWireAPI(t *testing.T) {
 	tests := []struct {
-		issued string
-		route  string
-		want   bool
+		issued  string
+		wireAPI string
+		want    bool
 	}{
 		{APIProtocolResponses, APIProtocolResponses, true},
 		{APIProtocolResponses, APIProtocolChatCompletions, true},
@@ -110,11 +110,13 @@ func TestFacadeTokenServesWireAPI(t *testing.T) {
 		{"", APIProtocolMessages, true},
 		{"", APIProtocolChatCompletions, true},
 		{"gemini", "gemini", false},
+		// The argument is the protocol a route decodes, not the route's path.
+		{APIProtocolResponses, "/llm/openai/v1/chat/completions", false},
 	}
 	for _, tc := range tests {
-		got := FacadeToken{WireAPI: tc.issued}.ServesWireAPI(tc.route)
+		got := FacadeToken{WireAPI: tc.issued}.ServesWireAPI(tc.wireAPI)
 		if got != tc.want {
-			t.Errorf("token %q on route %q = %v, want %v", tc.issued, tc.route, got, tc.want)
+			t.Errorf("token %q on wire API %q = %v, want %v", tc.issued, tc.wireAPI, got, tc.want)
 		}
 	}
 }

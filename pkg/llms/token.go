@@ -64,7 +64,8 @@ func (t FacadeToken) HasConnection() bool {
 }
 
 // ServesWireAPI reports whether the token may be presented on the facade route
-// that serves route.
+// that serves wireAPI, the wire-API protocol that route decodes (for example
+// APIProtocolChatCompletions), not the route's path.
 //
 // A token is bound to a protocol family, not to one protocol in it. The wire
 // API recorded at issue time is the one the selected agent speaks, but the
@@ -76,13 +77,16 @@ func (t FacadeToken) HasConnection() bool {
 // request on routes the connection can be converted to. An Anthropic token is
 // still refused on the OpenAI routes, and the reverse.
 //
-// A token with no recorded wire API serves every route, as before.
-func (t FacadeToken) ServesWireAPI(route string) bool {
+// A token with no recorded wire API serves every route, as before. The empty
+// check must stay ahead of NormalizeWireAPI, which reads an empty value as
+// responses: without it a legacy token would be confined to the OpenAI routes.
+// A protocol outside both families serves nothing.
+func (t FacadeToken) ServesWireAPI(wireAPI string) bool {
 	if strings.TrimSpace(t.WireAPI) == "" {
 		return true
 	}
 	issued := catalogProtocolFamily(NormalizeWireAPI(t.WireAPI))
-	return issued != "" && issued == catalogProtocolFamily(NormalizeWireAPI(route))
+	return issued != "" && issued == catalogProtocolFamily(NormalizeWireAPI(wireAPI))
 }
 
 // ResolveUpstreamModel maps the model a guest asked for to the model the
