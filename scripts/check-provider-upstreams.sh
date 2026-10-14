@@ -39,14 +39,37 @@ mkdir -p "$OUTPUT_DIR"
 
 # npm_view reads the version npm publishes for a package. A query failure is
 # reported as "unknown" rather than aborting the scan: one delisted or renamed
-# package must not hide every other provider's release.
+# package must not hide every other provider's release. The query therefore must
+# not return a non-zero status - the caller assigns the result, and under
+# `set -e` a failing assignment would end the whole scan.
 npm_view() { # $1=package
-  npm view "$1" version 2>/dev/null | tail -n 1 | tr -d '[:space:]'
+  local raw
+  raw=$(npm view "$1" version 2>/dev/null) || return 0
+  printf '%s\n' "$raw" | tail -n 1 | tr -d '[:space:]'
 }
 
-# newest_of prints whichever of two versions sorts later under version ordering.
+# newest_of prints whichever of two versions is the newer release.
+#
+# `sort -V` alone is not enough here: it orders a prerelease after the release of
+# the same version (`0.2.0-rc.1 > 0.2.0`), so a package pinned at `0.2.0-rc.1`
+# would look newer than the `0.2.0` it is waiting for and the upgrade would be
+# reported as "pinned ahead" instead of as an available release. Comparing the
+# release core first, and preferring the release whenever the cores match, is
+# what "is there a newer upstream release?" actually means.
 newest_of() { # $1 $2
-  printf '%s\n%s\n' "$1" "$2" | sort -V | tail -n 1
+  local a=$1 b=$2 a_core=${1%%-*} b_core=${2%%-*}
+  if [[ $a_core != "$b_core" ]]; then
+    printf '%s\n%s\n' "$a_core" "$b_core" | sort -V | tail -n 1
+    return
+  fi
+  if [[ $a == "$a_core" || $b == "$b_core" ]]; then
+    # Same core: the release outranks its own prereleases. Equal cores with no
+    # prerelease are the same version, and the caller checks that case first.
+    if [[ $a == "$a_core" ]]; then printf '%s' "$a"; else printf '%s' "$b"; fi
+    return
+  fi
+  # Both are prereleases of the same core; compare the suffixes.
+  printf '%s\n%s\n' "$a" "$b" | sort -V | tail -n 1
 }
 
 rows=''
