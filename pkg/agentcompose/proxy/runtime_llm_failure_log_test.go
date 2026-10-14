@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -46,6 +47,27 @@ func TestRuntimeLLMFacadeLogsWhyAnUpstreamCallFailed(t *testing.T) {
 			logs := serveRuntimeLLMFailure(t, route.path, route.body, context.Canceled, true)
 			if !strings.Contains(logs, "level=INFO") || !strings.Contains(logs, "the guest disconnected") || !strings.Contains(logs, "context canceled") {
 				t.Fatalf("guest disconnect log:\n%s", logs)
+			}
+		})
+		// A transport failure carries the request URL, and a connection may keep
+		// a credential in the base URL's query. The log keeps where the call went
+		// and why it failed, never the query or a userinfo password.
+		t.Run(route.name+"/upstream URL is redacted", func(t *testing.T) {
+			upstreamErr := &url.Error{
+				Op:  "Post",
+				URL: "https://gw:pw-secret@upstream.test/v1/responses?api-key=query-secret#frag",
+				Err: errors.New("dial tcp 10.0.0.9:443: connect: connection refused"),
+			}
+			logs := serveRuntimeLLMFailure(t, route.path, route.body, upstreamErr, false)
+			for _, want := range []string{"upstream=https://upstream.test/v1/responses", "connection refused"} {
+				if !strings.Contains(logs, want) {
+					t.Fatalf("log missing %q:\n%s", want, logs)
+				}
+			}
+			for _, leaked := range []string{"query-secret", "pw-secret", "api-key", "frag"} {
+				if strings.Contains(logs, leaked) {
+					t.Fatalf("log leaked %q:\n%s", leaked, logs)
+				}
 			}
 		})
 	}
