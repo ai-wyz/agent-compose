@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 #
 # Compare every pinned guest provider package against the version npm currently
-# publishes, and write a Markdown report a scheduled workflow can post as a
-# tracking issue.
+# publishes, and write a Markdown report a scheduled workflow pushes to the team
+# webhook.
 #
 # This exists so discovering an upstream release stops being a human chore. It
 # only reports: it never edits a pin and never merges anything, because deciding
@@ -53,7 +53,7 @@ rows=''
 bump_args=''
 outdated=false
 
-while IFS=$'\t' read -r kind npm_package current; do
+while IFS=$'\t' read -r kind npm_package current retirement; do
   latest=$(npm_view "$npm_package")
 
   if [[ -z $latest ]]; then
@@ -61,15 +61,32 @@ while IFS=$'\t' read -r kind npm_package current; do
   elif [[ $latest == "$current" ]]; then
     status='up to date'
   elif [[ $(newest_of "$current" "$latest") == "$latest" ]]; then
-    status='**outdated**'
     outdated=true
-    bump_args+="${kind}=${latest} "
+    if [[ -n $retirement ]]; then
+      # Left out of bump_args on purpose: the lock records that this package is
+      # superseded by a newer provider release, so the plan is to delete it in
+      # that upgrade rather than to keep chasing its own versions.
+      status="**outdated** — retired by \`${retirement}\`; remove it instead of bumping"
+    else
+      status='**outdated**'
+      bump_args+="${kind}=${latest} "
+    fi
   else
     status='pinned ahead of npm latest (prerelease or yanked)'
   fi
 
   rows+="| \`${kind}\` | \`${npm_package}\` | \`${current}\` | \`${latest:-?}\` | ${status} |"$'\n'
-done < <(jq -r '.packages | to_entries[] | [.key, .value.npm, .value.version] | @tsv' "$LOCK_FILE")
+done < <(jq -r '
+  .packages
+  | to_entries[]
+  | [
+      .key,
+      .value.npm,
+      .value.version,
+      (if .value.retiredBy then "\(.value.retiredBy.package) \(.value.retiredBy.version)" else "" end)
+    ]
+  | @tsv
+' "$LOCK_FILE")
 
 printf '%s' "${bump_args% }" >"$BUMP_FILE"
 if [[ $outdated == true ]]; then

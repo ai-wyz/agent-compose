@@ -62,7 +62,7 @@ COPY guest-images/guest-abi.json /etc/agent-compose/guest-abi.json
 
 `GUEST_ABI` 在 Dockerfile 中默认为 `1`，由 `scripts/build-agent-compose-guest.sh` 覆盖为 lock 中的取值。因此 manifest 随镜像文件系统一起分发，而 label 让 registry 或运维人员无需启动镜像即可看到契约版本。
 
-在 daemon 侧，`pkg/guestabi` 拥有该契约（`CurrentGuestAbi`、`Parse`、`LoadFile`、`Validate`、`VerifyCompatible`、`ErrUnsupportedGuestAbi`）。可选环境变量 `GUEST_ABI_MANIFEST` 用于指定一个 manifest 文件。当它已设置且有效时，`EngineService.GetCapabilities` 报告的 provider capability matrix 由该 manifest 构建，而不是由 daemon 编译期声明构建；当它未设置、不可读、格式错误或声明了不同的 ABI 时，daemon 记录 warning 并回退到编译期声明，不会拒绝该镜像。读取该文件是这条路径上唯一的 guest 相关 I/O：构建 snapshot 仍然不会访问 Docker、KVM 或 Kubernetes。
+在 daemon 侧，`pkg/guestabi` 拥有该契约（`CurrentGuestAbi`、`Parse`、`LoadFile`、`Validate`、`VerifyCompatible`、`ErrUnsupportedGuestAbi`）。可选环境变量 `GUEST_ABI_MANIFEST` 用于指定一个 manifest 文件，它在 `.env.example` 中以注释形式给出示例。当它已设置且有效时，`EngineService.GetCapabilities` 报告的 provider capability matrix 由该 manifest 构建，而不是由 daemon 编译期声明构建；当它未设置、不可读、格式错误或声明了不同的 ABI 时，daemon 记录 warning 并回退到编译期声明，不会拒绝该镜像。读取该文件是这条路径上唯一的 guest 相关 I/O：构建 snapshot 仍然不会访问 Docker、KVM 或 Kubernetes。
 
 ### 1.2 从运行中的 sandbox 读取 Guest ABI
 
@@ -602,6 +602,18 @@ daemon release 与 guest 镜像构建现在是两条独立的轨道。`guestAbi`
 
 任何会提高 `guestAbi` 的改动都不是纯 guest 改动。提高它意味着 daemon/guest 契约发生变化，因此必须先发布带有匹配 `CurrentGuestAbi` 的 daemon，新取值的镜像才能被采用。除此之外没有更宽的版本矩阵：当 manifest 的 `guestAbi` 等于 daemon 的 `CurrentGuestAbi` 时即为兼容，比较逻辑就是这一条（`pkg/guestabi/compat.go` 中的 `VerifyCompatible`）。
 
+伴生包可以记录「某个 provider 的后续版本会让它变得多余」，从而让「升级时记得摘掉它」由升级动作本身强制，而不是靠人记。`pi-mcp-adapter` 带有：
+
+```json
+"retiredBy": {
+  "package": "pi",
+  "version": "0.99.0",
+  "reason": "Pi 0.99 and later ship a built-in MCP extension, so the adapter only exists to add MCP to older Pi releases"
+}
+```
+
+当被退役的包仍与不低于 `retiredBy.version` 的版本一起固定时，`scripts/provider-lock.sh check` 会失败，并在消息中点名该包与原因。修复属于这次升级的一部分：从 lock、两个 guest Dockerfile 和构建脚本中移除该包。当前固定的是 `pi` 0.82.1，所以今天仍然需要这个 adapter；门禁会在不再需要它的那个版本上触发。
+
 [`.github/workflows/guest-image-release.yml`](https://github.com/chaitin/agent-compose/blob/main/.github/workflows/guest-image-release.yml) 是独立的发布路径。手动 `workflow_dispatch` 时，它会校验 lock、构建可加载的 `linux/amd64` 镜像、运行 `scripts/verify-guest-image-abi.sh`、探测 baseline guest ABI、打印镜像内 `agent-compose-runtime abi --json` 报告，然后才可选地发布多架构镜像。它的 tag 规则为：
 
 - 不可变 tag `guest-abi<N>-<YYYYMMDD>-<shortsha>`；可选的 Arch Linux 变体再加 `-archlinux` 后缀；
@@ -622,13 +634,12 @@ scripts/verify-guest-image-abi.sh \
 
 [`.github/workflows/provider-upstream-check.yml`](https://github.com/chaitin/agent-compose/blob/main/.github/workflows/provider-upstream-check.yml) 每天 UTC `17 1 * * *` 运行 `scripts/check-provider-upstreams.sh`，并支持手动 `workflow_dispatch`。它会将 `guest-images/providers.lock.json` 中固定的每个包与 npm 当前发布的版本比较，并把结果汇报到团队已经关注的位置：
 
-- 创建或更新唯一一个 tracking issue，label 为 `provider-upgrade`，标题为 `chore(deps): upstream provider releases pending`；当所有固定版本都是最新时，则改为关闭该 issue；
-- 同一份报告写入 job summary；
-- 配置了 `DINGTALK_TARGETS_JSON` secret 时，通过 `scripts/notify-dingtalk.sh` 把同一份报告推送到钉钉。未配置该 secret 视为跳过，而不是失败。
+- 配置了 `DINGTALK_TARGETS_JSON` secret 时，通过 `scripts/notify-dingtalk.sh` 把报告推送到钉钉。该 webhook 就是通知渠道：没有需要盯的 tracking issue。若未配置该 secret，运行仍然成功，但会输出 warning 并在 job summary 中说明——否则「静默无通知」和「全部是最新」看起来完全一样；
+- 同一份报告写入 job summary。
 
-该 workflow 不会自行修改任何固定版本。`workflow_dispatch` 输入 `bump` 会额外打开一个 draft pull request，其中对过期版本执行 `provider-lock.sh bump`，再运行 `scripts/provider-lock.sh check`。之所以是 draft：版本提升本身是机械操作，而判断某个 provider release 是否安全不是。两个可选 repository variable 可以细化报告：`PROVIDER_UPGRADE_MENTIONS` 会追加到 issue 正文用于 @ 提醒，`NPM_CONFIG_REGISTRY` 用于 npm 查询。
+该 workflow 不会自行修改任何固定版本。若某个包的 lock 条目记录了 `retiredBy` 版本，报告会把它标记为过期并同时给出该计划，且不会把它放进 bump 列表：预期动作是在使其退役的那次升级里删除它，而不是跟随它自己的版本。`workflow_dispatch` 输入 `bump` 会额外打开一个 draft pull request，其中对过期版本执行 `provider-lock.sh bump`，再运行 `scripts/provider-lock.sh check`。之所以是 draft：版本提升本身是机械操作，而判断某个 provider release 是否安全不是。check 失败不会阻止该 draft —— 失败内容会写进 PR 正文，等 draft 标记为 ready 后由 CI 强制。两个可选 repository variable 可以细化报告：`PROVIDER_UPGRADE_MENTIONS` 会追加到报告正文用于 @ 提醒，`NPM_CONFIG_REGISTRY` 用于 npm 查询。
 
-GitHub 的 scheduler 是尽力而为的，因此应把 tracking issue 和 job summary 视为持久记录，把钉钉推送视为便捷通道：
+GitHub 的 scheduler 是尽力而为的，因此应把 job summary 视为持久记录，把钉钉推送视为通知渠道：
 
 - `cron` 可能被延迟，且定时 workflow 只在默认分支上运行；
 - 仓库连续 60 天无活动后，定时 workflow 会被禁用；

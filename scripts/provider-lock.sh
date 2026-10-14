@@ -94,8 +94,34 @@ cmd_sync() {
   echo "provider-lock: wrote $ABI_FILE"
 }
 
+# check_retirements fails when a package is still pinned next to a release that
+# supersedes it. Recording the intent in the lock rather than a comment is what
+# makes "drop this when we upgrade" survive the upgrade: the bump that triggers
+# it fails until the package is actually removed.
+check_retirements() {
+  local kind superseded_by superseding_version current reason
+  while IFS=$'\t' read -r kind superseded_by superseding_version; do
+    [[ -n $kind ]] || continue
+    current=$(jq -r --arg kind "$superseded_by" '.packages[$kind].version // ""' "$LOCK_FILE")
+    [[ -n $current ]] || continue
+    # sort -V puts the greater version last, so the last line is the newer one.
+    if [[ $(printf '%s\n%s\n' "$superseding_version" "$current" | sort -V | tail -n 1) == "$current" ]]; then
+      reason=$(jq -r --arg kind "$kind" '.packages[$kind].retiredBy.reason // ""' "$LOCK_FILE")
+      die "package '$kind' is retired by $superseded_by $current (>= $superseding_version): ${reason:-remove it}"
+    fi
+  done < <(jq -r '
+    .packages
+    | to_entries[]
+    | select(.value.retiredBy != null)
+    | [.key, .value.retiredBy.package, .value.retiredBy.version]
+    | @tsv
+  ' "$LOCK_FILE")
+}
+
 cmd_check() {
   require_lock
+
+  check_retirements
 
   local guest_abi
   guest_abi=$(jq -er '.guestAbi' "$LOCK_FILE")
@@ -183,7 +209,9 @@ usage: provider-lock.sh <command>
   guest-abi          print the guest ABI manifest the image publishes
   guest-abi-version  print the guest ABI contract version
   sync               write guest-images/guest-abi.json from the lock
-  check              fail when Dockerfiles, the build script, or the manifest drift
+  check              fail when the Dockerfiles, the build script, or the manifest
+                     drift, or when a package is still pinned past the release
+                     its retiredBy entry says supersedes it
   bump K=V [K=V ...] rewrite one provider version in the lock, both Dockerfiles,
                      and the generated manifest; does not validate the version
 USAGE

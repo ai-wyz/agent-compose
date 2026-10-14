@@ -89,6 +89,27 @@ if ! diff -q "$ABI_FILE" "$synced_abi" >/dev/null; then
   fail 'provider-lock sync is not idempotent with the committed manifest'
 fi
 
+# 6. A recorded retirement must fire exactly when the superseding release is
+#    pinned. "We will drop the adapter when we upgrade pi" has to be enforced by
+#    the upgrade itself, otherwise the stale companion is carried forever.
+retired_lock="$TEST_ROOT/providers-retired.lock.json"
+jq '.packages.pi.version = "1.0.0"' "$LOCK_FILE" >"$retired_lock"
+if PROVIDER_LOCK_FILE="$retired_lock" "$PROVIDER_LOCK" check >"$TEST_ROOT/retired.err" 2>&1; then
+  fail 'provider-lock check accepted pi-mcp-adapter next to a pi release that supersedes it'
+elif ! grep -q 'pi-mcp-adapter' "$TEST_ROOT/retired.err"; then
+  fail 'provider-lock check failed but did not name the retired package'
+fi
+
+#    Removing the package must clear the gate, so the upgrade has a way through.
+#    The check still fails on the Dockerfile drift a temp lock always has; the
+#    assertion is that the retirement itself is no longer reported.
+retired_fixed_lock="$TEST_ROOT/providers-retired-fixed.lock.json"
+jq 'del(.packages["pi-mcp-adapter"]) | .packages.pi.version = "1.0.0"' "$LOCK_FILE" >"$retired_fixed_lock"
+PROVIDER_LOCK_FILE="$retired_fixed_lock" "$PROVIDER_LOCK" check >"$TEST_ROOT/retired-fixed.err" 2>&1 || true
+if grep -q 'retired by' "$TEST_ROOT/retired-fixed.err"; then
+  fail 'provider-lock still reported a retirement after the package was removed from the lock'
+fi
+
 if ((failures > 0)); then
   printf 'test-provider-lock: %d contract check(s) failed\n' "$failures" >&2
   exit 1

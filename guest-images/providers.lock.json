@@ -55,7 +55,12 @@
       "npm": "pi-mcp-adapter",
       "version": "2.11.0",
       "buildArg": "PI_MCP_ADAPTER_VERSION",
-      "companionOf": "pi"
+      "companionOf": "pi",
+      "retiredBy": {
+        "package": "pi",
+        "version": "0.99.0",
+        "reason": "Pi 0.99 and later ship a built-in MCP extension, so the adapter only exists to add MCP to older Pi releases"
+      }
     },
     "dsh": {
       "npm": "@deepseek-ai/dsh",

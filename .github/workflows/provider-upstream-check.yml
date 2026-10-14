@@ -1,9 +1,9 @@
 name: Provider upstream check
 
-# Answers "is a provider we pin newer upstream?" once a day and reports it where
-# a team already looks: one tracking issue plus an optional DingTalk push. It
-# never edits a pin on its own, because deciding whether a provider release is
-# safe is the part that needs a person and the guest image's acceptance tests.
+# Answers "is a provider we pin newer upstream?" once a day and reports it on
+# the DingTalk webhook the team already watches. Nothing is published and no
+# issue is filed: a person reads the report and decides what to upgrade, which
+# is why the safe path after decoupling is a small provider-only branch.
 #
 # GitHub's scheduler is best-effort: a cron entry can be delayed, and scheduled
 # workflows are disabled after 60 days of repository inactivity. workflow_dispatch
@@ -21,19 +21,11 @@ on:
 
 permissions:
   contents: write
-  issues: write
   pull-requests: write
 
-# The scan is idempotent and edits one shared issue, so overlapping runs would
-# only race on that issue's body. Never cancel a run mid-flight for the same
-# reason.
 concurrency:
   group: provider-upstream-check
   cancel-in-progress: false
-
-env:
-  ISSUE_LABEL: provider-upgrade
-  ISSUE_TITLE: 'chore(deps): upstream provider releases pending'
 
 jobs:
   check-upstreams:
@@ -53,48 +45,24 @@ jobs:
       - name: Summarize the scan
         run: cat "${{ runner.temp }}/provider-upstream-report.md" >>"$GITHUB_STEP_SUMMARY"
 
-      - name: Update the tracking issue
-        if: steps.scan.outputs.outdated == 'true'
-        env:
-          GH_TOKEN: ${{ github.token }}
-          REPORT: ${{ runner.temp }}/provider-upstream-report.md
-        run: |
-          set -euo pipefail
-          gh label create "$ISSUE_LABEL" \
-            --color 1d76db \
-            --description 'A pinned guest provider has a newer upstream release' \
-            --force
-          number=$(gh issue list --label "$ISSUE_LABEL" --state open --limit 1 \
-            --json number --jq '.[0].number // empty')
-          if [[ -n $number ]]; then
-            gh issue edit "$number" --body-file "$REPORT"
-            echo "Updated tracking issue #$number"
-          else
-            gh issue create --title "$ISSUE_TITLE" --label "$ISSUE_LABEL" --body-file "$REPORT"
-          fi
-
-      - name: Close the tracking issue when everything is current
-        if: steps.scan.outputs.outdated == 'false'
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          number=$(gh issue list --label "$ISSUE_LABEL" --state open --limit 1 \
-            --json number --jq '.[0].number // empty')
-          if [[ -n $number ]]; then
-            gh issue close "$number" --comment 'Every pinned guest provider now matches npm.'
-          fi
-
-      # Optional: an unset DINGTALK_TARGETS_JSON is a skip, not a failure, so a
-      # repository that tracks this through the issue alone still gets a green run.
-      - name: Push the DingTalk notification
+      # The webhook is the whole notification path, so a missing secret must be
+      # visible: a green run that reports nothing looks identical to "up to date".
+      - name: Notify about outdated providers
         if: steps.scan.outputs.outdated == 'true'
         env:
           DINGTALK_TARGETS_JSON: ${{ secrets.DINGTALK_TARGETS_JSON }}
+          REPORT: ${{ runner.temp }}/provider-upstream-report.md
         run: |
           set -euo pipefail
-          ./scripts/notify-dingtalk.sh 'agent-compose：上游 provider 有新版本' \
-            <"${{ runner.temp }}/provider-upstream-report.md"
+          if [[ -z ${DINGTALK_TARGETS_JSON:-} ]]; then
+            echo '::warning::upstream providers are outdated but DINGTALK_TARGETS_JSON is not configured, so nobody was notified'
+            {
+              echo
+              echo '> **Warning:** `DINGTALK_TARGETS_JSON` is not configured, so this report reached nobody.'
+            } >>"$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          ./scripts/notify-dingtalk.sh 'agent-compose：上游 provider 有新版本' <"$REPORT"
 
       - name: Open a draft bump pull request
         if: steps.scan.outputs.outdated == 'true' && inputs.bump
@@ -102,6 +70,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           REPORT: ${{ runner.temp }}/provider-upstream-report.md
           BUMP_FILE: ${{ runner.temp }}/provider-upstream-bump.txt
+          PR_BODY: ${{ runner.temp }}/provider-upstream-pr-body.md
         run: |
           set -euo pipefail
           bump_args=$(cat "$BUMP_FILE")
@@ -110,7 +79,22 @@ jobs:
             exit 1
           fi
           ./scripts/provider-lock.sh bump $bump_args
-          ./scripts/provider-lock.sh check
+
+          # A failing check does not block the draft: a bump can legitimately need
+          # a second edit (for example the lock records that a newer pi release
+          # retires pi-mcp-adapter). The failure is reported in the pull request
+          # body instead, and CI enforces it once the draft is marked ready.
+          check_output=$(./scripts/provider-lock.sh check 2>&1) || true
+
+          body="$PR_BODY"
+          cp "$REPORT" "$body"
+          if [[ -n $check_output ]]; then
+            {
+              printf '\n### Provider lock check output\n\n'
+              printf 'The lock does not validate yet. Resolve this before marking the pull request ready.\n\n'
+              printf '```\n%s\n```\n' "$check_output"
+            } >>"$body"
+          fi
 
           branch="chore/provider-bump-$(date -u +%Y%m%d-%H%M%S)"
           git config user.name 'github-actions[bot]'
@@ -126,4 +110,4 @@ jobs:
           # pull request only becomes CI-eligible once someone marks it ready.
           gh pr create --draft \
             --title 'chore(deps): bump guest provider pins' \
-            --body-file "$REPORT"
+            --body-file "$body"

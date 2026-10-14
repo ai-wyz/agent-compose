@@ -112,7 +112,8 @@ contract version without starting the image.
 On the daemon side, `pkg/guestabi` owns the contract (`CurrentGuestAbi`,
 `Parse`, `LoadFile`, `Validate`, `VerifyCompatible`, `ErrUnsupportedGuestAbi`).
 The optional `GUEST_ABI_MANIFEST` environment variable names a manifest file for
-the daemon. When it is set and valid, the provider capability matrix reported by
+the daemon; it is documented as a commented example in `.env.example`. When it is
+set and valid, the provider capability matrix reported by
 `EngineService.GetCapabilities` is built from that manifest instead of the
 daemon's compiled declaration. When it is unset, unreadable, malformed, or
 declares a different ABI, the daemon logs a warning and falls back to its
@@ -886,6 +887,25 @@ There is no broader version matrix: a manifest is compatible when its `guestAbi`
 equals the daemon's `CurrentGuestAbi`, and that single comparison is the whole
 rule (`VerifyCompatible` in `pkg/guestabi/compat.go`).
 
+A companion package can record that a later release of its provider makes it
+redundant, so "drop this when we upgrade" is enforced by the upgrade instead of
+remembered by a person. `pi-mcp-adapter` carries:
+
+```json
+"retiredBy": {
+  "package": "pi",
+  "version": "0.99.0",
+  "reason": "Pi 0.99 and later ship a built-in MCP extension, so the adapter only exists to add MCP to older Pi releases"
+}
+```
+
+`scripts/provider-lock.sh check` then fails while a retired package is still
+pinned next to a version at or above `retiredBy.version`, and the message names
+the package and the reason. The fix is part of the upgrade: remove the package
+from the lock, both guest Dockerfiles, and the build script. Because the current
+pin is `pi` 0.82.1, the adapter is still required today; the gate fires on the
+release that makes it unnecessary.
+
 [`.github/workflows/guest-image-release.yml`](https://github.com/chaitin/agent-compose/blob/main/.github/workflows/guest-image-release.yml)
 is the independent release path. On manual `workflow_dispatch` it verifies the
 lock, builds a loadable `linux/amd64` image, runs
@@ -921,26 +941,35 @@ provider versions are compared against that checkout's lock.
 runs `scripts/check-provider-upstreams.sh` daily at `17 1 * * *` UTC and on
 manual `workflow_dispatch`. It compares every package pinned in
 `guest-images/providers.lock.json` with the version npm currently publishes and
-reports where a team already looks:
+reports the result where a team already looks:
 
-- one tracking issue is created or updated, labeled `provider-upgrade` with the
-  title `chore(deps): upstream provider releases pending`; when every pin is
-  current, that issue is closed instead;
-- the same report is written to the job summary; and
 - when the `DINGTALK_TARGETS_JSON` secret is configured, the report is pushed to
-  DingTalk through `scripts/notify-dingtalk.sh`. An unset secret is a skip
-  rather than a failure.
+  DingTalk through `scripts/notify-dingtalk.sh`. That webhook is the notification
+  path: there is no tracking issue to watch. If the secret is unset, the run
+  still succeeds but emits a warning and says so in the job summary, because a
+  silent run and an up-to-date run would otherwise look identical; and
+- the same report is written to the job summary.
 
-The workflow never edits a pin on its own. A `workflow_dispatch` input `bump`
+The workflow never edits a pin on its own. A package whose lock entry records a
+`retiredBy` release is reported as outdated together with that plan, and is left
+out of the bump list: the intended action is to delete it in the upgrade that
+retires it, not to follow its own releases. A `workflow_dispatch` input `bump`
 additionally opens a draft pull request that applies `provider-lock.sh bump` to
 the outdated pins and then runs `scripts/provider-lock.sh check`. The draft is
 deliberate: the bump is mechanical, while deciding whether a provider release is
-safe is not. Two optional repository variables refine the report:
-`PROVIDER_UPGRADE_MENTIONS` is appended to the issue body for @-mentions, and
-`NPM_CONFIG_REGISTRY` is used for the npm queries.
+safe is not. A failing check does not block the draft — it is recorded in the
+pull request body, and CI enforces it once the draft is marked ready. Two
+optional repository variables refine the report: `PROVIDER_UPGRADE_MENTIONS` is
+appended to the report body for @-mentions, and `NPM_CONFIG_REGISTRY` is used for
+the npm queries.
 
-GitHub's scheduler is best-effort, so treat the tracking issue and the job
-summary as the durable record and a DingTalk push as a convenience:
+GitHub's scheduler is best-effort, so treat the job summary as the durable record
+and the DingTalk push as the notification:
+
+- a `cron` entry can be delayed, and scheduled workflows run only on the default
+  branch;
+- scheduled workflows are disabled after 60 days of repository inactivity; and
+- scheduled workflows do not run in forks.
 
 - a `cron` entry can be delayed, and scheduled workflows run only on the default
   branch;
