@@ -206,3 +206,66 @@ func TestRuntimeLLMFacadeRewritesGrokIntegralFloatsForGenericTextParts(t *testin
 		t.Fatalf("non-grok stream was rewritten:\n%s", got)
 	}
 }
+
+// A Claude client behind a Grok Responses connection reaches it through the
+// messages -> responses bridge. The streamed tool input it reads back must carry
+// the same whole numbers as a chat or Responses client.
+func TestRuntimeLLMFacadeRewritesGrokIntegralFloatsForAMessagesClient(t *testing.T) {
+	run := func(model string) string {
+		t.Helper()
+		e := echo.New()
+		RegisterRuntimeLLMFacadeRoutes(e, RuntimeLLMOptions{
+			Tokens:      fakeRuntimeLLMTokens{token: llms.FacadeToken{SandboxID: "sandbox-1", Model: model, ProviderID: "provider-1", WireAPI: llms.APIProtocolMessages, ExpiresAt: time.Now().Add(time.Hour)}},
+			Sandboxes:   fakeRuntimeLLMSessions{session: &domain.Sandbox{Summary: domain.SandboxSummary{ID: "sandbox-1", VMStatus: domain.VMStatusRunning}}},
+			Connections: fakeRuntimeLLMTargetResolver("http://upstream.test/v1"),
+			Client: &fakeRuntimeLLMHTTPClient{
+				status:     http.StatusOK,
+				header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+				bodyReader: iotest.OneByteReader(strings.NewReader(grokFunctionCallStream())),
+			},
+		})
+		body := `{"model":"` + model + `","max_tokens":64,"stream":true,"messages":[{"role":"user","content":"hi"}]}`
+		req := httptest.NewRequest(http.MethodPost, "/api/runtime/sandboxes/sandbox-1/llm/anthropic/v1/messages", strings.NewReader(body))
+		req.Header.Set("Authorization", "Bearer raw-token")
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		e.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("%s status=%d body=%s", model, rec.Code, rec.Body.String())
+		}
+		return streamedAnthropicToolInput(t, rec.Body.String())
+	}
+	if got := run("grok-4.6"); got != `{"timeout_ms":66121,"ratio":1.5}` {
+		t.Fatalf("grok streamed tool input = %q", got)
+	}
+	if got := run("gpt-5.5"); got != `{"timeout_ms":66121.0,"ratio":1.5}` {
+		t.Fatalf("non-grok streamed tool input = %q", got)
+	}
+}
+
+// streamedAnthropicToolInput joins the input_json_delta fragments of an
+// Anthropic messages stream.
+func streamedAnthropicToolInput(t *testing.T, body string) string {
+	t.Helper()
+	var input strings.Builder
+	for _, line := range strings.Split(body, "\n") {
+		data, ok := strings.CutPrefix(line, "data: ")
+		if !ok {
+			continue
+		}
+		var event struct {
+			Type  string `json:"type"`
+			Delta struct {
+				Type        string `json:"type"`
+				PartialJSON string `json:"partial_json"`
+			} `json:"delta"`
+		}
+		if err := json.Unmarshal([]byte(data), &event); err != nil {
+			t.Fatalf("event %s: %v", data, err)
+		}
+		if event.Type == "content_block_delta" && event.Delta.Type == "input_json_delta" {
+			input.WriteString(event.Delta.PartialJSON)
+		}
+	}
+	return input.String()
+}
