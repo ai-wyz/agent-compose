@@ -20,10 +20,11 @@ type upstreamCall struct {
 	Protocol protocolbridge.Protocol
 }
 
-// logUpstreamFailure records why a proxied call answered 502. A guest that
-// hung up mid-call cancels the upstream request too, and without the cause it
-// is indistinguishable from an upstream that refused the connection, so the
-// two are logged apart.
+// logUpstreamFailure records why a proxied call answered 502. A request whose
+// context ended mid-call (the guest hung up, or the daemon is shutting down)
+// cancels the upstream request too, and without the cause it is
+// indistinguishable from an upstream that refused the connection, so the two
+// are logged apart.
 func (h runtimeLLMHandler) logUpstreamFailure(c echo.Context, msg string, call upstreamCall, err error) {
 	ctx := c.Request().Context()
 	attrs := []any{
@@ -32,8 +33,8 @@ func (h runtimeLLMHandler) logUpstreamFailure(c echo.Context, msg string, call u
 		"upstream_protocol", string(call.Protocol),
 	}
 	attrs = append(attrs, upstreamErrorAttrs(err)...)
-	if ctx.Err() != nil {
-		h.logger().InfoContext(ctx, msg+": the guest disconnected", attrs...)
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		h.logger().InfoContext(ctx, msg+": the request was cancelled", append(attrs, "ctx_err", ctxErr)...)
 		return
 	}
 	h.logger().WarnContext(ctx, msg, attrs...)

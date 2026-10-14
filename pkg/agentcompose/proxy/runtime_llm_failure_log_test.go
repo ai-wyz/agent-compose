@@ -19,7 +19,7 @@ import (
 )
 
 // A 502 reaches the guest as a fixed message, so the log is the only place the
-// cause survives. An upstream that fails and a guest that hung up mid-call must
+// cause survives. An upstream that fails and a request cancelled mid-call must
 // be told apart there, on both the transparent and the bridged path.
 func TestRuntimeLLMFacadeLogsWhyAnUpstreamCallFailed(t *testing.T) {
 	routes := []struct {
@@ -39,14 +39,16 @@ func TestRuntimeLLMFacadeLogsWhyAnUpstreamCallFailed(t *testing.T) {
 					t.Fatalf("log missing %q:\n%s", want, logs)
 				}
 			}
-			if strings.Contains(logs, "disconnected") {
-				t.Fatalf("an upstream failure was logged as a guest disconnect:\n%s", logs)
+			if strings.Contains(logs, "cancelled") || strings.Contains(logs, "ctx_err") {
+				t.Fatalf("an upstream failure was logged as a cancelled request:\n%s", logs)
 			}
 		})
-		t.Run(route.name+"/guest disconnected", func(t *testing.T) {
+		t.Run(route.name+"/request cancelled", func(t *testing.T) {
 			logs := serveRuntimeLLMFailure(t, route.path, route.body, context.Canceled, true)
-			if !strings.Contains(logs, "level=INFO") || !strings.Contains(logs, "the guest disconnected") || !strings.Contains(logs, "context canceled") {
-				t.Fatalf("guest disconnect log:\n%s", logs)
+			for _, want := range []string{"level=INFO", "the request was cancelled", "ctx_err=", "context canceled"} {
+				if !strings.Contains(logs, want) {
+					t.Fatalf("cancelled request log missing %q:\n%s", want, logs)
+				}
 			}
 		})
 		// A transport failure carries the request URL, and a connection may keep
