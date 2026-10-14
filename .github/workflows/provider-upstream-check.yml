@@ -34,6 +34,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # The scan is the only thing that reports an upstream release, so a scan
+      # that fails silently is worse than one that fails loudly. Validate its
+      # contract here, where the script is actually used, before relying on it.
+      - name: Validate the scan contract
+        run: ./scripts/tests/test-check-provider-upstreams.sh
+
       - name: Scan upstream releases
         id: scan
         env:
