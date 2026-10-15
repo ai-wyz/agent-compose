@@ -45,8 +45,34 @@ function webSearchQuery(item: Record<string, unknown>): string {
   return "";
 }
 
+function reconnectEvent(message: string, previousAttempt: number): Extract<AgentEvent, { kind: "retry" }> | null {
+  // The exec JSONL stream omits will_retry; recognize both upstream retry formats.
+  const match = /^Reconnecting\.\.\.\s+(?:(\d+)\/(\d+)|waiting for network)(?:\s|$)/.exec(message);
+  if (!match) {
+    return null;
+  }
+  const reason = /high demand|overload|capacity|\b503\b/i.test(message)
+    ? "overloaded"
+    : /rate.?limit|\b429\b/i.test(message)
+      ? "rate_limit"
+      : /network|connection|transport|timed?\s*out|disconnect/i.test(message)
+        ? "network"
+        : "other";
+  return {
+    kind: "retry",
+    reason,
+    // Unbounded network retries have no wire count; count observed notifications.
+    attempt: match[1] ? Number(match[1]) : previousAttempt + 1,
+    maxAttempts: match[2] ? Number(match[2]) : undefined,
+    message,
+  };
+}
+
 export class CodexRunner {
   private readonly itemState = new Map<string, string | CodexItemState>();
+  private reconnectMessage?: string;
+  private reconnectAttempt = 0;
+  private turnCompleted = false;
 
   constructor(
     private readonly options: RunnerOptions,
@@ -55,6 +81,41 @@ export class CodexRunner {
 
   transcript(): string {
     return this.writer.transcript();
+  }
+
+  async runTurn(
+    thread: { runStreamed(input: string, options?: unknown): Promise<{ events: AsyncIterable<unknown> }> },
+    promptText: string,
+    result: AgentResult,
+  ): Promise<void> {
+    this.reconnectMessage = undefined;
+    this.reconnectAttempt = 0;
+    this.turnCompleted = false;
+    try {
+      const turnOptions = this.options.outputSchema || this.options.abortController
+        ? {
+          ...(this.options.outputSchema ? { outputSchema: this.options.outputSchema } : {}),
+          ...(this.options.abortController ? { signal: this.options.abortController.signal } : {}),
+        }
+        : undefined;
+      const { events } = await thread.runStreamed(promptText, turnOptions);
+      for await (const event of events) {
+        this.handleEvent(event as Record<string, unknown>, result);
+      }
+      if (this.reconnectMessage && !this.turnCompleted && !cancellationRequested(this.options.abortController?.signal)) {
+        const message = `Codex stream ended before turn.completed after ${this.reconnectMessage}`;
+        this.emit({ kind: "error", severity: "fatal", message });
+        throw new Error(message);
+      }
+    } catch (error) {
+      if (!cancellationRequested(this.options.abortController?.signal)) {
+        throw error;
+      }
+      result.stopReason = "cancelled";
+    }
+    if (cancellationRequested(this.options.abortController?.signal)) {
+      result.stopReason = "cancelled";
+    }
   }
 
   private readonly emittedText = new Map<string, string>();
@@ -247,6 +308,7 @@ export class CodexRunner {
       return;
     }
     if (event.type === "turn.completed") {
+      this.turnCompleted = true;
       // Codex accounts usage per turn, not per model call, and reports input
       // tokens inclusive of the cached prefix; subtract so `inputTokens` means
       // the same thing across providers. `cache_write_input_tokens` is present
@@ -276,9 +338,18 @@ export class CodexRunner {
       throw new Error(message);
     }
     if (event.type === "error") {
+      const message = String(event.message || "codex stream error");
+      // Codex reports its own reconnect attempts as error events while the
+      // streamed turn is still running; let the SDK finish or report turn.failed.
+      const retry = reconnectEvent(message, this.reconnectAttempt);
+      if (retry) {
+        this.reconnectMessage = message;
+        this.reconnectAttempt = retry.attempt;
+        this.emit(retry);
+        return;
+      }
       // A fatal stream error carries no `item`, so the guard below used to drop
       // it silently and the turn just ended with no explanation.
-      const message = String(event.message || "codex stream error");
       this.emit({ kind: "error", severity: "fatal", message });
       throw new Error(message);
     }
@@ -381,26 +452,7 @@ export class CodexRunner {
       stderr: "",
     };
 
-    try {
-      const turnOptions = this.options.outputSchema || this.options.abortController
-        ? {
-          ...(this.options.outputSchema ? { outputSchema: this.options.outputSchema } : {}),
-          ...(this.options.abortController ? { signal: this.options.abortController.signal } : {}),
-        }
-        : undefined;
-      const { events } = await thread.runStreamed(promptText, turnOptions);
-      for await (const event of events) {
-        this.handleEvent(event as Record<string, unknown>, result);
-      }
-    } catch (error) {
-      if (!cancellationRequested(this.options.abortController?.signal)) {
-        throw error;
-      }
-      result.stopReason = "cancelled";
-    }
-    if (cancellationRequested(this.options.abortController?.signal)) {
-      result.stopReason = "cancelled";
-    }
+    await this.runTurn(thread, promptText, result);
     result.threadId = thread.id || result.threadId;
     result.transcript = this.writer.transcript();
     if (!result.finalText && result.transcript) {

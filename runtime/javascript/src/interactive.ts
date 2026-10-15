@@ -116,27 +116,7 @@ export class CodexInteractiveSession implements InteractiveSession {
     this.turnCount++;
     this.result.finalText = "";
     this.result.finalTextSource = "none";
-    try {
-      const turnOptions = this.options.outputSchema || this.options.abortController
-        ? {
-          ...(this.options.outputSchema ? { outputSchema: this.options.outputSchema } : {}),
-          ...(this.options.abortController ? { signal: this.options.abortController.signal } : {}),
-        }
-        : undefined;
-      const { events } = await this.thread.runStreamed(message, turnOptions);
-      for await (const event of events) {
-        // The runner's onEvent sink publishes the neutral events; the raw SDK
-        // event is no longer forwarded verbatim.
-        this.runner.handleEvent(event as Record<string, unknown>, this.result);
-      }
-    } catch (error) {
-      if (!this.options.abortController?.signal.aborted) {
-        throw error;
-      }
-    }
-    if (this.options.abortController?.signal.aborted) {
-      this.result.stopReason = "cancelled";
-    }
+    await this.runner.runTurn(this.thread, message, this.result);
     this.result.threadId = this.thread.id || this.result.threadId;
     this.result.transcript = this.runner.transcript();
     if (!this.result.finalText && this.result.transcript) {

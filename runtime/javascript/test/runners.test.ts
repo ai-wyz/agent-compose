@@ -177,6 +177,7 @@ describe("CodexRunner", () => {
       };
 
       expect(() => runner.handleEvent({ type: "turn.failed", error: { message: "bad" } }, result)).toThrow("bad");
+      expect(() => runner.handleEvent({ type: "error", message: "fatal stream error" }, result)).toThrow("fatal stream error");
     });
   });
 });

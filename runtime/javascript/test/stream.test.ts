@@ -158,6 +158,169 @@ describe("runStreamCommand", () => {
     });
   });
 
+  it.each([
+    ["Reconnecting... 1/3 (connection timed out)", false, false],
+    ["Reconnecting... 3/3 (connection timed out)", false, false],
+    ["Reconnecting... 3/3 (connection timed out)", true, false],
+    ["Reconnecting... 3/3 (connection timed out)", true, true],
+    ["Reconnecting... waiting for network (connection refused)", true, false],
+    ["Reconnecting... waiting for network (connection refused)", true, true],
+  ])("terminates an unfinished interactive %s with partial output %s after a completed turn %s", async (message, partialOutput, previousTurn) => {
+    await withTempSession(async (root) => {
+      codexEventFactory = (turn) => {
+        if (previousTurn && turn === 1) {
+          return [
+            { type: "item.completed", item: { id: "completed", type: "agent_message", text: "complete answer" } },
+            { type: "turn.completed" },
+          ];
+        }
+        return [
+          { type: "error", message },
+          ...(partialOutput ? [{ type: "item.completed", item: { id: "partial", type: "agent_message", text: "partial answer" } }] : []),
+        ];
+      };
+      const stdout = new MemoryWritable();
+
+      await runStreamCommand({
+        stdin: Readable.from([
+          frame({ seq: 0, type: "start", provider: "codex", stateRoot: `${root}/state`, workspace: `${root}/workspace`, home: `${root}/home` }),
+          ...(previousTurn ? [frame({ seq: 1, type: "human_message", message: "completed" })] : []),
+          frame({ seq: 2, type: "human_message", message: "first" }),
+          frame({ seq: 3, type: "human_message", message: "must not run" }),
+          frame({ seq: 4, type: "eof" }),
+        ]),
+        stdout,
+        stderr: new MemoryWritable(),
+      });
+
+      const frames = parseOutput(stdout.text);
+      const failure = `Codex stream ended before turn.completed after ${message}`;
+      expect(runInputs).toEqual(previousTurn ? ["completed", "first"] : ["first"]);
+      expect(frames).toContainEqual(expect.objectContaining({
+        type: "agent_event", event: { kind: "error", severity: "fatal", message: failure },
+      }));
+      expect(frames.at(-1)).toMatchObject({ type: "error", code: "runtime_stream_error", message: failure, inputSeq: 2 });
+      expect(frames.filter((entry) => entry.type === "agent_turn_completed")).toHaveLength(previousTurn ? 1 : 0);
+      expect(frames.some((entry) => entry.type === "result")).toBe(false);
+    });
+  });
+
+  it.each(["Reconnecting... 1/3 (connection timed out)", "Reconnecting... waiting for network"])("keeps a Codex interactive turn alive when %s completes", async (message) => {
+    await withTempSession(async (root) => {
+      codexEventFactory = () => [
+        { type: "thread.started", thread_id: "thread-1" },
+        { type: "error", message },
+        { type: "item.completed", item: { id: "msg-1", type: "agent_message", text: "recovered" } },
+        { type: "turn.completed", usage: { input_tokens: 1, cached_input_tokens: 0, output_tokens: 1 } },
+      ];
+      const stdout = new MemoryWritable();
+
+      await runStreamCommand({
+        stdin: Readable.from([
+          frame({ seq: 0, type: "start", provider: "codex", stateRoot: `${root}/state`, workspace: `${root}/workspace`, home: `${root}/home` }),
+          frame({ seq: 1, type: "human_message", message: "first" }),
+          frame({ seq: 2, type: "eof" }),
+        ]),
+        stdout,
+        stderr: new MemoryWritable(),
+      });
+
+      const frames = parseOutput(stdout.text);
+      expect(frames.map((entry) => entry.type)).toEqual([
+        "started",
+        "agent_event",
+        "agent_event",
+        "agent_event",
+        "agent_turn_completed",
+        "result",
+      ]);
+      expect(frames.some((entry) => entry.type === "error")).toBe(false);
+      expect(frames.at(-1)).toMatchObject({ type: "result", finalText: "recovered" });
+    });
+  });
+
+  it.each([
+    ["Reconnecting... 3/3 (connection timed out)", false],
+    ["Reconnecting... 3/3 (connection timed out)", true],
+    ["Reconnecting... waiting for network", true],
+  ])("preserves cancellation during %s with buffered input %s", async (message, bufferedInput) => {
+    await withTempSession(async (root) => {
+      const abortController = new AbortController();
+      codexEventFactory = () => {
+        abortController.abort();
+        return [{ type: "error", message }];
+      };
+      const stdout = new MemoryWritable();
+      await runStreamCommand({
+        stdin: Readable.from([
+          frame({ seq: 0, type: "start", provider: "codex", stateRoot: `${root}/state`, workspace: `${root}/workspace`, home: `${root}/home` }),
+          frame({ seq: 1, type: "human_message", message: "first" }),
+          ...(bufferedInput ? [
+            frame({ seq: 2, type: "human_message", message: "must not run" }),
+            frame({ seq: 3, type: "eof" }),
+          ] : []),
+        ]),
+        stdout,
+        stderr: new MemoryWritable(),
+        abortController,
+      });
+      const frames = parseOutput(stdout.text);
+      expect(runInputs).toEqual(["first"]);
+      expect(frames.at(-1)).toMatchObject({ type: "result", stopReason: "cancelled" });
+      expect(frames.some((entry) => entry.type === "error" || (entry.event as { kind?: string })?.kind === "error")).toBe(false);
+    });
+  });
+
+  it("counts unbounded Codex reconnect notices per turn without inventing a retry limit", async () => {
+    await withTempSession(async (root) => {
+      codexEventFactory = (turn) => [
+        { type: "error", message: "Reconnecting... waiting for network" },
+        { type: "error", message: "Reconnecting... waiting for network" },
+        { type: "item.completed", item: { id: `msg-${turn}`, type: "agent_message", text: `answer ${turn}` } },
+        { type: "turn.completed" },
+      ];
+      const stdout = new MemoryWritable();
+      await runStreamCommand({
+        stdin: Readable.from([
+          frame({ seq: 0, type: "start", provider: "codex", stateRoot: `${root}/state`, workspace: `${root}/workspace`, home: `${root}/home` }),
+          frame({ seq: 1, type: "human_message", message: "first" }),
+          frame({ seq: 2, type: "human_message", message: "second" }),
+          frame({ seq: 3, type: "eof" }),
+        ]),
+        stdout,
+        stderr: new MemoryWritable(),
+      });
+      const frames = parseOutput(stdout.text);
+      const retries = frames.filter((entry) => (entry.event as { kind?: string })?.kind === "retry");
+      expect(retries.map((entry) => (entry.event as { attempt: number }).attempt)).toEqual([1, 2, 1, 2]);
+      expect(retries.every((entry) => !("maxAttempts" in (entry.event as object)))).toBe(true);
+      expect(frames.filter((entry) => entry.type === "agent_turn_completed")).toHaveLength(2);
+      expect(frames.some((entry) => entry.type === "error")).toBe(false);
+      expect(frames.at(-1)).toMatchObject({ type: "result", finalText: "answer 2", stopReason: "eof" });
+    });
+  });
+
+  it("terminates a failed prompt-runner turn without processing buffered human messages", async () => {
+    await withTempSession(async (root) => {
+      const runPrompt = vi.spyOn(OpenCodeRunner.prototype, "runPrompt").mockRejectedValue(new Error("provider failed"));
+      const stdout = new MemoryWritable();
+      await runStreamCommand({
+        stdin: Readable.from([
+          frame({ seq: 0, type: "start", provider: "opencode", stateRoot: `${root}/state`, workspace: `${root}/workspace`, home: `${root}/home` }),
+          frame({ seq: 1, type: "human_message", message: "first" }),
+          frame({ seq: 2, type: "human_message", message: "must not run" }),
+          frame({ seq: 3, type: "eof" }),
+        ]),
+        stdout,
+        stderr: new MemoryWritable(),
+      });
+      const frames = parseOutput(stdout.text);
+      expect(frames.map((entry) => entry.type)).toEqual(["started", "error"]);
+      expect(frames.at(-1)).toMatchObject({ code: "runtime_stream_error", message: "provider failed", inputSeq: 1 });
+      expect(runPrompt).toHaveBeenCalledTimes(1);
+    });
+  });
+
   it("resumes an interactive Codex thread only when the system context fingerprint matches", async () => {
     await withTempSession(async (root) => {
       const providerRoot = path.join(root, "state", "agents", "providers");

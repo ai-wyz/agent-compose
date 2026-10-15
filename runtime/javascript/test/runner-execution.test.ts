@@ -289,6 +289,97 @@ describe("runner execution", () => {
     });
   });
 
+  it.each([
+    ["Reconnecting... 1/3 (We're currently experiencing high demand, which may cause temporary errors.)", "overloaded", 1, 3],
+    ["Reconnecting... 1/3 (unexpected status 429 Too Many Requests)", "rate_limit", 1, 3],
+    ["Reconnecting... 1/3 (connection timed out)", "network", 1, 3],
+    ["Reconnecting... 1/3", "other", 1, 3],
+    ["Reconnecting... 3/3 (connection timed out)", "network", 3, 3],
+    ["Reconnecting... waiting for network", "network", 1, undefined],
+    ["Reconnecting... waiting for network (connection refused)", "network", 1, undefined],
+  ])("keeps consuming Codex events after %s", async (reconnectMessage, reason, attempt, maxAttempts) => {
+    const { CodexRunner } = await import("../src/runners/codex.js");
+    await withTempSession(async (root) => {
+      const emitted: Array<Record<string, unknown>> = [];
+      codexState.events = [
+        { type: "error", message: reconnectMessage },
+        { type: "item.completed", item: { id: "a1", type: "agent_message", text: "recovered" } },
+        { type: "turn.completed", usage: { input_tokens: 1, cached_input_tokens: 0, output_tokens: 1 } },
+      ];
+
+      const result = await new CodexRunner({
+        ...runnerOptions(root),
+        onEvent: (event) => emitted.push(event),
+      }).runPrompt("prompt");
+
+      expect(result.finalText).toBe("recovered");
+      expect(emitted).toContainEqual({
+        kind: "retry",
+        reason,
+        attempt,
+        maxAttempts,
+        message: reconnectMessage,
+      });
+      expect(emitted.some((event) => event.kind === "error")).toBe(false);
+    });
+  });
+
+  it.each([
+    ["Reconnecting... 1/3 (connection timed out)", false],
+    ["Reconnecting... 3/3 (connection timed out)", false],
+    ["Reconnecting... 3/3 (connection timed out)", true],
+    ["Reconnecting... waiting for network (connection refused)", true],
+  ])("rejects an unfinished Codex stream after %s with partial output %s", async (message, partialOutput) => {
+    const { CodexRunner } = await import("../src/runners/codex.js");
+    await withTempSession(async (root) => {
+      const emitted: Array<Record<string, unknown>> = [];
+      codexState.events = [{ type: "error", message }];
+      if (partialOutput) {
+        codexState.events.push({ type: "item.completed", item: { id: "a1", type: "agent_message", text: "partial answer" } });
+      }
+      const failure = `Codex stream ended before turn.completed after ${message}`;
+
+      await expect(new CodexRunner({
+        ...runnerOptions(root),
+        onEvent: (event) => emitted.push(event),
+      }).runPrompt("prompt")).rejects.toThrow(failure);
+      expect(emitted).toContainEqual({ kind: "error", severity: "fatal", message: failure });
+    });
+  });
+
+  it.each(["Reconnecting... 3/3 (connection timed out)", "Reconnecting... waiting for network"])("keeps a cancelled Codex reconnect stream cancelled after %s", async (message) => {
+    const { CodexRunner } = await import("../src/runners/codex.js");
+    await withTempSession(async (root) => {
+      const abortController = new AbortController();
+      abortController.abort();
+      codexState.events = [{ type: "error", message }];
+      const emitted: Array<Record<string, unknown>> = [];
+
+      const result = await new CodexRunner({
+        ...runnerOptions(root),
+        abortController,
+        onEvent: (event) => emitted.push(event),
+      }).runPrompt("prompt");
+
+      expect(result.stopReason).toBe("cancelled");
+      expect(emitted.some((event) => event.kind === "error")).toBe(false);
+    });
+  });
+
+  it("still fails when a Codex turn fails after reconnecting", async () => {
+    const { CodexRunner } = await import("../src/runners/codex.js");
+    await withTempSession(async (root) => {
+      codexState.events = [
+        { type: "error", message: "Reconnecting... 3/3 (connection timed out)" },
+        { type: "turn.failed", error: { message: "reconnect attempts exhausted" } },
+      ];
+
+      await expect(new CodexRunner(runnerOptions(root)).runPrompt("prompt")).rejects.toThrow(
+        "reconnect attempts exhausted",
+      );
+    });
+  });
+
   it("resumes a stored Codex thread when the system context fingerprint matches", async () => {
     const { CodexRunner } = await import("../src/runners/codex.js");
     await withTempSession(async (root) => {
