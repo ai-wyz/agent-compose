@@ -155,12 +155,14 @@ reflink 的实现与快照 GC 分开：即使文件系统不支持 reflink，快
 
 ## 7. Docker 路径解析与信任边界
 
-工作区、sandbox 自有路径和声明的 bind volume 共用解析实现：先处理明确的 `DOCKER_HOST_SANDBOX_ROOT` 映射，再根据 daemon 容器最深的包含挂载换算。更深的 tmpfs 或无法分享的挂载会遮住父 bind；不能穿过它继续用父路径。
+工作区、sandbox 自有路径、声明的 bind volume 和 `local` 项目级 volume 共用解析实现：先处理明确的 `DOCKER_HOST_SANDBOX_ROOT` 映射，再根据 daemon 容器最深的包含挂载换算。更深的 tmpfs 或无法分享的挂载会遮住父 bind；不能穿过它继续用父路径。
 
 | 来源合同 | 显式 SandboxRoot 映射 | 容器共享路径映射 | 未证明共享的路径 |
 | --- | --- | --- | --- |
-| 已有自有路径 / bind volume | 保留已有配置行为 | 共用最深挂载算法 | 保留已有显式宿主路径合同 |
+| 已有自有路径 / bind volume / `local` 项目级 volume | 来源在 SandboxRoot 下时使用；外部来源与 workspace 一样另行解析 | 共用最深挂载算法 | 未设置该映射时保留已有显式宿主路径合同；设置时需要可验证本地 Engine，否则拒绝 |
 | workspace `mode: mount` | 来源在 SandboxRoot 下时使用；外部来源另行解析 | 共用同一算法 | 需要可验证本地 Engine，否则拒绝 |
+
+`DOCKER_HOST_SANDBOX_ROOT` 只描述 SandboxRoot；设置它即表明 daemon 的路径不是 Engine 宿主路径，因此其他来源不能回退为同名路径。最初所有挂载来源都在 SandboxRoot 下，该映射之外的路径被视为异常直接拒绝；`local` 项目级 volume 位于 `DATA_ROOT/volumes`、与 SandboxRoot 并列，在该映射下因此始终无法挂载。现在外部来源与 workspace 采用同一解析：通过 daemon 容器共享挂载或已验证的本地 Engine 映射，无法证明共享时拒绝。
 
 二者共用路径机制，但 `workspace.mount` 额外承诺挂入 daemon 校验过的项目来源，因此不能把远端另一个同名路径当成该目录。原生 daemon 先验证本地 Engine，不会因为 Engine 中恰有一个与宿主同名的容器，就误用那个容器的挂载。容器内 daemon 则必须通过自身共享挂载映射。原生 mount 支持规则、递归只读、镜像 VOLUME 重叠检查和来源失效后的 inspect/stop/remove 能力继续保留。
 

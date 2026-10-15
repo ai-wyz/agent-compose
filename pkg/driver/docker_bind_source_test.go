@@ -88,12 +88,20 @@ func TestDockerBindSourceExplicitMappingPrecedenceAndScope(t *testing.T) {
 			})
 		}
 	}
-	got, err := runtime.bindWorkspaceMountSource(context.Background(), dockerClient, "/project/src")
-	if err != nil || got != "/inspected/project/src" {
-		t.Fatalf("external workspace used SandboxRoot override: %q, %v", got, err)
-	}
-	if _, err := runtime.bindRuntimeMountSource(context.Background(), dockerClient, "/project/src"); err == nil {
-		t.Fatal("existing configured bind contract no longer rejects a path outside SandboxRoot")
+	// Outside SandboxRoot the override says nothing, so a workspace and a
+	// configured source (bind or local project volume) both map through a shared
+	// daemon container mount, and neither falls back to the unmapped daemon path.
+	for name, resolve := range map[string]func(context.Context, *client.Client, string) (string, error){
+		"workspace":  runtime.bindWorkspaceMountSource,
+		"configured": runtime.bindRuntimeMountSource,
+	} {
+		got, err := resolve(context.Background(), dockerClient, "/project/src")
+		if err != nil || got != "/inspected/project/src" {
+			t.Fatalf("external %s source = %q, %v; want the shared container mount", name, got, err)
+		}
+		if got, err := resolve(context.Background(), dockerClient, "/private/src"); err == nil {
+			t.Fatalf("unshared external %s source fell back to %q", name, got)
+		}
 	}
 	if _, err := runtime.bindWorkspaceMountSource(context.Background(), nil, "/data/sandboxes-other/src"); err == nil {
 		t.Fatal("prefix sibling incorrectly used explicit mapping")

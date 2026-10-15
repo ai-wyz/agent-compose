@@ -409,70 +409,42 @@ func TestDockerRuntimeBindRuntimeMountSourceKeepsSourceWithoutHostRoot(t *testin
 	}
 }
 
-func TestDockerRuntimeBindRuntimeMountSourceRejectsOutsideSandboxRoot(t *testing.T) {
+// Outside SANDBOX_ROOT the override provides no mapping, so a configured source
+// can only map through the daemon container's mounts. Without a Docker client
+// to inspect them it must fail, not pass the daemon path through unmapped.
+func TestDockerRuntimeBindRuntimeMountSourceOutsideSandboxRootNeedsDockerClient(t *testing.T) {
 	config := &appconfig.Config{
 		SandboxRoot:           "/data/sandboxes",
 		DockerHostSandboxRoot: "/srv/agent-compose/sandboxes",
 	}
 	runtime := &dockerRuntime{config: config}
 
-	if _, err := runtime.bindRuntimeMountSource(context.Background(), nil, "/data/other/session-1/workspace"); err == nil {
-		t.Fatalf("bindRuntimeMountSource returned nil error for path outside sandbox root")
+	got, err := runtime.bindRuntimeMountSource(context.Background(), nil, "/data/other/session-1/workspace")
+	if err == nil || got != "" {
+		t.Fatalf("outside source without a Docker client = %q, %v; want no mapping", got, err)
+	}
+	if !strings.Contains(err.Error(), "docker client is required") {
+		t.Fatalf("error = %v; want the missing Docker client reported", err)
 	}
 }
 
-func TestRebasePathUnderRoot(t *testing.T) {
-	got, err := rebasePathUnderRoot("/data/sandboxes/session-1", "/data", "/host/data")
-	if err != nil {
-		t.Fatalf("rebasePathUnderRoot returned error: %v", err)
-	}
-	want := filepath.Join("/host/data", "sandboxes", "session-1")
-	if got != want {
-		t.Fatalf("rebasePathUnderRoot returned %q, want %q", got, want)
-	}
-}
-
-func TestRebasePathUnderRootPreservesWindowsHostRoot(t *testing.T) {
-	got, err := rebasePathUnderRoot("/data/sandboxes/session-1/workspace", "/data/sandboxes", `E:\program\agent-compose-main\data\agent-compose\sandboxes`)
-	if err != nil {
-		t.Fatalf("rebasePathUnderRoot returned error: %v", err)
-	}
-	want := `E:\program\agent-compose-main\data\agent-compose\sandboxes\session-1\workspace`
-	if got != want {
-		t.Fatalf("rebasePathUnderRoot returned %q, want %q", got, want)
-	}
-}
-
-func TestRebasePathUnderRootPreservesWindowsHostRootWithSlashes(t *testing.T) {
-	got, err := rebasePathUnderRoot("/data/sandboxes/session-1/workspace", "/data/sandboxes", "E:/program/agent-compose-main/data/agent-compose/sandboxes")
-	if err != nil {
-		t.Fatalf("rebasePathUnderRoot returned error: %v", err)
-	}
-	want := "E:/program/agent-compose-main/data/agent-compose/sandboxes/session-1/workspace"
-	if got != want {
-		t.Fatalf("rebasePathUnderRoot returned %q, want %q", got, want)
-	}
-}
-
-func TestRebasePathUnderRootPreservesWindowsUNCHostRoot(t *testing.T) {
-	got, err := rebasePathUnderRoot("/data/sandboxes/session-1/workspace", "/data/sandboxes", `\\server\share\agent-compose\sandboxes`)
-	if err != nil {
-		t.Fatalf("rebasePathUnderRoot returned error: %v", err)
-	}
-	want := `\\server\share\agent-compose\sandboxes\session-1\workspace`
-	if got != want {
-		t.Fatalf("rebasePathUnderRoot returned %q, want %q", got, want)
-	}
-}
-
-func TestRebasePathUnderRootDoesNotTreatLinuxBackslashAsWindowsRoot(t *testing.T) {
-	got, err := rebasePathUnderRoot("/data/sandboxes/session-1/workspace", "/data/sandboxes", `/srv/agent-compose\weird/sandboxes`)
-	if err != nil {
-		t.Fatalf("rebasePathUnderRoot returned error: %v", err)
-	}
-	want := filepath.Join(`/srv/agent-compose\weird/sandboxes`, "session-1", "workspace")
-	if got != want {
-		t.Fatalf("rebasePathUnderRoot returned %q, want %q", got, want)
+func TestDockerHostSandboxRootMapsSourcesInsideSandboxRoot(t *testing.T) {
+	for _, test := range []struct {
+		name, sandboxRoot, hostRoot, source, want string
+	}{
+		{name: "linux", sandboxRoot: "/data", hostRoot: "/host/data", source: "/data/sandboxes/session-1", want: filepath.Join("/host/data", "sandboxes", "session-1")},
+		{name: "windows backslashes", sandboxRoot: "/data/sandboxes", hostRoot: `E:\program\agent-compose-main\data\agent-compose\sandboxes`, source: "/data/sandboxes/session-1/workspace", want: `E:\program\agent-compose-main\data\agent-compose\sandboxes\session-1\workspace`},
+		{name: "windows slashes", sandboxRoot: "/data/sandboxes", hostRoot: "E:/program/agent-compose-main/data/agent-compose/sandboxes", source: "/data/sandboxes/session-1/workspace", want: "E:/program/agent-compose-main/data/agent-compose/sandboxes/session-1/workspace"},
+		{name: "windows UNC", sandboxRoot: "/data/sandboxes", hostRoot: `\\server\share\agent-compose\sandboxes`, source: "/data/sandboxes/session-1/workspace", want: `\\server\share\agent-compose\sandboxes\session-1\workspace`},
+		{name: "linux backslash is not a windows root", sandboxRoot: "/data/sandboxes", hostRoot: `/srv/agent-compose\weird/sandboxes`, source: "/data/sandboxes/session-1/workspace", want: filepath.Join(`/srv/agent-compose\weird/sandboxes`, "session-1", "workspace")},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			runtime := &dockerRuntime{config: &appconfig.Config{SandboxRoot: test.sandboxRoot, DockerHostSandboxRoot: test.hostRoot}}
+			got, err := runtime.bindRuntimeMountSource(context.Background(), nil, test.source)
+			if err != nil || got != test.want {
+				t.Fatalf("mapping = %q, %v; want %q", got, err, test.want)
+			}
+		})
 	}
 }
 
