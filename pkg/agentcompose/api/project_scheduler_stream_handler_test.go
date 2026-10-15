@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"connectrpc.com/connect"
 
@@ -158,6 +159,69 @@ func TestStreamProjectSchedulerEventsResolvesManyCommandCompletedEventsInOrder(t
 	for i, message := range messages {
 		if want := fmt.Sprintf("output-%d", i); message != want {
 			t.Fatalf("messages[%d] = %q, want %q (concurrent resolution must preserve display order)", i, message, want)
+		}
+	}
+}
+
+// Regression for #773: an artifact holding invalid UTF-8 used to reach the
+// protobuf string field verbatim, so connect failed the entire stream with
+// "internal: marshal message: string field contains invalid UTF-8" and the
+// caller lost every event in the response, not just the offending one.
+func TestStreamProjectSchedulerEventsSanitizesInvalidUTF8Artifact(t *testing.T) {
+	store, _, handler := newSchedulerRunHandlerFixture()
+	sandboxDir := t.TempDir()
+	writeSchedulerCommandCellArtifact(t, sandboxDir, "cell-1", "MARKER-BEFORE\n\xe7\nMARKER-AFTER\n")
+	handler.sandboxDirs = projectHandlerSandboxDirsFake{"sandbox-1": sandboxDir}
+
+	createdAt := time.Unix(1200, 0).UTC()
+	store.events = []domain.SchedulerEvent{
+		{
+			ID: "event-1", SchedulerID: store.scheduler.ID, RunID: "run-1", TriggerID: "trigger-1",
+			Type: "scheduler.command.completed", Message: "",
+			LinkedSandboxID: "sandbox-1", LinkedCellID: "cell-1", CreatedAt: createdAt,
+		},
+		{
+			ID: "event-2", SchedulerID: store.scheduler.ID, RunID: "run-1", TriggerID: "trigger-1",
+			Type: "scheduler.run.completed", Message: "run completed", CreatedAt: createdAt.Add(time.Second),
+		},
+	}
+	client, closeServer := schedulerStreamTestClient(t, handler)
+	defer closeServer()
+	stream, err := client.StreamProjectSchedulerEvents(context.Background(), connect.NewRequest(&agentcomposev2.StreamProjectSchedulerEventsRequest{
+		Project: &agentcomposev2.ProjectRef{Selector: &agentcomposev2.ProjectRef_ProjectId{ProjectId: store.project.ID}},
+	}))
+	if err != nil {
+		t.Fatalf("StreamProjectSchedulerEvents returned error: %v", err)
+	}
+	messages := map[string]string{}
+	completed := false
+	for stream.Receive() {
+		frame := stream.Msg()
+		for _, event := range frame.GetEvents() {
+			messages[event.GetId()] = event.GetMessage()
+		}
+		if frame.GetComplete() {
+			completed = true
+		}
+	}
+	if err := stream.Err(); err != nil {
+		t.Fatalf("StreamProjectSchedulerEvents receive error (the whole stream must survive one bad byte, #773): %v", err)
+	}
+	if !completed {
+		t.Fatalf("stream ended without a complete frame")
+	}
+	if len(messages) != 2 {
+		t.Fatalf("messages = %#v, want both the bad-byte event and the healthy event", messages)
+	}
+	if want := "MARKER-BEFORE\n\uFFFD\nMARKER-AFTER\n"; messages["event-1"] != want {
+		t.Fatalf("event-1 message = %q, want %q", messages["event-1"], want)
+	}
+	if messages["event-2"] != "run completed" {
+		t.Fatalf("event-2 message = %q, want it untouched", messages["event-2"])
+	}
+	for id, message := range messages {
+		if !utf8.ValidString(message) {
+			t.Fatalf("message for %s is not valid UTF-8: %q", id, message)
 		}
 	}
 }
