@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	domain "github.com/chaitin/agent-compose/pkg/model"
 	"github.com/chaitin/agent-compose/pkg/schedulers"
@@ -245,5 +246,94 @@ func TestResolveEventMessageNilSandboxDirsFallsBackToMessage(t *testing.T) {
 	text, ok := schedulers.ResolveEventMessage(context.Background(), event, nil)
 	if text != event.Message || !ok {
 		t.Fatalf("ResolveEventMessage = %q,%v want %q,true", text, ok, event.Message)
+	}
+}
+
+// command output is captured as raw subprocess bytes, so an artifact read can
+// return text that is not valid UTF-8. A scheduler event message travels in a
+// protobuf string field, where one bad byte fails the whole response; the
+// resolved text must therefore always be valid UTF-8, with each invalid byte
+// run replaced by U+FFFD instead of erroring out.
+func TestResolveEventMessageSanitizesInvalidUTF8ArtifactBytes(t *testing.T) {
+	cases := []struct {
+		name    string
+		content string
+		want    string
+	}{
+		{"single invalid byte between markers", "MARKER-BEFORE\n\xe7\nMARKER-AFTER\n", "MARKER-BEFORE\n\uFFFD\nMARKER-AFTER\n"},
+		{"truncated multibyte sequence", "a\xe4\xb8z", "a\uFFFDz"},
+		{"lone 0xff byte", "a\xffz", "a\uFFFDz"},
+		{"run of invalid bytes collapses to one replacement", "\xff\xfe", "\uFFFD"},
+		{"valid utf8 is untouched", "héllo 世界", "héllo 世界"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			writeCellArtifact(t, cellArtifactWrite{SandboxDir: dir, CellID: "cell-1", Name: "output.txt", Content: tc.content})
+			resolver := &fakeSandboxDirResolver{t: t, dirs: map[string]string{"sandbox-1": dir}}
+			event := domain.SchedulerEvent{
+				Type:            "scheduler.command.completed",
+				Message:         "",
+				LinkedSandboxID: "sandbox-1",
+				LinkedCellID:    "cell-1",
+			}
+
+			text, ok := schedulers.ResolveEventMessage(context.Background(), event, resolver)
+			if !ok {
+				t.Fatalf("artifactAvailable = false, want true")
+			}
+			if !utf8.ValidString(text) {
+				t.Fatalf("ResolveEventMessage returned invalid UTF-8: %q", text)
+			}
+			if text != tc.want {
+				t.Fatalf("ResolveEventMessage = %q, want %q", text, tc.want)
+			}
+		})
+	}
+}
+
+func TestResolveEventMessageSanitizesStdoutFallbackBytes(t *testing.T) {
+	dir := t.TempDir()
+	writeCellArtifact(t, cellArtifactWrite{SandboxDir: dir, CellID: "cell-1", Name: "output.txt"})
+	writeCellArtifact(t, cellArtifactWrite{SandboxDir: dir, CellID: "cell-1", Name: "stdout.txt", Content: "stdout\xe7content"})
+	resolver := &fakeSandboxDirResolver{t: t, dirs: map[string]string{"sandbox-1": dir}}
+	event := domain.SchedulerEvent{Type: "scheduler.command.completed", Message: "", LinkedSandboxID: "sandbox-1", LinkedCellID: "cell-1"}
+
+	text, ok := schedulers.ResolveEventMessage(context.Background(), event, resolver)
+	if !ok {
+		t.Fatalf("artifactAvailable = false, want true")
+	}
+	if want := "stdout\uFFFDcontent"; text != want {
+		t.Fatalf("ResolveEventMessage = %q, want %q", text, want)
+	}
+}
+
+// The message column is inserted as a plain string, so a row written by any
+// path (or by an older daemon build) can carry bytes that are not valid UTF-8.
+// ResolveEventMessage returns stored messages without any I/O, so the
+// sanitizing has to cover that branch too, not just artifact reads.
+func TestResolveEventMessageSanitizesStoredMessageWithoutIO(t *testing.T) {
+	cases := []struct {
+		name  string
+		event domain.SchedulerEvent
+		want  string
+	}{
+		{"non-command event", domain.SchedulerEvent{Type: "scheduler.agent.completed", Message: "agent\xe7output"}, "agent\uFFFDoutput"},
+		{"historical command.completed row", domain.SchedulerEvent{Type: "scheduler.command.completed", Message: "old\xffrow"}, "old\uFFFDrow"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			resolver := &fakeSandboxDirResolver{t: t, forbid: true}
+			text, ok := schedulers.ResolveEventMessage(context.Background(), tc.event, resolver)
+			if !ok {
+				t.Fatalf("artifactAvailable = false, want true")
+			}
+			if !utf8.ValidString(text) {
+				t.Fatalf("ResolveEventMessage returned invalid UTF-8: %q", text)
+			}
+			if text != tc.want {
+				t.Fatalf("ResolveEventMessage = %q, want %q", text, tc.want)
+			}
+		})
 	}
 }

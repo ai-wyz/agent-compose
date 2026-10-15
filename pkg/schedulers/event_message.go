@@ -19,9 +19,22 @@ type SandboxDirResolver interface {
 	SandboxDir(id string) string
 }
 
+// schedulerEventMessageReplacement replaces each run of bytes in an event
+// message that is not valid UTF-8. A message travels in a protobuf string
+// field, which protobuf rejects while encoding, so one raw byte would otherwise
+// fail the whole list/stream response instead of degrading to a replacement
+// character. Command output is captured as raw subprocess bytes (the guest
+// runtime writes output.txt/stdout.txt/stderr.txt verbatim) and the message
+// column stores a plain string, so the sanitizing belongs on the read path that
+// produces the display text.
+const schedulerEventMessageReplacement = "\uFFFD"
+
 // ResolveEventMessage returns the display text for a scheduler_event and
 // whether that text came from a live artifact read, per
-// docs/design/scheduler_event_storage_design.md §6.
+// docs/design/scheduler_event_storage_design.md §6. The returned text is always
+// valid UTF-8: invalid byte runs are replaced with U+FFFD (see
+// schedulerEventMessageReplacement), because the text is sent in a protobuf
+// string field that cannot carry arbitrary bytes.
 //
 // For (loader|scheduler).command.completed events, event.Message is the
 // discriminator between old and new rows: rows written before this event
@@ -37,10 +50,10 @@ type SandboxDirResolver interface {
 // Every other event type returns event.Message as-is with no I/O.
 func ResolveEventMessage(ctx context.Context, event domain.SchedulerEvent, sandboxDirs SandboxDirResolver) (text string, artifactAvailable bool) {
 	if !EventMessageNeedsArtifactRead(event) {
-		return event.Message, true
+		return strings.ToValidUTF8(event.Message, schedulerEventMessageReplacement), true
 	}
 	if text, ok := readCommandCompletedArtifact(ctx, event, sandboxDirs); ok {
-		return text, true
+		return strings.ToValidUTF8(text, schedulerEventMessageReplacement), true
 	}
 	return commandArtifactUnavailableMessage(event), false
 }
