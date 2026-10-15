@@ -409,15 +409,22 @@ func TestDockerRuntimeBindRuntimeMountSourceKeepsSourceWithoutHostRoot(t *testin
 	}
 }
 
-func TestDockerRuntimeBindRuntimeMountSourceRejectsOutsideSandboxRoot(t *testing.T) {
+// Outside SANDBOX_ROOT the override provides no mapping, so a configured source
+// can only map through the daemon container's mounts. Without a Docker client
+// to inspect them it must fail, not pass the daemon path through unmapped.
+func TestDockerRuntimeBindRuntimeMountSourceOutsideSandboxRootNeedsDockerClient(t *testing.T) {
 	config := &appconfig.Config{
 		SandboxRoot:           "/data/sandboxes",
 		DockerHostSandboxRoot: "/srv/agent-compose/sandboxes",
 	}
 	runtime := &dockerRuntime{config: config}
 
-	if _, err := runtime.bindRuntimeMountSource(context.Background(), nil, "/data/other/session-1/workspace"); err == nil {
-		t.Fatalf("bindRuntimeMountSource returned nil error for path outside sandbox root")
+	got, err := runtime.bindRuntimeMountSource(context.Background(), nil, "/data/other/session-1/workspace")
+	if err == nil || got != "" {
+		t.Fatalf("outside source without a Docker client = %q, %v; want no mapping", got, err)
+	}
+	if !strings.Contains(err.Error(), "docker client is required") {
+		t.Fatalf("error = %v; want the missing Docker client reported", err)
 	}
 }
 
