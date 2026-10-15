@@ -887,10 +887,18 @@ else
   guest_log=$(<"$FAKE_DOCKER_LOG")
   for omitted in HTTP_PROXY HTTPS_PROXY ALL_PROXY NO_PROXY REGISTRY_MIRROR GOPROXY GO_VERSION GRPCURL_VERSION \
     NODE_MAJOR NPM_CONFIG_REGISTRY PIP_INDEX_URL PIP_TRUSTED_HOST \
-    ARCHLINUX_TAG ARCHLINUX_MIRROR CODEX_VERSION CLAUDE_CODE_VERSION OPENCODE_VERSION \
-    PI_AGENT_VERSION PI_MCP_ADAPTER_VERSION; do
+    ARCHLINUX_TAG ARCHLINUX_MIRROR; do
     forbid_regex "$guest_log" "^$omitted=" "empty guest $omitted build argument"
   done
+  # Provider pins and the guest ABI default to guest-images/providers.lock.json,
+  # so an unset environment variable still produces a pinned, reproducible build
+  # and a provider bump only has to be authored once.
+  while IFS= read -r pinned; do
+    [[ -n $pinned ]] || continue
+    require_regex "$guest_log" "^$pinned$" "guest lock default $pinned build argument"
+  done < <("$ROOT_DIR/scripts/provider-lock.sh" pairs)
+  require_regex "$guest_log" "^GUEST_ABI=$("$ROOT_DIR/scripts/provider-lock.sh" guest-abi-version)$" \
+    'guest ABI build argument from the lock'
 fi
 
 if ! run_guest_builder DOCKER_DEFAULT_PLATFORM=linux/amd64; then

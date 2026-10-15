@@ -9,16 +9,81 @@ Docker Hub 上 `chaitin/agent-compose-guest` 镜像中的全部工具。
 
 ## 1. 兼容模型
 
-目前没有 guest ABI version label，也没有能证明任意 guest image 与某个 daemon release 匹配的启动握手。daemon 选择镜像、挂载 sandbox state、通过 runtime driver 启动镜像，再按照路径和协议约定执行命令。
+guest image 现在会声明自己是为哪个契约构建的，声明由两处产物承载：
+
+- OCI label `io.agent-compose.guest-abi`，无需启动镜像即可从镜像元数据读取；
+- 位于 `/etc/agent-compose/guest-abi.json` 的 manifest，随镜像文件系统一起分发，可在运行中的 sandbox 内读取。
+
+两者携带同一个数字：**guest ABI**。当前 daemon release 只支持一个 guest ABI 值（`pkg/guestabi` 中的 `CurrentGuestAbi`）。声明了其他值的 guest image 与当前 daemon release 不匹配。
+
+guest ABI 与 provider 版本刻意保持独立。升级 Codex、Claude、OpenCode、Pi 或 DSH 改变的是镜像内容，而不是 daemon 与 guest 之间的契约，因此 `guestAbi` 保持不变，仅重建 provider 的镜像可以继续运行在已经部署的 daemon 之下。提高 `guestAbi` 意味着 daemon/guest 契约本身发生变化，这属于 daemon release，而不是 guest 重建。
+
+daemon 仍然负责选择镜像、挂载 sandbox state、通过 runtime driver 启动镜像，并按路径和协议约定执行命令。声明改变的是 daemon 在此之前能知道什么，而不是它启动 sandbox 的方式。
 
 因此：
 
-- 自定义镜像**必须**针对生产环境使用的每个 `agent-compose` release 和 runtime driver 进行测试。
+- 自定义镜像**必须**针对生产环境使用的每个 `agent-compose` release 和 runtime driver 进行测试。声明并不等于内容证明：目前没有会检查任意镜像内容的启动握手，daemon 也不会拒绝声明缺失、不可读或 ABI 不同的镜像，而是回退到自己编译期内置的 provider 声明。
 - 包含 `agent-compose-runtime` 的镜像**应该**从与 daemon 相同的 Git tag 或 commit 构建 runtime。Runtime CLI 及其 stdout 协议是内部 release boundary，不保证任意跨版本兼容。
 - 最稳妥的自定义方式是继承与 daemon tag 匹配的不可变官方 guest tag。
 - 多架构 tag **必须**包含 runtime host 使用的架构。官方发布矩阵是 `linux/amd64` 和 `linux/arm64`。
 
 本文约定的是镜像文件系统和进程环境。KVM 访问、Docker 可达性、镜像拉取、daemon 权限、网络策略、模型凭据及外部服务健康度属于部署问题，不是 guest image ABI 属性。
+
+### 1.1 Guest ABI 产物
+
+`guest-images/providers.lock.json` 是仓库内 guest 镜像内容的唯一编写点。它记录 `guestAbi`、`nodeMajor` 以及一个 `packages` map；每个条目给出 npm 包、固定版本、承载它的 Docker build arg，并可选给出可执行文件名、feature 列表、companion 包或 Node.js 版本要求。`scripts/provider-lock.sh` 据此派生其余所有内容：
+
+- `pairs` 输出 `BUILDARG=version` 行；
+- `guest-abi` 渲染 manifest，`sync` 将其写入 `guest-images/guest-abi.json`，`guest-abi-version` 输出 ABI 版本号；
+- `check` 在 lock、两个 guest Dockerfile 的 `ARG` 默认值、构建脚本的转发或生成的 manifest 任意一处不一致时失败；
+- `bump K=V [K=V ...]` 一次性改写 lock、两个 Dockerfile 和 manifest 中的某个 provider 版本，且不校验新版本。
+
+`guest-images/guest-abi.json` 由 lock 生成并提交到仓库。只有提供 agent 可执行文件的包才会出现在 `providers` 下；`pi-mcp-adapter` 这类 companion 包属于构建输入，因此被有意排除。daemon 要求 manifest 描述它认识的每个 provider（`codex`、`claude`、`opencode`、`pi`、`dsh`）；缺少其中任何一个时，daemon 会放弃该 manifest 并改用编译期声明（`pkg/capmatrix/provider_matrix.go` 中的 `DeclaredProvidersFromManifest`）：
+
+```json
+{
+  "guestAbi": 1,
+  "providers": {
+    "codex": {
+      "version": "x.y.z",
+      "features": ["structured_output", "session_resume", "streaming"]
+    }
+  }
+}
+```
+
+两个 guest Dockerfile 都会烘焙该 manifest 并发布 ABI：
+
+```dockerfile
+ARG GUEST_ABI=1
+LABEL io.agent-compose.guest-abi="${GUEST_ABI}"
+COPY guest-images/guest-abi.json /etc/agent-compose/guest-abi.json
+```
+
+`GUEST_ABI` 在 Dockerfile 中默认为 `1`，由 `scripts/build-agent-compose-guest.sh` 覆盖为 lock 中的取值。因此 manifest 随镜像文件系统一起分发，而 label 让 registry 或运维人员无需启动镜像即可看到契约版本。
+
+在 daemon 侧，`pkg/guestabi` 拥有该契约（`CurrentGuestAbi`、`Parse`、`LoadFile`、`Validate`、`VerifyCompatible`、`ErrUnsupportedGuestAbi`）。可选环境变量 `GUEST_ABI_MANIFEST` 用于指定一个 manifest 文件，它在 `.env.example` 中以注释形式给出示例。当它已设置且有效时，`EngineService.GetCapabilities` 报告的 provider capability matrix 由该 manifest 构建，而不是由 daemon 编译期声明构建；当它未设置、不可读、格式错误或声明了不同的 ABI 时，daemon 记录 warning 并回退到编译期声明，不会拒绝该镜像。读取该文件是这条路径上唯一的 guest 相关 I/O：构建 snapshot 仍然不会访问 Docker、KVM 或 Kubernetes。
+
+### 1.2 从运行中的 sandbox 读取 Guest ABI
+
+由本仓库构建的 runtime 可以自描述其所在镜像：
+
+```bash
+agent-compose-runtime abi
+agent-compose-runtime abi --json
+agent-compose-runtime abi --manifest /etc/agent-compose/guest-abi.json
+```
+
+`abi` 默认读取 `/etc/agent-compose/guest-abi.json`，`--manifest` 可覆盖路径，`--json` 输出单行 JSON。报告包含：
+
+| 字段 | 含义 |
+| --- | --- |
+| `guestAbi` | 镜像声明的契约版本；未找到可用 manifest 时为 `0` |
+| `providers` | 镜像声明的每个 provider 到 `{version, features}` 的映射 |
+| `manifestPath` | 实际读取的 manifest 路径 |
+| `runtimeVersion` | 已安装 `agent-compose-runtime` 包的版本 |
+
+manifest 缺失、不可读、格式错误或结构不符时，命令报告 `guestAbi: 0` 和空的 `providers` map，退出码仍为 `0`。`0` 是文档化的“未知或旧版 guest”取值：它表示镜像没有自描述，而不是镜像损坏。只有 runtime 安装本身损坏（runtime 包 manifest 不可读）时该命令才会失败。
 
 ## 2. 约束分层
 
@@ -49,7 +114,7 @@ Guest image **必须**：
 
 当前不支持非 root guest image。daemon 将 guest home target 固定为 `/root`，在 `/root` 下挂载或创建 provider state symlink，并执行会替换部分路径的 bootstrap 操作。目前没有公开的 `GUEST_HOME` override。
 
-Docker 和 BoxLite 在启动 sandbox 时会替换镜像 entrypoint 和 command；Microsandbox 也会执行显式的启动后 bootstrap。因此 `CMD`、`ENTRYPOINT`、`EXPOSE`、health check 和 image label 都不是 ABI 要求。它们可以方便手动运行镜像，但必需的初始化内容**必须**预先写入镜像文件系统。
+Docker 和 BoxLite 在启动 sandbox 时会替换镜像 entrypoint 和 command；Microsandbox 也会执行显式的启动后 bootstrap。因此 `CMD`、`ENTRYPOINT`、`EXPOSE` 和 health check 都不是 ABI 要求。它们可以方便手动运行镜像，但必需的初始化内容**必须**预先写入镜像文件系统。唯一带有契约含义的 label 是 `io.agent-compose.guest-abi`（第 1.1 节）；daemon 读取的是烘焙进镜像的 `/etc/agent-compose/guest-abi.json` manifest，而不是该 label。
 
 ### 3.2 控制面所需命令
 
@@ -97,6 +162,7 @@ Linux shell 的传输测试验证此工具合同，不能替代真实集群部�
 | `/data/state` | Prompt、schema、cell、provider session state、artifact | 每个 sandbox 持久化 |
 | `/data/runtime` | Runtime resource、cache、MPI 和 extension | 每个 sandbox 持久化 |
 | `/data/logs` | Jupyter 和 runtime log | 每个 sandbox 持久化 |
+| `/etc/agent-compose/guest-abi.json` | 官方镜像烘焙的 guest ABI manifest | 归镜像所有；不持久化；未烘焙该文件的镜像中不存在 |
 | `/root` | 镜像提供的真实 home 目录 | 目录本身归镜像所有 |
 | `/root/.codex` | Codex config 和 state | 持久化 |
 | `/root/.agents` | 投影后的 agent skill | 持久化/投影 |
@@ -310,7 +376,10 @@ task image:agent-compose-guest-archlinux
 | `NO_CACHE=1` | 传递 Docker `--no-cache` 参数 |
 | `GO_VERSION`、`GRPCURL_VERSION`、`NODE_MAJOR` | 默认 guest 工具链参数；`NODE_MAJOR` 仅适用于 Debian guest |
 | `ARCHLINUX_TAG` | Arch Linux guest 基础镜像 tag |
-| `CODEX_VERSION`、`CLAUDE_CODE_VERSION`、`OPENCODE_VERSION`、`PI_AGENT_VERSION`、`PI_MCP_ADAPTER_VERSION`、`DSH_VERSION` | guest provider 包版本 |
+| `GUEST_ABI` | 由 label 和烘焙 manifest 声明的 guest ABI 契约版本；默认取 lock 中的 `guestAbi` |
+| `CODEX_VERSION`、`CLAUDE_CODE_VERSION`、`OPENCODE_VERSION`、`PI_AGENT_VERSION`、`PI_MCP_ADAPTER_VERSION`、`DSH_VERSION` | guest provider 包版本；各自默认取 `guest-images/providers.lock.json` 中对应的固定版本 |
+
+`guest-images/providers.lock.json` 是 provider 版本的唯一编写点。`scripts/build-agent-compose-guest.sh` 会从 lock 读取每个 provider 版本和 `GUEST_ABI`，因此即使不设置这些变量，构建仍然是固定且可复现的；显式设置环境变量可为一次性本地构建覆盖 lock。当 lock、两个 guest Dockerfile 的 `ARG` 默认值、构建脚本的转发或生成的 `guest-images/guest-abi.json` 任意一处不一致时，`scripts/provider-lock.sh check` 会失败。
 
 `REGISTRY_MIRROR`、`GITHUB_MIRROR` 和 `ARCHLINUX_MIRROR` 没有跨工具通用的标准环境变量，因此保留为作用域明确的项目参数。`REGISTRY_MIRROR` 不是 dockerd mirror 配置，只负责改写仓库 Dockerfile 中的基础镜像地址。
 
@@ -359,7 +428,7 @@ docker buildx build \
 
 ## 8. 从零构建示例
 
-以下示例从当前仓库 checkout 构建一个仅支持 Codex 的 guest。它有意不安装 Jupyter、Python、Go、compiler、其他 provider CLI 和离线 SDK tarball。Docker build context **必须**是仓库根目录，`CODEX_VERSION` 应与同一个 checkout 的官方 guest Dockerfile 保持一致。
+以下示例从当前仓库 checkout 构建一个仅支持 Codex 的 guest。它有意不安装 Jupyter、Python、Go、compiler、其他 provider CLI 和离线 SDK tarball。Docker build context **必须**是仓库根目录，`CODEX_VERSION` **应该**与同一个 checkout 的 `guest-images/providers.lock.json` 中的固定版本一致（`scripts/provider-lock.sh` 会保持 guest Dockerfile 的 `ARG` 默认值与其一致）。
 
 ```dockerfile
 FROM node:22-bookworm-slim
@@ -397,7 +466,7 @@ CMD ["sleep", "infinity"]
 
 ```bash
 docker build \
-  --build-arg CODEX_VERSION=<version-from-guest-Dockerfile> \
+  --build-arg CODEX_VERSION=<codex-version-from-providers.lock.json> \
   -f Dockerfile.guest \
   -t registry.example.com/team/agent-compose-guest:custom .
 ```
@@ -485,12 +554,14 @@ task test:e2e:docker-jupyter
 
 ## 11. 升级检查清单
 
-每次升级 daemon 时：
+daemon release 与 guest 镜像构建现在是两条独立的轨道。`guestAbi` 决定两条轨道的产物能否组合，`scripts/provider-lock.sh check` 则保证仓库自身的 guest 构建保持一致。仍然把两条轨道绑在一起的只有两点：刻意提高 `guestAbi`，以及第 11.1 节中的 DSH profile。
 
-1. 将自定义镜像 rebase 到匹配的官方 guest tag，或者从匹配 source tag 重新构建 `runtime/javascript`。
-2. 根据所选 guest Dockerfile 对齐 provider CLI version。
-3. 重新运行静态检查和 Docker lifecycle test。
-4. 对已启用能力重新运行 Jupyter、provider 和所选 driver 验收测试。
+升级 daemon 时：
+
+1. 确认新 daemon 支持的 guest ABI（`pkg/guestabi` 中的 `CurrentGuestAbi`；`scripts/provider-lock.sh guest-abi-version` 输出本 checkout 构建时使用的值）。它只在 daemon/guest 契约变化时才会改变。
+2. 如果该值发生变化，需要在新的值上重建并重新发布自定义 guest 镜像（第 11.2 节），并更新 project/deployment 中的镜像引用。如果没有变化，仅包含 provider 的现有镜像可以继续使用，不必因为这次 daemon 升级而重建。
+3. 只要 daemon release 改变 runtime 协议，就将自定义镜像 rebase 到匹配的官方 guest tag，或从匹配的 source tag 重新构建 `runtime/javascript`。Runtime CLI 及其 stdout 协议仍是 release boundary（第 1 节）。
+4. 对已启用能力重新运行静态检查、Docker lifecycle test，以及 Jupyter、provider 和所选 driver 的验收测试。
 5. 发布不可变 tag 或 digest，并显式更新 project/deployment reference；不要静默移动生产兼容 tag。
 
 ### 11.1 DSH profile 来自 daemon，且按 sandbox 冻结
@@ -518,3 +589,64 @@ task test:e2e:docker-jupyter
 - [`pkg/agentcompose/adapters/agent_runner.go`](https://github.com/chaitin/agent-compose/blob/main/pkg/agentcompose/adapters/agent_runner.go)
 - [`pkg/execution/command_runtime.go`](https://github.com/chaitin/agent-compose/blob/main/pkg/execution/command_runtime.go)
 - [`runtime/javascript`](https://github.com/chaitin/agent-compose/tree/main/runtime/javascript)
+
+### 11.2 独立于 daemon 升级 guest 镜像
+
+只要重建后 `guestAbi` 不变，仅更新 provider 的 guest 镜像就可以安全发布，并部署到已经部署好的 daemon 之下：
+
+- `guest-images/providers.lock.json` 中的 provider 版本发生变化，`scripts/provider-lock.sh bump` 会一次性改写 lock、两个 guest Dockerfile 和 `guest-images/guest-abi.json`。
+- `guestAbi` 不变，因为 daemon/guest 契约和 runtime CLI 协议都没有变化。`scripts/tests/test-provider-lock.sh` 会守住这一性质：它在 lock 的副本中提升某个 provider 版本，如果渲染出的 `guestAbi` 跟着变化就判定失败。
+- 重建后的镜像仍需要针对被改动的 provider 执行 guest 镜像验收测试。仅凭这个数字无法证明 provider CLI 的行为仍符合 runtime adapter 的预期；这也是每日检查只做报告、绝不改写固定版本的原因。
+
+上述安全性成立的前提是这次重建唯一变化的输入是 provider 固定版本。同一次镜像构建也会打包其 checkout 中的 `runtime/javascript`，而 runtime CLI 协议是 `guestAbi` 未覆盖的 release boundary（第 1 节）。如果重建同时带入了 runtime 源码变化，仍应按常规将该镜像与 daemon release 匹配。
+
+任何会提高 `guestAbi` 的改动都不是纯 guest 改动。提高它意味着 daemon/guest 契约发生变化，因此必须先发布带有匹配 `CurrentGuestAbi` 的 daemon，新取值的镜像才能被采用。除此之外没有更宽的版本矩阵：当 manifest 的 `guestAbi` 等于 daemon 的 `CurrentGuestAbi` 时即为兼容，比较逻辑就是这一条（`pkg/guestabi/compat.go` 中的 `VerifyCompatible`）。
+
+伴生包可以记录「某个 provider 的后续版本会让它变得多余」，从而让「升级时记得摘掉它」由升级动作本身强制，而不是靠人记。`pi-mcp-adapter` 带有：
+
+```json
+"retiredBy": {
+  "package": "pi",
+  "version": "0.99.0",
+  "reason": "Pi 0.99 and later ship a built-in MCP extension, so the adapter only exists to add MCP to older Pi releases"
+}
+```
+
+当被退役的包仍与不低于 `retiredBy.version` 的版本一起固定时，`scripts/provider-lock.sh check` 会失败，并在消息中点名该包与原因。修复属于这次升级的一部分：从 lock、两个 guest Dockerfile 和构建脚本中移除该包。当前固定的是 `pi` 0.82.1，所以今天仍然需要这个 adapter；门禁会在不再需要它的那个版本上触发。
+
+[`.github/workflows/guest-image-release.yml`](https://github.com/chaitin/agent-compose/blob/main/.github/workflows/guest-image-release.yml) 是独立的发布路径。手动 `workflow_dispatch` 时，它会校验 lock、构建可加载的 `linux/amd64` 镜像、运行 `scripts/verify-guest-image-abi.sh`、探测 baseline guest ABI、打印镜像内 `agent-compose-runtime abi --json` 报告，然后才可选地发布多架构镜像。它的 tag 规则为：
+
+- 不可变 tag `guest-abi<N>-<YYYYMMDD>-<shortsha>`；可选的 Arch Linux 变体再加 `-archlinux` 后缀；
+- 移动别名 `guest-abi<N>`，仅在设置 `promote_alias` 时才会更新。
+
+它刻意从不移动 `latest`：部署通过 `DEFAULT_IMAGE` 默认使用 `chaitin/agent-compose-guest:latest`，静默改指该 tag 会替换所有现有安装的 guest。
+
+在选择镜像之前，先用构建它的 checkout 校验已发布的镜像：
+
+```bash
+scripts/verify-guest-image-abi.sh \
+  registry.example.com/team/agent-compose-guest:guest-abi1-20260101-abc1234
+```
+
+该脚本会把镜像的 `io.agent-compose.guest-abi` label、镜像内烘焙的 manifest 以及每个 agent provider 版本与本 checkout 的 `guest-images/providers.lock.json` 逐一比对，打印发现的 provider，并在任何一处不一致时以非零状态退出。请针对 digest 或不可变 tag 执行，不要针对移动别名；provider 版本是与执行该脚本的 checkout 的 lock 比较的，因此要使用构建该镜像的 checkout。
+
+### 11.3 每日上游 provider 检查
+
+[`.github/workflows/provider-upstream-check.yml`](https://github.com/chaitin/agent-compose/blob/main/.github/workflows/provider-upstream-check.yml) 每天 UTC `17 1 * * *` 运行 `scripts/check-provider-upstreams.sh`，并支持手动 `workflow_dispatch`。它会将 `guest-images/providers.lock.json` 中固定的每个包与 npm 当前发布的版本比较，并把结果汇报到团队已经关注的位置：
+
+- 配置了 `DINGTALK_TARGETS_JSON` secret 时，通过 `scripts/notify-dingtalk.sh` 把报告推送到钉钉。该 webhook 就是通知渠道：没有需要盯的 tracking issue。若未配置该 secret，运行仍然成功，但会输出 warning 并在 job summary 中说明——否则「静默无通知」和「全部是最新」看起来完全一样；
+- 同一份报告写入 job summary。
+
+该 workflow 不会自行修改任何固定版本。若某个包的 lock 条目记录了 `retiredBy` 版本，报告会把它标记为过期并同时给出该计划，且不会把它放进 bump 列表：预期动作是在使其退役的那次升级里删除它，而不是跟随它自己的版本。`workflow_dispatch` 输入 `bump` 会额外打开一个 draft pull request，其中对过期版本执行 `provider-lock.sh bump`，再运行 `scripts/provider-lock.sh check`。之所以是 draft：版本提升本身是机械操作，而判断某个 provider release 是否安全不是。check 失败不会阻止该 draft —— 失败内容会写进 PR 正文，等 draft 标记为 ready 后由 CI 强制。两个可选 repository variable 可以细化报告：`PROVIDER_UPGRADE_MENTIONS` 会追加到报告正文用于 @ 提醒，`NPM_CONFIG_REGISTRY` 用于 npm 查询。
+
+GitHub 的 scheduler 是尽力而为的，因此应把 job summary 视为持久记录，把钉钉推送视为通知渠道：
+
+- `cron` 可能被延迟，且定时 workflow 只在默认分支上运行；
+- 仓库连续 60 天无活动后，定时 workflow 会被禁用；
+- 定时 workflow 不会在 fork 中运行。
+
+也可以随时手动执行同一扫描：
+
+```bash
+scripts/check-provider-upstreams.sh
+```

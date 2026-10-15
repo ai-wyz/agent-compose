@@ -34,12 +34,23 @@ append_build_arg GRPCURL_VERSION "${GRPCURL_VERSION:-}"
 append_build_arg NPM_CONFIG_REGISTRY "${NPM_CONFIG_REGISTRY:-}"
 append_build_arg PIP_INDEX_URL "${PIP_INDEX_URL:-}"
 append_build_arg PIP_TRUSTED_HOST "${PIP_TRUSTED_HOST:-}"
-append_build_arg CODEX_VERSION "${CODEX_VERSION:-}"
-append_build_arg CLAUDE_CODE_VERSION "${CLAUDE_CODE_VERSION:-}"
-append_build_arg OPENCODE_VERSION "${OPENCODE_VERSION:-}"
-append_build_arg PI_AGENT_VERSION "${PI_AGENT_VERSION:-}"
-append_build_arg PI_MCP_ADAPTER_VERSION "${PI_MCP_ADAPTER_VERSION:-}"
-append_build_arg DSH_VERSION "${DSH_VERSION:-}"
+# Provider pins come from guest-images/providers.lock.json so a version is
+# never authored in two places. An explicit environment variable still wins, for
+# a one-off local build; the lock supplies the default. The forwarding lines
+# stay literal so the build-variable contract test can see every name.
+provider_pairs=$("$ROOT_DIR/scripts/provider-lock.sh" pairs)
+
+locked_version() { # $1=BUILD_ARG_NAME
+  printf '%s\n' "$provider_pairs" | sed -n "s/^$1=//p" | head -n 1
+}
+
+append_build_arg CODEX_VERSION "${CODEX_VERSION:-$(locked_version CODEX_VERSION)}"
+append_build_arg CLAUDE_CODE_VERSION "${CLAUDE_CODE_VERSION:-$(locked_version CLAUDE_CODE_VERSION)}"
+append_build_arg OPENCODE_VERSION "${OPENCODE_VERSION:-$(locked_version OPENCODE_VERSION)}"
+append_build_arg PI_AGENT_VERSION "${PI_AGENT_VERSION:-$(locked_version PI_AGENT_VERSION)}"
+append_build_arg PI_MCP_ADAPTER_VERSION "${PI_MCP_ADAPTER_VERSION:-$(locked_version PI_MCP_ADAPTER_VERSION)}"
+append_build_arg DSH_VERSION "${DSH_VERSION:-$(locked_version DSH_VERSION)}"
+append_build_arg GUEST_ABI "${GUEST_ABI:-$("$ROOT_DIR/scripts/provider-lock.sh" guest-abi-version)}"
 
 case "$(basename "$GUEST_IMAGE_DOCKERFILE")" in
   Dockerfile.agent-compose-guest-archlinux)

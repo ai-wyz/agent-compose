@@ -619,13 +619,19 @@ func NewCapabilityProvider(di do.Injector) (capabilities.Provider, error) {
 
 // NewEngineCapabilitySnapshot freezes the engine capability matrix once, when
 // the daemon composes its routes. It reads static driver declarations and the
-// provider matrix, so it never probes a runtime.
-func NewEngineCapabilitySnapshot(do.Injector) (capmatrix.Snapshot, error) {
+// provider facts selected from configuration, so it never probes a runtime.
+func NewEngineCapabilitySnapshot(di do.Injector) (capmatrix.Snapshot, error) {
+	conf := do.MustInvoke[*appconfig.Config](di)
+	logger := do.MustInvoke[*slog.Logger](di)
 	facts, err := driver.CompiledRuntimeCapabilities()
 	if err != nil {
 		return capmatrix.Snapshot{}, fmt.Errorf("collect runtime capability declarations: %w", err)
 	}
-	snapshot, err := capmatrix.BuildSnapshot(facts, time.Now())
+	providers, err := engineProviderCapabilities(conf.GuestAbiManifestPath, logger)
+	if err != nil {
+		return capmatrix.Snapshot{}, fmt.Errorf("derive provider capability facts: %w", err)
+	}
+	snapshot, err := capmatrix.BuildSnapshotWithProviders(facts, providers, time.Now())
 	if err != nil {
 		return capmatrix.Snapshot{}, fmt.Errorf("build engine capability snapshot: %w", err)
 	}

@@ -38,6 +38,17 @@ The `stream` command runs the runtime NDJSON stream protocol on stdin/stdout and
 agent-compose-runtime stream
 ```
 
+## Guest ABI self-description
+
+The `abi` command reports the guest ABI contract version and the agent providers baked into the image:
+
+```sh
+agent-compose-runtime abi
+agent-compose-runtime abi --json --manifest /etc/agent-compose/guest-abi.json
+```
+
+It reads `/etc/agent-compose/guest-abi.json` by default; `--manifest` overrides that path. `--json` prints the report as a single JSON line with `guestAbi`, `providers`, `manifestPath`, and `runtimeVersion`. A missing, unreadable, or malformed manifest is reported as `guestAbi: 0` with an empty provider map — the legacy-guest case — and the command still exits 0.
+
 ## Dynamic workflows
 
 The `workflow` command runs a restricted JavaScript orchestration script:
@@ -104,6 +115,7 @@ npm test
 The TypeScript source lives in `src/`:
 
 - `cli.ts`: commander-based CLI.
+- `guest-abi.ts`: guest ABI manifest reading and self-description reports.
 - `prompt.ts`: command orchestration and default path resolution.
 - `system-context.ts`: agent identity + MPI composition.
 - `runners/`: provider adapters for Codex, Claude, OpenCode, Pi, and DSH.

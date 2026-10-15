@@ -1,0 +1,119 @@
+name: Provider upstream check
+
+# Answers "is a provider we pin newer upstream?" once a day and reports it on
+# the DingTalk webhook the team already watches. Nothing is published and no
+# issue is filed: a person reads the report and decides what to upgrade, which
+# is why the safe path after decoupling is a small provider-only branch.
+#
+# GitHub's scheduler is best-effort: a cron entry can be delayed, and scheduled
+# workflows are disabled after 60 days of repository inactivity. workflow_dispatch
+# exists so the same report can be produced on demand.
+on:
+  schedule:
+    - cron: '17 1 * * *'
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: Also open a draft pull request that bumps the outdated pins
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: provider-upstream-check
+  cancel-in-progress: false
+
+jobs:
+  check-upstreams:
+    name: Scan pinned providers against npm
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # The scan is the only thing that reports an upstream release, so a scan
+      # that fails silently is worse than one that fails loudly. Validate its
+      # contract here, where the script is actually used, before relying on it.
+      - name: Validate the scan contract
+        run: ./scripts/tests/test-check-provider-upstreams.sh
+
+      - name: Scan upstream releases
+        id: scan
+        env:
+          PROVIDER_UPSTREAM_OUTPUT_DIR: ${{ runner.temp }}
+          PROVIDER_UPGRADE_MENTIONS: ${{ vars.PROVIDER_UPGRADE_MENTIONS }}
+          NPM_CONFIG_REGISTRY: ${{ vars.NPM_CONFIG_REGISTRY }}
+        run: ./scripts/check-provider-upstreams.sh
+
+      - name: Summarize the scan
+        run: cat "${{ runner.temp }}/provider-upstream-report.md" >>"$GITHUB_STEP_SUMMARY"
+
+      # The webhook is the whole notification path, so a missing secret must be
+      # visible: a green run that reports nothing looks identical to "up to date".
+      - name: Notify about outdated providers
+        if: steps.scan.outputs.outdated == 'true'
+        env:
+          DINGTALK_TARGETS_JSON: ${{ secrets.DINGTALK_TARGETS_JSON }}
+          REPORT: ${{ runner.temp }}/provider-upstream-report.md
+        run: |
+          set -euo pipefail
+          if [[ -z ${DINGTALK_TARGETS_JSON:-} ]]; then
+            echo '::warning::upstream providers are outdated but DINGTALK_TARGETS_JSON is not configured, so nobody was notified'
+            {
+              echo
+              echo '> **Warning:** `DINGTALK_TARGETS_JSON` is not configured, so this report reached nobody.'
+            } >>"$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          ./scripts/notify-dingtalk.sh 'agent-compose：上游 provider 有新版本' <"$REPORT"
+
+      - name: Open a draft bump pull request
+        if: steps.scan.outputs.outdated == 'true' && inputs.bump
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPORT: ${{ runner.temp }}/provider-upstream-report.md
+          BUMP_FILE: ${{ runner.temp }}/provider-upstream-bump.txt
+          PR_BODY: ${{ runner.temp }}/provider-upstream-pr-body.md
+        run: |
+          set -euo pipefail
+          bump_args=$(cat "$BUMP_FILE")
+          if [[ -z $bump_args ]]; then
+            echo '::error::the scan reported outdated pins but produced no bump arguments'
+            exit 1
+          fi
+          ./scripts/provider-lock.sh bump $bump_args
+
+          # A failing check does not block the draft: a bump can legitimately need
+          # a second edit (for example the lock records that a newer pi release
+          # retires pi-mcp-adapter). The failure is reported in the pull request
+          # body instead, and CI enforces it once the draft is marked ready.
+          check_output=$(./scripts/provider-lock.sh check 2>&1) || true
+
+          body="$PR_BODY"
+          cp "$REPORT" "$body"
+          if [[ -n $check_output ]]; then
+            {
+              printf '\n### Provider lock check output\n\n'
+              printf 'The lock does not validate yet. Resolve this before marking the pull request ready.\n\n'
+              printf '```\n%s\n```\n' "$check_output"
+            } >>"$body"
+          fi
+
+          branch="chore/provider-bump-$(date -u +%Y%m%d-%H%M%S)"
+          git config user.name 'github-actions[bot]'
+          git config user.email 'github-actions[bot]@users.noreply.github.com'
+          git checkout -b "$branch"
+          git add guest-images/providers.lock.json \
+            guest-images/guest-abi.json \
+            guest-images/Dockerfile.agent-compose-guest \
+            guest-images/Dockerfile.agent-compose-guest-archlinux
+          git commit -m 'chore(deps): bump guest provider pins'
+          git push origin "$branch"
+          # Draft on purpose: the bump is mechanical, the validation is not. The
+          # pull request only becomes CI-eligible once someone marks it ready.
+          gh pr create --draft \
+            --title 'chore(deps): bump guest provider pins' \
+            --body-file "$body"

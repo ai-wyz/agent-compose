@@ -124,6 +124,7 @@ type Config struct {
 	GuestStateRoot             string
 	GuestRuntimeRoot           string
 	GuestLogRoot               string
+	GuestAbiManifestPath       string
 	JupyterGuestPort           int
 	SandboxStartTimeout        time.Duration
 	SandboxStopTimeout         time.Duration
@@ -188,6 +189,7 @@ type configSources struct {
 	Resources       sandboxResourceConfig
 	Cleanup         cleanupConfigValues
 	GuestPaths      *Config
+	GuestABI        string
 	SandboxTimeouts sandboxTimeoutsConfig
 	HTTPLimits      httpLimitsConfig
 	EventDelivery   domain.EventDeliveryScope
@@ -258,6 +260,7 @@ func loadConfigSources(logger *slog.Logger, dataRoot string) (configSources, err
 		Resources:       resources,
 		Cleanup:         cleanup,
 		GuestPaths:      guestPaths,
+		GuestABI:        loadGuestABIManifestPath(),
 		SandboxTimeouts: sandboxTimeouts,
 		HTTPLimits:      loadHTTPLimitsConfig(logger),
 		EventDelivery:   eventDelivery,
@@ -358,6 +361,7 @@ func buildConfig(sources configSources, normalized configPathsToNormalize) *Conf
 		GuestStateRoot:             guestPaths.GuestStateRoot,
 		GuestRuntimeRoot:           guestPaths.GuestRuntimeRoot,
 		GuestLogRoot:               guestPaths.GuestLogRoot,
+		GuestAbiManifestPath:       sources.GuestABI,
 		JupyterGuestPort:           sandboxTimeouts.JupyterGuestPort,
 		SandboxStartTimeout:        sandboxTimeouts.StartTimeout,
 		SandboxStopTimeout:         sandboxTimeouts.StopTimeout,

@@ -49,6 +49,14 @@ ARG DSH_VERSION
 ARG BUILDPLATFORM
 ARG TARGETPLATFORM
 ARG TARGETARCH
+# The guest ABI is the daemon/guest contract version defined by
+# docs/pages/guest-image-abi.md, not a provider version. Bumping a provider
+# rebuilds this image while leaving the ABI alone, which is what lets a newer
+# guest run under an already-deployed daemon. Bump it only for an incompatible
+# contract change, and bump guest-images/providers.lock.json with it.
+ARG GUEST_ABI=1
+
+LABEL io.agent-compose.guest-abi="${GUEST_ABI}"
 
 COPY --from=grpcurl-builder /out/grpcurl /usr/local/bin/grpcurl
 
@@ -116,6 +124,14 @@ COPY ./assets/.gitconfig /root/
 COPY ./assets/.dsh/ /root/.dsh/
 
 COPY runtime/jupyter-javascript-kernel/kernel.json /usr/local/share/jupyter/kernels/javascript/kernel.json
+
+# What this image provides, generated from guest-images/providers.lock.json by
+# scripts/provider-lock.sh. The ABI label above carries the contract version, and
+# this file carries the provider versions and capabilities behind it, so an
+# operator or a CI check can read what the image really contains. The daemon
+# consumes it only when GUEST_ABI_MANIFEST points at a copy; otherwise it keeps
+# its own compiled provider matrix.
+COPY guest-images/guest-abi.json /etc/agent-compose/guest-abi.json
 
 # Resolve the dependency trees before the runtime sources arrive. npm ci reads
 # only the manifests, so keeping it in its own layer means a source-only change
