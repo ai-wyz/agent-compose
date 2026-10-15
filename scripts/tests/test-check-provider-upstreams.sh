@@ -167,6 +167,20 @@ if [[ $(status) != 'false' ]]; then
   fail "a prerelease upstream reported outdated='$(status)'"
 fi
 
+# A newer release core must preserve its prerelease suffix when returned by
+# newest_of, so the scan still offers that upstream version as a bump.
+scan newer-prerelease-core <<'EOF'
+claude|@anthropic-ai/claude-code|2.1.220|same|
+dsh|@deepseek-ai/dsh|0.2.0|1.0.0-rc.1|
+EOF
+
+if ((scan_rc != 0)); then
+  fail "the scan failed for a newer prerelease core (exit $scan_rc)"
+fi
+if ! grep -q '\*\*outdated\*\*' <(row dsh) || ! grep -q 'dsh=1.0.0-rc.1' <(bump_args); then
+  fail "a newer prerelease core was not offered as a bump: $(bump_args)"
+fi
+
 # 4. A retired companion is reported so someone can act, but it is never offered
 #    as a bump: the recorded plan is to delete it in the upgrade that retires it.
 scan retired-companion <<'EOF'

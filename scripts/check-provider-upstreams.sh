@@ -59,7 +59,11 @@ npm_view() { # $1=package
 newest_of() { # $1 $2
   local a=$1 b=$2 a_core=${1%%-*} b_core=${2%%-*}
   if [[ $a_core != "$b_core" ]]; then
-    printf '%s\n%s\n' "$a_core" "$b_core" | sort -V | tail -n 1
+    if [[ $(printf '%s\n%s\n' "$a_core" "$b_core" | sort -V | tail -n 1) == "$a_core" ]]; then
+      printf '%s' "$a"
+    else
+      printf '%s' "$b"
+    fi
     return
   fi
   if [[ $a == "$a_core" || $b == "$b_core" ]]; then

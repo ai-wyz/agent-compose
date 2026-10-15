@@ -971,11 +971,6 @@ and the DingTalk push as the notification:
 - scheduled workflows are disabled after 60 days of repository inactivity; and
 - scheduled workflows do not run in forks.
 
-- a `cron` entry can be delayed, and scheduled workflows run only on the default
-  branch;
-- scheduled workflows are disabled after 60 days of repository inactivity; and
-- scheduled workflows do not run in forks.
-
 Run the same scan on demand with:
 
 ```bash

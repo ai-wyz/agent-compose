@@ -57,7 +57,7 @@ guest_abi_manifest() {
 }
 
 arg_default() { # $1=file $2=ARG name
-  sed -n "s/^ARG[[:space:]]\+$2=\{0,1\}\(.*\)$/\1/p" "$1" | head -n 1
+  sed -n "s/^ARG[[:space:]]\{1,\}$2=\{0,1\}\(.*\)$/\1/p" "$1" | head -n 1
 }
 
 check_dockerfile_arg() { # $1=file $2=ARG name $3=expected value
@@ -71,6 +71,25 @@ check_dockerfile_arg() { # $1=file $2=ARG name $3=expected value
 check_builder_forwarding() { # $1=ARG name
   grep -Eq "append_build_arg[[:space:]]+$1([[:space:]]|$)" "$GUEST_BUILDER" \
     || die "scripts/build-agent-compose-guest.sh does not forward $1"
+}
+
+# newest_version prints the newer release, treating a stable release as newer
+# than prereleases with the same release core.
+newest_version() { # $1 $2
+  local a=$1 b=$2 a_core=${1%%-*} b_core=${2%%-*}
+  if [[ $a_core != "$b_core" ]]; then
+    if [[ $(printf '%s\n%s\n' "$a_core" "$b_core" | sort -V | tail -n 1) == "$a_core" ]]; then
+      printf '%s' "$a"
+    else
+      printf '%s' "$b"
+    fi
+    return
+  fi
+  if [[ $a == "$a_core" || $b == "$b_core" ]]; then
+    if [[ $a == "$a_core" ]]; then printf '%s' "$a"; else printf '%s' "$b"; fi
+    return
+  fi
+  printf '%s\n%s\n' "$a" "$b" | sort -V | tail -n 1
 }
 
 cmd_pairs() {
@@ -104,8 +123,7 @@ check_retirements() {
     [[ -n $kind ]] || continue
     current=$(jq -r --arg kind "$superseded_by" '.packages[$kind].version // ""' "$LOCK_FILE")
     [[ -n $current ]] || continue
-    # sort -V puts the greater version last, so the last line is the newer one.
-    if [[ $(printf '%s\n%s\n' "$superseding_version" "$current" | sort -V | tail -n 1) == "$current" ]]; then
+    if [[ $(newest_version "$superseding_version" "$current") == "$current" ]]; then
       reason=$(jq -r --arg kind "$kind" '.packages[$kind].retiredBy.reason // ""' "$LOCK_FILE")
       die "package '$kind' is retired by $superseded_by $current (>= $superseding_version): ${reason:-remove it}"
     fi

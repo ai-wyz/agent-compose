@@ -110,6 +110,14 @@ if grep -q 'retired by' "$TEST_ROOT/retired-fixed.err"; then
   fail 'provider-lock still reported a retirement after the package was removed from the lock'
 fi
 
+# A prerelease of the superseding version must not trigger the retirement gate.
+retired_prerelease_lock="$TEST_ROOT/providers-retired-prerelease.lock.json"
+jq '.packages.pi.version = "0.99.0-rc.1"' "$LOCK_FILE" >"$retired_prerelease_lock"
+PROVIDER_LOCK_FILE="$retired_prerelease_lock" "$PROVIDER_LOCK" check >"$TEST_ROOT/retired-prerelease.err" 2>&1 || true
+if grep -q 'retired by' "$TEST_ROOT/retired-prerelease.err"; then
+  fail 'provider-lock reported a retirement for a prerelease of the superseding version'
+fi
+
 if ((failures > 0)); then
   printf 'test-provider-lock: %d contract check(s) failed\n' "$failures" >&2
   exit 1
