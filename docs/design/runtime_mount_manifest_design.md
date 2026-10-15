@@ -171,7 +171,10 @@ The Docker, BoxLite, and Microsandbox drivers read
 `<sandbox>/vm/mount-manifest.json`:
 
 - Docker uses `loadRuntimeMountManifest(sandbox, RuntimeDriverDocker)` and
-  applies `DOCKER_HOST_SANDBOX_ROOT` rebase to each source.
+  applies the `DOCKER_HOST_SANDBOX_ROOT` rebase to each source under
+  `SANDBOX_ROOT`; other sources, such as bind and `local` project volumes,
+  map through the daemon container's shared mounts
+  (`workspace-content-reuse.zh-CN.md`, section 7).
 - BoxLite uses `loadDirectoryRuntimeMountManifest(sandbox, RuntimeDriverBoxlite)`
   and validates that all sources are directories before calling
   `boxlite_options_add_volume`.

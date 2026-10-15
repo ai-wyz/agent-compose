@@ -120,8 +120,10 @@ Docker manifest keeps fine-grained sources derived from the logical list:
 | `<sandbox>/home/.config/opencode` | `/root/.config/opencode` |
 | `<sandbox>/home/.local/share/opencode` | `/root/.local/share/opencode` |
 
-Docker runtime applies `DOCKER_HOST_SANDBOX_ROOT` rebase to each source. File
-entries such as `.claude.json` and `.gitconfig` remain file bind sources.
+Docker runtime applies the `DOCKER_HOST_SANDBOX_ROOT` rebase to each source under
+`SANDBOX_ROOT`, which covers every entry in this table; volume sources outside it
+map through the daemon container's shared mounts. File entries such as
+`.claude.json` and `.gitconfig` remain file bind sources.
 
 ## BoxLite Layout
 

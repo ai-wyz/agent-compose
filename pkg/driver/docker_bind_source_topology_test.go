@@ -47,6 +47,10 @@ func TestDockerWorkspaceSourceResolvesProcessTopologyBeforeContainerName(t *test
 		{name: "process probe failed", probeErr: probeFailure},
 		{name: "explicit override bypasses unknown process", probeErr: probeFailure, override: true, source: "/sandboxes/project", want: "/override/project"},
 		{name: "external source with override still verifies native", process: dockerWorkspaceProcess{platform: "linux", hostname: "daemon-container"}, engine: system.Info{OSType: "linux", Name: "daemon-container"}, override: true, want: "/project/src", wantInfo: 1},
+		// The published Compose deployment: a containerized daemon whose data mount
+		// holds sources beside SANDBOX_ROOT, such as local project volumes.
+		{name: "external source with override maps a shared container mount", process: dockerWorkspaceProcess{platform: "linux", hostname: "daemon-container", containerized: true}, override: true, want: "/engine/project/src", wantInspect: 1},
+		{name: "external source with override rejects the container writable layer", process: dockerWorkspaceProcess{platform: "linux", hostname: "daemon-container", containerized: true}, override: true, unshared: true, wantInspect: 1},
 	} {
 		for _, policy := range []dockerBindSourcePolicy{dockerBindSourceConfigured, dockerBindSourceVerified} {
 			t.Run(fmt.Sprintf("%s/policy=%d", test.name, policy), func(t *testing.T) {
@@ -105,9 +109,11 @@ func TestDockerWorkspaceSourceResolvesProcessTopologyBeforeContainerName(t *test
 				if test.override && source == "/sandboxes/project" {
 					wantProbe = 0
 				}
-				if policy == dockerBindSourceConfigured {
-					// Compatibility: configured binds keep their historical inspect/fallback
-					// contract regardless of the workspace-only topology probe.
+				// Under DOCKER_HOST_SANDBOX_ROOT the daemon's paths are not Engine host
+				// paths, so a configured source outside SANDBOX_ROOT is verified exactly
+				// like a workspace; only without the override do configured binds keep
+				// their historical inspect/fallback contract.
+				if policy == dockerBindSourceConfigured && !test.override {
 					wantProbe, wantInfo = 0, 0
 					wantInspect = 1
 					want = "/engine/project/src"
@@ -116,13 +122,6 @@ func TestDockerWorkspaceSourceResolvesProcessTopologyBeforeContainerName(t *test
 					}
 					if test.inspectStatus != 0 && test.inspectStatus != 404 {
 						want = ""
-					}
-					if test.override {
-						wantInspect = 0
-						want = ""
-						if source == "/sandboxes/project" {
-							want = "/override/project"
-						}
 					}
 				}
 				got, err := runtime.resolveDockerBindSource(context.Background(), dockerClient, source, policy)
