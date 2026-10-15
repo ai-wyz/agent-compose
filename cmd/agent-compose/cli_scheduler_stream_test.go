@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"io"
+	"regexp"
 	"strings"
 	"sync"
 	"testing"
@@ -88,6 +89,81 @@ agents:
 			<-done
 		})
 	}
+}
+
+func TestSchedulerRunsTextWriterRendersTriggerLabel(t *testing.T) {
+	t.Parallel()
+
+	// A declarative trigger id is a stable 64-character digest, so the declared
+	// name is the only readable part. A script trigger id is already the
+	// registered name.
+	const declarativeTriggerID = "8fdd8df0d7074f93a173968ccf97aa960e242330c4d0af48281a38c4f16ff122"
+
+	tests := []struct {
+		name string
+		run  composeSchedulerRunItem
+		want string
+	}{
+		{
+			name: "declared name is shown with its short id",
+			run: schedulerRuntimeRunItem("scheduler-reviewer", &agentcomposev2.SchedulerRun{
+				RunId: "run-1", AgentName: "reviewer", TriggerId: declarativeTriggerID, TriggerName: "hourly-status",
+				Status: agentcomposev2.SchedulerRunStatus_SCHEDULER_RUN_STATUS_SUCCEEDED,
+			}),
+			want: "hourly-status (8fdd8df0d707)",
+		},
+		{
+			name: "script trigger keeps its readable id",
+			run:  composeSchedulerRunItem{RunShortID: "run-2", AgentName: "reviewer", TriggerID: "alertmanager-webhook", Status: "succeeded"},
+			want: "alertmanager-webhook",
+		},
+		{
+			name: "name equal to the id is not repeated",
+			run:  composeSchedulerRunItem{RunShortID: "run-3", AgentName: "reviewer", TriggerID: "new-one", TriggerName: "new-one", Status: "succeeded"},
+			want: "new-one",
+		},
+		{
+			name: "trigger no longer declared falls back to the id",
+			run:  composeSchedulerRunItem{RunShortID: "run-4", AgentName: "reviewer", TriggerID: declarativeTriggerID, Status: "skipped"},
+			want: declarativeTriggerID,
+		},
+		{
+			name: "missing trigger id stays a placeholder",
+			run:  composeSchedulerRunItem{RunShortID: "run-5", AgentName: "reviewer", Status: "skipped"},
+			want: "-",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			var out bytes.Buffer
+			writer := newSchedulerRunsTextStreamWriter(&out)
+			if err := writer.Write([]composeSchedulerRunItem{test.run}); err != nil {
+				t.Fatalf("write scheduler run: %v", err)
+			}
+			if err := writer.Finish(); err != nil {
+				t.Fatalf("finish scheduler runs: %v", err)
+			}
+			lines := strings.Split(strings.TrimSpace(out.String()), "\n")
+			if len(lines) != 2 {
+				t.Fatalf("output = %q, want a header and one run row", out.String())
+			}
+			if got := schedulerRunRowColumn(t, lines[1], 2); got != test.want {
+				t.Fatalf("TRIGGER column = %q, want %q (row %q)", got, test.want, lines[1])
+			}
+		})
+	}
+}
+
+// schedulerRunRowColumn splits a tabwriter-padded run row so a rendered column
+// can be compared exactly.
+func schedulerRunRowColumn(t *testing.T, row string, index int) string {
+	t.Helper()
+	columns := regexp.MustCompile(`\s{2,}`).Split(strings.TrimSpace(row), -1)
+	if len(columns) != 7 {
+		t.Fatalf("row = %q, want 7 columns", row)
+	}
+	return columns[index]
 }
 
 func TestSchedulerJSONStreamWriterRejectsNonObjectPrefix(t *testing.T) {

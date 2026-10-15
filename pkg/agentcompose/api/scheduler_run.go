@@ -14,6 +14,7 @@ func schedulerRunToProto(run domain.SchedulerRunSummary, scheduler domain.Projec
 		AgentName:          scheduler.AgentName,
 		SchedulerId:        scheduler.SchedulerID,
 		TriggerId:          run.TriggerID,
+		TriggerName:        declaredTriggerName(scheduler, run.TriggerID),
 		TriggerKind:        triggerKindToProto(run.TriggerKind),
 		TriggerSource:      run.TriggerSource,
 		Status:             schedulerRunStatusToProto(run.Status),
@@ -26,6 +27,17 @@ func schedulerRunToProto(run domain.SchedulerRunSummary, scheduler domain.Projec
 		SourceScriptSha256: run.SourceScriptHash,
 		ArtifactsDir:       run.ArtifactsDir,
 	}
+}
+
+// declaredTriggerName resolves the declared name of the trigger that produced a
+// run, so clients can show a readable trigger instead of the stable trigger id.
+// Script triggers, and runs whose trigger is no longer declared, resolve to "".
+func declaredTriggerName(scheduler domain.ProjectSchedulerRecord, triggerID string) string {
+	trigger := declaredTriggerSpec(scheduler, triggerID)
+	if trigger == nil {
+		return ""
+	}
+	return strings.TrimSpace(trigger.GetName())
 }
 
 func schedulerRunStatusToProto(status string) agentcomposev2.SchedulerRunStatus {

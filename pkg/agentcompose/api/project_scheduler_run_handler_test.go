@@ -13,6 +13,7 @@ import (
 
 	"connectrpc.com/connect"
 
+	"github.com/chaitin/agent-compose/internal/projects"
 	domain "github.com/chaitin/agent-compose/pkg/model"
 	"github.com/chaitin/agent-compose/pkg/schedulers"
 	agentcomposev2 "github.com/chaitin/agent-compose/proto/agentcompose/v2"
@@ -365,6 +366,67 @@ func TestSchedulerRunTriggerKindToProto(t *testing.T) {
 			).GetTriggerKind()
 			if got != want {
 				t.Fatalf("trigger kind = %v, want %v", got, want)
+			}
+		})
+	}
+}
+
+func TestSchedulerRunToProtoResolvesDeclaredTriggerName(t *testing.T) {
+	t.Parallel()
+
+	declarativeScheduler := domain.ProjectSchedulerRecord{
+		ProjectID:   "project-1",
+		AgentName:   "agent-1",
+		ID:          "scheduler-1",
+		SchedulerID: "scheduler-1",
+		SpecJSON:    `{"sandbox_policy":"new","concurrency_policy":"skip","triggers":[{"name":"hourly-status","kind":"cron","cron":"0 * * * *"}]}`,
+	}
+	declaredTriggerID, err := projects.StableSchedulerTriggerID(declarativeScheduler.ProjectID, declarativeScheduler.AgentName, "", "hourly-status", 0)
+	if err != nil {
+		t.Fatalf("resolve stable declared trigger ID: %v", err)
+	}
+
+	tests := []struct {
+		name      string
+		scheduler domain.ProjectSchedulerRecord
+		triggerID string
+		want      string
+	}{
+		{
+			name:      "declared trigger resolves its name",
+			scheduler: declarativeScheduler,
+			triggerID: declaredTriggerID,
+			want:      "hourly-status",
+		},
+		{
+			name:      "script trigger has no declared name",
+			scheduler: domain.ProjectSchedulerRecord{ProjectID: "project-1", AgentName: "agent-1", ID: "scheduler-1", SchedulerID: "scheduler-1", SpecJSON: `{"script":"function main() {}"}`},
+			triggerID: "alertmanager-webhook",
+			want:      "",
+		},
+		{
+			name:      "trigger removed from the definition falls back",
+			scheduler: declarativeScheduler,
+			triggerID: "8fdd8df0d7074f93a173968ccf97aa960e242330c4d0af48281a38c4f16ff122",
+			want:      "",
+		},
+		{
+			name:      "missing scheduler spec falls back",
+			scheduler: domain.ProjectSchedulerRecord{ProjectID: "project-1", AgentName: "agent-1"},
+			triggerID: declaredTriggerID,
+			want:      "",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			run := domain.SchedulerRunSummary{ID: "run-1", TriggerID: test.triggerID}
+			item := schedulerRunToProto(run, test.scheduler)
+			if got := item.GetTriggerName(); got != test.want {
+				t.Fatalf("trigger name = %q, want %q", got, test.want)
+			}
+			if item.GetTriggerId() != test.triggerID {
+				t.Fatalf("trigger id = %q, want %q preserved", item.GetTriggerId(), test.triggerID)
 			}
 		})
 	}

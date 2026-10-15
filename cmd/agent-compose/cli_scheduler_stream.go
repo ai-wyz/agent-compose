@@ -173,11 +173,27 @@ func (w *schedulerRunsTextStreamWriter) Write(items []composeSchedulerRunItem) e
 			sandboxes = strings.Join(shortIDs, ",")
 		}
 		if _, err := fmt.Fprintf(w.writer, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", run.RunShortID, run.AgentName,
-			firstNonEmptyString(run.TriggerID, "-"), run.Status, sandboxes, firstNonEmptyString(run.StartedAt, "-"), formatDurationMs(run.DurationMs)); err != nil {
+			schedulerRunTriggerLabel(run), run.Status, sandboxes, firstNonEmptyString(run.StartedAt, "-"), formatDurationMs(run.DurationMs)); err != nil {
 			return err
 		}
 	}
 	return w.writer.Flush()
+}
+
+// schedulerRunTriggerLabel renders a run's trigger for text output: the declared
+// trigger name followed by the short trigger id when the daemon resolved a name,
+// and the trigger id alone otherwise. Script triggers keep publishing their
+// trigger id as the name, so they render unchanged.
+func schedulerRunTriggerLabel(run composeSchedulerRunItem) string {
+	triggerID := strings.TrimSpace(run.TriggerID)
+	if triggerID == "" {
+		return "-"
+	}
+	name := strings.TrimSpace(run.TriggerName)
+	if name == "" || name == triggerID {
+		return triggerID
+	}
+	return fmt.Sprintf("%s (%s)", name, shortOpaqueID(triggerID))
 }
 
 func (w *schedulerRunsTextStreamWriter) Finish() error {
