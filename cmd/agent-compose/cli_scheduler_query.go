@@ -268,6 +268,7 @@ func schedulerRuntimeRunItem(schedulerID string, run *agentcomposev2.SchedulerRu
 		AgentName:     run.GetAgentName(),
 		SchedulerID:   firstNonEmptyString(run.GetSchedulerId(), schedulerID),
 		TriggerID:     run.GetTriggerId(),
+		TriggerName:   run.GetTriggerName(),
 		TriggerKind:   triggerKindText(run.GetTriggerKind()),
 		TriggerSource: run.GetTriggerSource(),
 		Status:        schedulerRunStatusText(run.GetStatus()),
@@ -469,6 +470,7 @@ type composeSchedulerRunItem struct {
 	AgentName     string   `json:"agent_name"`
 	SchedulerID   string   `json:"scheduler_id"`
 	TriggerID     string   `json:"trigger_id,omitempty"`
+	TriggerName   string   `json:"trigger_name,omitempty"`
 	TriggerKind   string   `json:"trigger_kind,omitempty"`
 	TriggerSource string   `json:"trigger_source,omitempty"`
 	Status        string   `json:"status"`

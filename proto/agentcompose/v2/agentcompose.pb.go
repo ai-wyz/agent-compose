@@ -5724,8 +5724,13 @@ type SchedulerRun struct {
 	SourceScriptSha256 string                 `protobuf:"bytes,15,opt,name=source_script_sha256,json=sourceScriptSha256,proto3" json:"source_script_sha256,omitempty"`
 	ArtifactsDir       string                 `protobuf:"bytes,16,opt,name=artifacts_dir,json=artifactsDir,proto3" json:"artifacts_dir,omitempty"`
 	SandboxIds         []string               `protobuf:"bytes,17,rep,name=sandbox_ids,json=sandboxIds,proto3" json:"sandbox_ids,omitempty"`
-	unknownFields      protoimpl.UnknownFields
-	sizeCache          protoimpl.SizeCache
+	// Declared name of the run's trigger, resolved from the scheduler definition
+	// persisted with the project. Empty for script triggers, whose trigger id is
+	// already the registered name, and for runs whose trigger is no longer
+	// declared; clients fall back to trigger_id in both cases.
+	TriggerName   string `protobuf:"bytes,18,opt,name=trigger_name,json=triggerName,proto3" json:"trigger_name,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *SchedulerRun) Reset() {
@@ -5875,6 +5880,13 @@ func (x *SchedulerRun) GetSandboxIds() []string {
 		return x.SandboxIds
 	}
 	return nil
+}
+
+func (x *SchedulerRun) GetTriggerName() string {
+	if x != nil {
+		return x.TriggerName
+	}
+	return ""
 }
 
 type SetSchedulerEnabledRequest struct {
@@ -21781,7 +21793,7 @@ const file_agentcompose_v2_agentcompose_proto_rawDesc = "" +
 	"\x06reason\x18\x03 \x01(\tR\x06reason\"r\n" +
 	"\x18StopSchedulerRunResponse\x12/\n" +
 	"\x03run\x18\x01 \x01(\v2\x1d.agentcompose.v2.SchedulerRunR\x03run\x12%\n" +
-	"\x0estop_requested\x18\x02 \x01(\bR\rstopRequested\"\xb7\x05\n" +
+	"\x0estop_requested\x18\x02 \x01(\bR\rstopRequested\"\xda\x05\n" +
 	"\fSchedulerRun\x12\x15\n" +
 	"\x06run_id\x18\x01 \x01(\tR\x05runId\x12\x1d\n" +
 	"\n" +
@@ -21807,7 +21819,8 @@ const file_agentcompose_v2_agentcompose_proto_rawDesc = "" +
 	"\x14source_script_sha256\x18\x0f \x01(\tR\x12sourceScriptSha256\x12#\n" +
 	"\rartifacts_dir\x18\x10 \x01(\tR\fartifactsDir\x12\x1f\n" +
 	"\vsandbox_ids\x18\x11 \x03(\tR\n" +
-	"sandboxIds\"\x8c\x01\n" +
+	"sandboxIds\x12!\n" +
+	"\ftrigger_name\x18\x12 \x01(\tR\vtriggerName\"\x8c\x01\n" +
 	"\x1aSetSchedulerEnabledRequest\x125\n" +
 	"\aproject\x18\x01 \x01(\v2\x1b.agentcompose.v2.ProjectRefR\aproject\x12\x1d\n" +
 	"\n" +

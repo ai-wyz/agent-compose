@@ -892,6 +892,11 @@ message SchedulerRun {
   string source_script_sha256 = 15;
   string artifacts_dir = 16;
   repeated string sandbox_ids = 17;
+  // Declared name of the run's trigger, resolved from the scheduler definition
+  // persisted with the project. Empty for script triggers, whose trigger id is
+  // already the registered name, and for runs whose trigger is no longer
+  // declared; clients fall back to trigger_id in both cases.
+  string trigger_name = 18;
 }
 
 message SetSchedulerEnabledRequest {

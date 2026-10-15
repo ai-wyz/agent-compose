@@ -440,19 +440,23 @@ agents:
 	legacyRunID := "550e8400-e29b-41d4-a716-446655440000"
 	errorRunID := identity.NewRandomID(identity.ResourceRun)
 	sandboxID := identity.NewRandomID(identity.ResourceSandbox)
+	projectID, err := projects.StableProjectID("cli-scheduler-observability", "")
+	if err != nil {
+		t.Fatalf("resolve test project ID: %v", err)
+	}
+	declaredTriggerID, err := projects.StableSchedulerTriggerID(projectID, "reviewer", "", "nightly", 0)
+	if err != nil {
+		t.Fatalf("resolve declared trigger ID: %v", err)
+	}
 	getSchedulerRunCalls := 0
 	server := newComposeServiceStubServer(t, composeServiceStubs{
 		project: projectServiceStub{
-			getProject: func(ctx context.Context, req *connect.Request[agentcomposev2.GetProjectRequest]) (*connect.Response[agentcomposev2.GetProjectResponse], error) {
-				projectID, err := projects.StableProjectID("cli-scheduler-observability", "")
-				if err != nil {
-					t.Fatalf("resolve test project ID: %v", err)
-				}
+			getProject: func(context.Context, *connect.Request[agentcomposev2.GetProjectRequest]) (*connect.Response[agentcomposev2.GetProjectResponse], error) {
 				return connect.NewResponse(&agentcomposev2.GetProjectResponse{Project: testCLIProject(projectID, "cli-scheduler-observability", composePath)}), nil
 			},
 			listSchedulerRuns: func(context.Context, *connect.Request[agentcomposev2.ListSchedulerRunsRequest]) (*connect.Response[agentcomposev2.ListSchedulerRunsResponse], error) {
 				return connect.NewResponse(&agentcomposev2.ListSchedulerRunsResponse{Runs: []*agentcomposev2.SchedulerRun{{
-					RunId: runID, AgentName: "reviewer", SchedulerId: "scheduler-reviewer", TriggerId: "nightly",
+					RunId: runID, AgentName: "reviewer", SchedulerId: "scheduler-reviewer", TriggerId: declaredTriggerID, TriggerName: "nightly",
 					Status: agentcomposev2.SchedulerRunStatus_SCHEDULER_RUN_STATUS_SUCCEEDED, SandboxIds: []string{sandboxID},
 					StartedAt: timestamppb.New(time.Date(2026, 7, 15, 1, 0, 0, 0, time.UTC)), CompletedAt: timestamppb.New(time.Date(2026, 7, 15, 1, 0, 2, 0, time.UTC)), DurationMs: 2000,
 				}}}), nil
@@ -481,12 +485,14 @@ agents:
 	defer server.Close()
 
 	stdout, stderr, _, exitCode := executeCLICommand("scheduler", "runs", "--host", server.URL, "--file", composePath)
-	if exitCode != 0 || stderr != "" || !strings.Contains(stdout, shortOpaqueID(runID)) || !strings.Contains(stdout, shortOpaqueID(sandboxID)) || !strings.Contains(stdout, "reviewer") {
+	if exitCode != 0 || stderr != "" || !strings.Contains(stdout, shortOpaqueID(runID)) || !strings.Contains(stdout, shortOpaqueID(sandboxID)) ||
+		!strings.Contains(stdout, "reviewer") || !strings.Contains(stdout, "nightly ("+shortOpaqueID(declaredTriggerID)+")") {
 		t.Fatalf("scheduler runs code/stdout/stderr = %d / %q / %q", exitCode, stdout, stderr)
 	}
 
 	jsonOut, jsonErr, _, jsonCode := executeCLICommand("scheduler", "runs", "--json", "--host", server.URL, "--file", composePath)
-	if jsonCode != 0 || jsonErr != "" || !strings.Contains(jsonOut, `"sandbox_ids": [`) || !strings.Contains(jsonOut, sandboxID) {
+	if jsonCode != 0 || jsonErr != "" || !strings.Contains(jsonOut, `"sandbox_ids": [`) || !strings.Contains(jsonOut, sandboxID) ||
+		!strings.Contains(jsonOut, `"trigger_name": "nightly"`) || !strings.Contains(jsonOut, `"trigger_id": "`+declaredTriggerID+`"`) {
 		t.Fatalf("scheduler runs --json code/stdout/stderr = %d / %q / %q", jsonCode, jsonOut, jsonErr)
 	}
 	projectSummary := testSchedulerProjectSummary(t, "cli-scheduler-observability", composePath)
