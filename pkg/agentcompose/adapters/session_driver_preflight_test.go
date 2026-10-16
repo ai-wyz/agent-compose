@@ -59,13 +59,10 @@ func (p refusingPreflightRuntimeProvider) ForSession(*domain.Sandbox) (SandboxRu
 	return p.runtime, nil
 }
 
-// TestSandboxDriverPreflightFailureStopsTheStartBeforeRuntimeState pins the
-// order StartSandboxVM promises: a runtime that reports it is unusable fails the
-// sandbox with a classified reason and no runtime is created. Reversing the
-// order, or dropping the preflight entirely, leaves an unstartable sandbox with
-// partially created state for cleanup to chase - the behavior the test round
-// observed when no cluster was configured.
-func TestSandboxDriverPreflightFailureStopsTheStartBeforeRuntimeState(t *testing.T) {
+// newPreflightSandboxDriverFixture builds the smallest driver a preflight needs:
+// a real store with one sandbox record, and the supplied runtime provider.
+func newPreflightSandboxDriverFixture(t *testing.T, provider RuntimeProvider) (*SandboxDriver, *domain.Sandbox) {
+	t.Helper()
 	ctx := context.Background()
 	root := t.TempDir()
 	config := &appconfig.Config{
@@ -87,15 +84,26 @@ func TestSandboxDriverPreflightFailureStopsTheStartBeforeRuntimeState(t *testing
 	if err != nil {
 		t.Fatalf("CreateSandbox returned error: %v", err)
 	}
+	return newTestSandboxDriver(config, store, nil, provider), session
+}
 
+// TestSandboxDriverPreflightFailureStopsTheStartBeforeRuntimeState pins the
+// order StartSandboxVM promises: a runtime that reports it is unusable fails the
+// sandbox with a classified reason and no runtime is created. Reversing the
+// order, or dropping the preflight entirely, leaves an unstartable sandbox with
+// partially created state for cleanup to chase - the behavior the test round
+// observed when no cluster was configured.
+func TestSandboxDriverPreflightFailureStopsTheStartBeforeRuntimeState(t *testing.T) {
+	ctx := context.Background()
 	ensureCalls := 0
 	provider := refusingPreflightRuntimeProvider{runtime: refusingPreflightRuntime{
 		preflightErr: domain.ClassifyError(domain.ErrFailedPrecondition, "kubernetes runtime is not usable", errors.New("no kubeconfig")),
 		ensureCalls:  &ensureCalls,
 	}}
-	driver := newTestSandboxDriver(config, store, nil, provider)
+	driver, session := newPreflightSandboxDriverFixture(t, provider)
+	store := driver.Store
 
-	err = driver.StartSandboxVM(ctx, session)
+	err := driver.StartSandboxVM(ctx, session)
 	if !errors.Is(err, domain.ErrFailedPrecondition) {
 		t.Fatalf("StartSandboxVM error = %v, want a failed precondition", err)
 	}
@@ -108,5 +116,37 @@ func TestSandboxDriverPreflightFailureStopsTheStartBeforeRuntimeState(t *testing
 	}
 	if vmState.LastError == "" {
 		t.Fatal("GetVMState LastError is empty, want the preflight failure recorded for the sandbox")
+	}
+}
+
+// TestSandboxDriverPreflightAsksTheRuntimeForTheSandboxsDriver pins what the run
+// path relies on when it asks for the check before creating a sandbox record:
+// the runtime is resolved from the state the caller describes, and the answer is
+// the runtime's own.
+func TestSandboxDriverPreflightAsksTheRuntimeForTheSandboxsDriver(t *testing.T) {
+	ctx := context.Background()
+	ensureCalls := 0
+	preflightErr := errors.New("cluster unreachable")
+	provider := refusingPreflightRuntimeProvider{runtime: refusingPreflightRuntime{
+		preflightErr: preflightErr,
+		ensureCalls:  &ensureCalls,
+	}}
+	driver, session := newPreflightSandboxDriverFixture(t, provider)
+	session.Summary.Driver = ""
+
+	err := driver.PreflightSandboxRuntime(ctx, session, domain.VMState{Driver: driverpkg.RuntimeDriverBoxlite, K8sContext: "cluster-a"})
+	if !errors.Is(err, preflightErr) {
+		t.Fatalf("PreflightSandboxRuntime error = %v, want the runtime's own refusal", err)
+	}
+}
+
+// TestSandboxDriverPreflightAcceptsARuntimeWithoutTheCapability keeps the
+// capability optional: most drivers cannot judge their own usability, and the
+// run path must not refuse them for that.
+func TestSandboxDriverPreflightAcceptsARuntimeWithoutTheCapability(t *testing.T) {
+	driver, session := newPreflightSandboxDriverFixture(t, &sequenceRuntimeProvider{})
+
+	if err := driver.PreflightSandboxRuntime(context.Background(), session, domain.VMState{}); err != nil {
+		t.Fatalf("PreflightSandboxRuntime = %v, want nil for a runtime without the capability", err)
 	}
 }

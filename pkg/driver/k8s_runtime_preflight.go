@@ -5,6 +5,7 @@ package driver
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	domain "github.com/chaitin/agent-compose/pkg/model"
@@ -29,10 +30,16 @@ const k8sAPIServerProbeTimeout = 10 * time.Second
 // kubeconfig mounted after a first attempt must still be picked up by a later
 // start, so this only ever caches the client a successful probe built.
 func (r *k8sRuntime) PreflightSandboxRuntime(ctx context.Context, sandbox *Sandbox, vmState VMState) error {
+	subject := "this sandbox"
+	if sandbox != nil {
+		if id := strings.TrimSpace(sandbox.Summary.ID); id != "" {
+			subject = fmt.Sprintf("sandbox %s", id)
+		}
+	}
 	clientset, _, err := r.client(vmState.K8sContext)
 	if err != nil {
 		return domain.ClassifyError(domain.ErrFailedPrecondition,
-			fmt.Sprintf("kubernetes runtime is not usable for sandbox %s: verify K8S_KUBECONFIG/KUBECONFIG", sandbox.Summary.ID), err)
+			fmt.Sprintf("kubernetes runtime is not usable for %s: verify K8S_KUBECONFIG/KUBECONFIG", subject), err)
 	}
 	probeCtx, cancel := context.WithTimeout(ctx, k8sAPIServerProbeTimeout)
 	defer cancel()
@@ -40,7 +47,7 @@ func (r *k8sRuntime) PreflightSandboxRuntime(ctx context.Context, sandbox *Sandb
 	// refusal here means "not reachable" rather than "not permitted".
 	if _, err := clientset.Discovery().RESTClient().Get().AbsPath("/version").Do(probeCtx).Raw(); err != nil {
 		return domain.ClassifyError(domain.ErrFailedPrecondition,
-			fmt.Sprintf("kubernetes API server is not reachable for sandbox %s", sandbox.Summary.ID), err)
+			fmt.Sprintf("kubernetes API server is not reachable for %s", subject), err)
 	}
 	return nil
 }
