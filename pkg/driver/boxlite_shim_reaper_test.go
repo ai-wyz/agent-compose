@@ -3,41 +3,119 @@
 package driver
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 )
 
-// startStandInProcess starts a long-lived process and guarantees the test does
-// not leave it behind: the reaper kills it in the positive test, and cleanup
-// kills whatever the test asserts must stay alive.
-func startStandInProcess(t *testing.T, path string) *exec.Cmd {
+// boxliteShimStandInSource is the program the shim stand-in is copied from. Any
+// long-lived executable works; only its name matters to the reaper.
+const boxliteShimStandInSource = "/bin/sleep"
+
+// startStandInCommand starts a prepared stand-in command and guarantees the test
+// does not leave it behind: the reaper kills it in the positive test, and
+// cleanup kills whatever the test asserts must stay alive.
+//
+// It also waits for the child's own program to be published, because Start
+// returns as soon as the child's exec closes its error pipe, which the kernel
+// does before it installs the new arguments (see waitForStandInProgram).
+func startStandInCommand(t *testing.T, cmd *exec.Cmd) *exec.Cmd {
 	t.Helper()
-	cmd := exec.Command(path, "60")
 	if err := cmd.Start(); err != nil {
-		t.Skipf("cannot start %s: %v", path, err)
+		t.Skipf("cannot start %s: %v", cmd.Path, err)
 	}
 	t.Cleanup(func() {
 		_ = cmd.Process.Kill()
 		_ = cmd.Wait()
 	})
+	waitForStandInProgram(t, cmd)
 	return cmd
 }
 
-// startBoxliteShimStandIn starts a long-lived process whose command line names
-// it as a boxlite shim, which is what the reaper identifies before it signals
-// anything. /bin/sleep under a boxlite-named symlink gives that shape without
-// the driver's cgo runtime.
-func startBoxliteShimStandIn(t *testing.T) *exec.Cmd {
+// startStandInProcess starts a long-lived process from path.
+func startStandInProcess(t *testing.T, path string) *exec.Cmd {
 	t.Helper()
-	shimPath := filepath.Join(t.TempDir(), "boxlite-shim")
-	if err := os.Symlink("/bin/sleep", shimPath); err != nil {
+	return startStandInCommand(t, exec.Command(path, "60"))
+}
+
+// waitForStandInProgram waits until the kernel reports the child's own argv[0],
+// so a test never inspects a process that is still being started.
+//
+// os/exec reports a child as started once its exec closes the error pipe, and
+// the kernel closes that pipe before it installs the new program's arguments. A
+// /proc read in between sees an empty argv[0], or the executable the parent
+// still runs, so a reaper asked to identify the pid there correctly refuses to
+// signal it. Waiting for the argv[0] the test started removes that race instead
+// of leaving the outcome to machine load.
+func waitForStandInProgram(t *testing.T, cmd *exec.Cmd) {
+	t.Helper()
+	pid := cmd.Process.Pid
+	want := cmd.Args[0]
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		argv0, err := readStandInArgv0(pid)
+		if err != nil {
+			t.Fatalf("read the stand-in process %d command line: %v", pid, err)
+		}
+		if argv0 == want {
+			return
+		}
+		if time.Now().After(deadline) {
+			exe, _ := os.Readlink(fmt.Sprintf("/proc/%d/exe", pid))
+			t.Fatalf("stand-in process %d never ran %q: alive=%v argv0=%q exe=%q", pid, want, boxliteProcessAlive(pid), argv0, exe)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+func readStandInArgv0(pid int) (string, error) {
+	raw, err := os.ReadFile(fmt.Sprintf("/proc/%d/cmdline", pid))
+	if err != nil {
+		return "", err
+	}
+	argv0, _, _ := strings.Cut(string(raw), "\x00")
+	return argv0, nil
+}
+
+// copyBoxliteShimStandIn writes a real binary under the shim's name and returns
+// its path.
+func copyBoxliteShimStandIn(t *testing.T) string {
+	t.Helper()
+	shimPath := filepath.Join(t.TempDir(), boxliteShimExecutableName)
+	raw, err := os.ReadFile(boxliteShimStandInSource)
+	if err != nil {
+		t.Skipf("cannot read %s for a boxlite shim stand-in: %v", boxliteShimStandInSource, err)
+	}
+	if err := os.WriteFile(shimPath, raw, 0o755); err != nil {
 		t.Skipf("cannot create a boxlite shim stand-in: %v", err)
 	}
-	return startStandInProcess(t, shimPath)
+	return shimPath
+}
+
+// startBoxliteShimStandIn starts a long-lived process that runs the shim binary
+// under the shim's own name, which is what the reaper identifies before it
+// signals anything. The test copies the binary instead of linking to it so both
+// programs the reaper compares - the argv[0] the process was started with and
+// the executable it runs - name the shim: a symlink would leave the executable
+// pointing at the real binary, the shape the reaper must refuse.
+func startBoxliteShimStandIn(t *testing.T) *exec.Cmd {
+	t.Helper()
+	return startStandInProcess(t, copyBoxliteShimStandIn(t))
+}
+
+// startBoxliteWrapperStandIn starts the shim binary under an argv[0] that does
+// not name it, the shape a shim started through a wrapper keeps. Its executable
+// is then the only signal left, and the reaper must still release it.
+func startBoxliteWrapperStandIn(t *testing.T) *exec.Cmd {
+	t.Helper()
+	cmd := exec.Command(copyBoxliteShimStandIn(t), "60")
+	cmd.Args[0] = filepath.Join(t.TempDir(), "boxlite-wrapper")
+	return startStandInCommand(t, cmd)
 }
 
 // startBoxliteMentioningStandIn starts a long-lived process whose *arguments*
@@ -46,16 +124,9 @@ func startBoxliteShimStandIn(t *testing.T) *exec.Cmd {
 // only the program it runs may decide whether it is the shim.
 func startBoxliteMentioningStandIn(t *testing.T) *exec.Cmd {
 	t.Helper()
-	cmd := exec.Command("/bin/sleep", "60")
+	cmd := exec.Command(boxliteShimStandInSource, "60")
 	cmd.Args[0] = filepath.Join(t.TempDir(), "boxlite-notes")
-	if err := cmd.Start(); err != nil {
-		t.Skipf("cannot start /bin/sleep: %v", err)
-	}
-	t.Cleanup(func() {
-		_ = cmd.Process.Kill()
-		_ = cmd.Wait()
-	})
-	return cmd
+	return startStandInCommand(t, cmd)
 }
 
 func writeBoxliteShimPID(t *testing.T, runtimeHome, boxID string, pid int) {
@@ -84,6 +155,30 @@ func TestReapBoxliteShimProcessesReleasesTheShimOfAFailedStart(t *testing.T) {
 	}
 	if !reaped {
 		t.Fatal("ReapBoxliteShimProcesses reported nothing to reap for a failed start's shim")
+	}
+	if boxliteProcessAlive(cmd.Process.Pid) {
+		t.Fatalf("boxlite shim process %d is still alive after reaping", cmd.Process.Pid)
+	}
+}
+
+// TestReapBoxliteShimProcessesReleasesAShimItKnowsOnlyByItsExecutable pins the
+// other half of the identification. A shim started through a wrapper keeps its
+// pid and its executable but not its argv[0], and the kernel publishes a new
+// program's arguments a moment after os/exec reports it started, so a recorded
+// pid can name a process whose arguments do not mention the shim at all. Both
+// look like an unrelated process, and refusing them leaves the KVM handle the
+// reaper exists to release.
+func TestReapBoxliteShimProcessesReleasesAShimItKnowsOnlyByItsExecutable(t *testing.T) {
+	runtimeHome := t.TempDir()
+	cmd := startBoxliteWrapperStandIn(t)
+	writeBoxliteShimPID(t, runtimeHome, "box-of-wrapped-shim", cmd.Process.Pid)
+
+	reaped, err := ReapBoxliteShimProcesses(runtimeHome, "box-of-wrapped-shim")
+	if err != nil {
+		t.Fatalf("ReapBoxliteShimProcesses returned error: %v", err)
+	}
+	if !reaped {
+		t.Fatal("ReapBoxliteShimProcesses reported nothing to reap for a wrapped shim")
 	}
 	if boxliteProcessAlive(cmd.Process.Pid) {
 		t.Fatalf("boxlite shim process %d is still alive after reaping", cmd.Process.Pid)
