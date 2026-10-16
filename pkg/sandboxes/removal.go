@@ -161,11 +161,11 @@ func (c *RemovalCoordinator) Remove(ctx context.Context, sandboxID string, force
 	result := RemovalResult{SandboxID: sandboxID, Stopped: record.StopRequired && record.StageCompleted(DeletionStageRuntimeStop)}
 	if !record.StageCompleted(DeletionStageRuntimeStop) {
 		if sandboxErr != nil {
-			return result, fmt.Errorf("load sandbox for runtime stop: %w", sandboxErr)
+			return result, c.rollbackDeletionIntent(ctx, nil, record, fmt.Errorf("load sandbox for runtime stop: %w", sandboxErr))
 		}
 		if record.StopRequired {
 			if err := c.Runtime.StopSandboxVM(ctx, sandbox); err != nil {
-				return result, fmt.Errorf("stop sandbox runtime: %w", err)
+				return result, c.rollbackDeletionIntent(ctx, sandbox, record, fmt.Errorf("stop sandbox runtime: %w", err))
 			}
 			result.Stopped = true
 		}
@@ -176,10 +176,10 @@ func (c *RemovalCoordinator) Remove(ctx context.Context, sandboxID string, force
 	}
 	if !record.StageCompleted(DeletionStageRuntime) {
 		if sandboxErr != nil {
-			return result, fmt.Errorf("load sandbox for runtime remove: %w", sandboxErr)
+			return result, c.rollbackDeletionIntent(ctx, nil, record, fmt.Errorf("load sandbox for runtime remove: %w", sandboxErr))
 		}
 		if err := c.Runtime.RemoveSandboxVM(ctx, sandbox); err != nil {
-			return result, fmt.Errorf("remove sandbox runtime: %w", err)
+			return result, c.rollbackDeletionIntent(ctx, sandbox, record, fmt.Errorf("remove sandbox runtime: %w", err))
 		}
 		record.Complete(DeletionStageRuntime)
 		if err := WriteOwnershipRecord(c.SandboxRoot, record); err != nil {
@@ -308,6 +308,38 @@ func (c *RemovalCoordinator) Prune(ctx context.Context, req PruneRequest) (Prune
 		result.Removed = append(result.Removed, candidateID(candidate))
 	}
 	return result, nil
+}
+
+// rollbackDeletionIntent restores the pre-deletion state after a runtime
+// deletion step failed. The DELETING state is persisted before the runtime call
+// so that a crash mid-delete can resume; but when the call itself fails nothing
+// was removed, and leaving DELETING behind strands the record in an intermediate
+// state that no product path clears (it does not match prune, and every retry
+// fails the same way). The failure is still returned to the caller.
+//
+// A nil sandbox means its metadata could not be loaded, so only the on-disk
+// journal is rolled back.
+func (c *RemovalCoordinator) rollbackDeletionIntent(ctx context.Context, sandbox *domain.Sandbox, record OwnershipRecord, cause error) error {
+	previousStatus := domain.VMStatusStopped
+	if record.StopRequired && !record.StageCompleted(DeletionStageRuntimeStop) {
+		// The runtime was running and its stop was never confirmed, so it is
+		// still running as far as the record is concerned.
+		previousStatus = domain.VMStatusRunning
+	}
+	record.LifecycleState = "active"
+	record.StopRequired = false
+	record.CompletedStages = nil
+	if err := WriteOwnershipRecord(c.SandboxRoot, record); err != nil {
+		return errors.Join(cause, fmt.Errorf("roll back sandbox deletion journal: %w", err))
+	}
+	if sandbox == nil {
+		return cause
+	}
+	sandbox.Summary.VMStatus = previousStatus
+	if err := c.Store.UpdateSandbox(ctx, sandbox); err != nil {
+		return errors.Join(cause, fmt.Errorf("roll back sandbox deletion status: %w", err))
+	}
+	return cause
 }
 
 func ownershipFromSandbox(root string, sandbox *domain.Sandbox) OwnershipRecord {

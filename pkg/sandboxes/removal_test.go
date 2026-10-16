@@ -37,15 +37,18 @@ func TestRemovalCoordinatorPersistsAndResumesStages(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReadOwnershipRecord: %v", err)
 	}
-	if record.LifecycleState != "deleting" || !record.StageCompleted(sandboxes.DeletionStageRuntimeStop) || record.StageCompleted(sandboxes.DeletionStageRuntime) {
+	// A failed runtime removal must not leave the record in DELETING: nothing was
+	// removed, so the pre-deletion state is restored and the failure is still
+	// reported. Leaving it in DELETING is the stuck state of issue #772.
+	if record.LifecycleState != "active" || record.StageCompleted(sandboxes.DeletionStageRuntime) {
 		t.Fatalf("record after failure = %#v", record)
 	}
-	if store.sandboxes[sandbox.Summary.ID].Summary.VMStatus != domain.VMStatusDeleting {
+	if store.sandboxes[sandbox.Summary.ID].Summary.VMStatus != domain.VMStatusStopped {
 		t.Fatalf("sandbox status = %q", store.sandboxes[sandbox.Summary.ID].Summary.VMStatus)
 	}
 
 	result, err := coordinator.Remove(context.Background(), sandbox.Summary.ID, true)
-	if err != nil || !result.Removed || !result.Stopped {
+	if err != nil || !result.Removed {
 		t.Fatalf("resumed Remove result=%#v err=%v", result, err)
 	}
 	if runtime.stopCalls != 1 || runtime.removeCalls != 2 || store.removeCalls != 1 {
@@ -53,6 +56,77 @@ func TestRemovalCoordinatorPersistsAndResumesStages(t *testing.T) {
 	}
 	if _, err := sandboxes.ReadOwnershipRecord(root, sandbox.Summary.ID); !os.IsNotExist(err) {
 		t.Fatalf("ownership record remains: %v", err)
+	}
+}
+
+// A permanently failing runtime removal must not strand the sandbox in DELETING.
+// Nothing was removed, so every attempt returns to the same recoverable state and
+// keeps reporting the failure, which leaves `sandbox rm` retryable and keeps the
+// record out of an intermediate state that no product path clears.
+func TestRemovalCoordinatorRollsBackDeletionIntentWhenRuntimeRemovalFails(t *testing.T) {
+	tests := []struct {
+		name       string
+		status     string
+		stopErr    error
+		removeErr  error
+		wantStatus string
+		wantErr    string
+	}{
+		{
+			name: "runtime removal fails while stopped", status: domain.VMStatusStopped,
+			removeErr:  errors.New("invalid configuration: no configuration has been provided"),
+			wantStatus: domain.VMStatusStopped, wantErr: "remove sandbox runtime",
+		},
+		{
+			name: "runtime removal fails after stopping", status: domain.VMStatusRunning,
+			removeErr:  errors.New("invalid configuration: no configuration has been provided"),
+			wantStatus: domain.VMStatusStopped, wantErr: "remove sandbox runtime",
+		},
+		{
+			name: "runtime stop fails", status: domain.VMStatusRunning,
+			stopErr:    errors.New("stop unavailable"),
+			wantStatus: domain.VMStatusRunning, wantErr: "stop sandbox runtime",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			root := t.TempDir()
+			sandbox := removalTestSandbox(t, removalTestSandboxSpec{
+				Root: root, ID: "sandbox-rollback", Status: tt.status, Updated: time.Now().Add(-time.Hour),
+			})
+			store := &removalTestStore{sandboxes: map[string]*domain.Sandbox{sandbox.Summary.ID: sandbox}}
+			runtime := &removalTestRuntime{}
+			if tt.stopErr != nil {
+				runtime.stopErrors = []error{tt.stopErr, tt.stopErr}
+			}
+			if tt.removeErr != nil {
+				runtime.removeErrors = []error{tt.removeErr, tt.removeErr}
+			}
+			coordinator := &sandboxes.RemovalCoordinator{SandboxRoot: root, Store: store, Runtime: runtime}
+
+			// Two consecutive failures must converge on the same state instead
+			// of leaving a DELETING record behind after the first one.
+			for attempt := 1; attempt <= 2; attempt++ {
+				_, err := coordinator.Remove(context.Background(), sandbox.Summary.ID, true)
+				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+					t.Fatalf("attempt %d error = %v, want %q", attempt, err, tt.wantErr)
+				}
+				record, err := sandboxes.ReadOwnershipRecord(root, sandbox.Summary.ID)
+				if err != nil {
+					t.Fatalf("ReadOwnershipRecord after attempt %d: %v", attempt, err)
+				}
+				if record.LifecycleState == "deleting" || record.StageCompleted(sandboxes.DeletionStageRuntime) {
+					t.Fatalf("record stuck in deletion after attempt %d: %#v", attempt, record)
+				}
+				stored, err := store.GetSandbox(context.Background(), sandbox.Summary.ID)
+				if err != nil {
+					t.Fatalf("GetSandbox after attempt %d: %v", attempt, err)
+				}
+				if stored.Summary.VMStatus != tt.wantStatus {
+					t.Fatalf("sandbox status after attempt %d = %q, want %q", attempt, stored.Summary.VMStatus, tt.wantStatus)
+				}
+			}
+		})
 	}
 }
 
@@ -328,6 +402,7 @@ func (s *removalTestStore) RemoveSandbox(_ context.Context, id string) error {
 type removalTestRuntime struct {
 	stopCalls    int
 	removeCalls  int
+	stopErrors   []error
 	removeErrors []error
 }
 
@@ -366,7 +441,12 @@ func (r *blockingLifecycleRuntime) RemoveSandboxVM(context.Context, *domain.Sand
 
 func (r *removalTestRuntime) StopSandboxVM(context.Context, *domain.Sandbox) error {
 	r.stopCalls++
-	return nil
+	if len(r.stopErrors) == 0 {
+		return nil
+	}
+	err := r.stopErrors[0]
+	r.stopErrors = r.stopErrors[1:]
+	return err
 }
 
 func (r *removalTestRuntime) RemoveSandboxVM(context.Context, *domain.Sandbox) error {

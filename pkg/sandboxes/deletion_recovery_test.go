@@ -60,7 +60,7 @@ func TestDeletionRecoveryRunsPendingDeletionsConcurrentlyAndStops(t *testing.T) 
 	}
 }
 
-func TestDeletionRecoveryReportsFailureAndRetriesOnNextInstance(t *testing.T) {
+func TestDeletionRecoveryReportsFailureAndRollsBackJournal(t *testing.T) {
 	root := t.TempDir()
 	writeDeletingRecoveryRecords(t, root, "retry")
 	failedRuntime := &recoveryRuntime{failureID: "retry", started: make(chan string, 1), completed: make(chan string, 1)}
@@ -69,17 +69,42 @@ func TestDeletionRecoveryReportsFailureAndRetriesOnNextInstance(t *testing.T) {
 		t.Fatalf("first Start returned error: %v", err)
 	}
 	waitForDeletionRecoveryDone(t, first)
-	if _, err := ReadOwnershipRecord(root, "retry"); err != nil {
+
+	// A failed deletion rolls its journal back instead of leaving it in
+	// deleting, so later daemon starts neither resume the same failing deletion
+	// nor repeat the same warning forever.
+	record, err := ReadOwnershipRecord(root, "retry")
+	if err != nil {
 		t.Fatalf("failed deletion did not retain its journal: %v", err)
 	}
+	if record.LifecycleState == "deleting" {
+		t.Fatalf("failed deletion journal = %#v, want a rolled-back state", record)
+	}
 
-	successRuntime := &recoveryRuntime{started: make(chan string, 1), completed: make(chan string, 1)}
-	second := newTestDeletionRecovery(root, successRuntime)
+	// The rolled-back sandbox is no longer pending, so recovery leaves it alone:
+	// deleting it again stays an explicit request rather than background work.
+	untouched := &recoveryRuntime{started: make(chan string, 1), completed: make(chan string, 1)}
+	second := newTestDeletionRecovery(root, untouched)
 	if err := second.Start(context.Background()); err != nil {
 		t.Fatalf("second Start returned error: %v", err)
 	}
-	waitForRecoveryJournalRemoval(t, root, "retry")
 	waitForDeletionRecoveryDone(t, second)
+	select {
+	case id := <-untouched.started:
+		t.Fatalf("recovery resumed the rolled-back sandbox %q", id)
+	default:
+	}
+
+	// The failure keeps a product path: an explicit removal with a working
+	// runtime deletes the sandbox and its journal.
+	successRuntime := &recoveryRuntime{started: make(chan string, 1), completed: make(chan string, 1)}
+	coordinator := &RemovalCoordinator{SandboxRoot: root, Store: recoveryStore{}, Runtime: successRuntime}
+	if _, err := coordinator.Remove(context.Background(), "retry", true); err != nil {
+		t.Fatalf("explicit Remove after rollback: %v", err)
+	}
+	if _, err := ReadOwnershipRecord(root, "retry"); !os.IsNotExist(err) {
+		t.Fatalf("journal after explicit Remove = %v, want not exist", err)
+	}
 }
 
 func TestDeletionRecoveryRemovesArchivedSandboxWithoutCleanupPolicy(t *testing.T) {
