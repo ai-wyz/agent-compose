@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	appconfig "github.com/chaitin/agent-compose/pkg/config"
+	domain "github.com/chaitin/agent-compose/pkg/model"
 	"io"
 	"net/http"
 	"net/url"
@@ -206,11 +207,16 @@ func (r *k8sRuntime) client(contextName string) (kubernetes.Interface, *rest.Con
 	// lifetime, surviving even after whatever caused it is fixed.
 	restConfig, err := clientcmd.NewNonInteractiveDeferredLoadingClientConfig(loadingRules, overrides).ClientConfig()
 	if err != nil {
-		return nil, nil, fmt.Errorf("load kubernetes client config for context %q: verify K8S_KUBECONFIG/KUBECONFIG: %w", contextName, err)
+		// A missing or unreadable kubeconfig is a deployment fact the operator
+		// must fix, not a daemon fault. Classifying it keeps callers from
+		// reporting it as an internal error; the message text is unchanged.
+		return nil, nil, domain.ClassifyError(domain.ErrFailedPrecondition,
+			fmt.Sprintf("load kubernetes client config for context %q: verify K8S_KUBECONFIG/KUBECONFIG", contextName), err)
 	}
 	clientset, err := kubernetes.NewForConfig(restConfig)
 	if err != nil {
-		return nil, nil, fmt.Errorf("build kubernetes client for context %q: %w", contextName, err)
+		return nil, nil, domain.ClassifyError(domain.ErrFailedPrecondition,
+			fmt.Sprintf("build kubernetes client for context %q", contextName), err)
 	}
 	entry := &k8sClientEntry{clientset: clientset, restConfig: restConfig}
 	r.clients[contextName] = entry

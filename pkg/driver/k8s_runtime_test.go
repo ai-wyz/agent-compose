@@ -5,8 +5,10 @@ package driver
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	appconfig "github.com/chaitin/agent-compose/pkg/config"
+	domain "github.com/chaitin/agent-compose/pkg/model"
 	"net/url"
 	"os/exec"
 	"path/filepath"
@@ -786,6 +788,28 @@ func TestK8sClientDoesNotCacheBuildFailure(t *testing.T) {
 	// A second call must retry from scratch, not return a cached error.
 	if _, _, err := r.client(""); err == nil {
 		t.Fatal("client() (second call) error = nil, want the same load-config failure retried, not a cached success")
+	}
+}
+
+// TestK8sClientConfigFailureIsClassified pins the error class of a missing or
+// unreadable kubeconfig. It is a deployment configuration fact that the operator
+// must fix, not a daemon fault, so callers can classify it instead of reporting
+// an internal error (agent-compose issues #771 and #772).
+func TestK8sClientConfigFailureIsClassified(t *testing.T) {
+	r := &k8sRuntime{
+		config:  &appconfig.Config{K8sKubeconfigPath: filepath.Join(t.TempDir(), "does-not-exist")},
+		clients: map[string]*k8sClientEntry{},
+	}
+
+	_, _, err := r.client("")
+	if err == nil {
+		t.Fatal("client() error = nil, want a load-config failure")
+	}
+	if !errors.Is(err, domain.ErrFailedPrecondition) {
+		t.Fatalf("client() error = %v, want it classified as %v", err, domain.ErrFailedPrecondition)
+	}
+	if !strings.Contains(err.Error(), "verify K8S_KUBECONFIG/KUBECONFIG") {
+		t.Fatalf("client() error = %v, want the operator hint preserved", err)
 	}
 }
 

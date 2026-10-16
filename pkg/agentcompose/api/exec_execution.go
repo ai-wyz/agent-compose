@@ -36,7 +36,7 @@ type execPreparation struct {
 	GuestExecDir string
 }
 
-func (h *ExecHandler) prepareExecCommand(sandbox *domain.Sandbox, req *agentcomposev2.ExecRequest, execID string) (execPreparation, error) {
+func (h *ExecHandler) prepareExecCommand(ctx context.Context, sandbox *domain.Sandbox, req *agentcomposev2.ExecRequest, execID string) (execPreparation, error) {
 	appconfig.ApplyDefaultGuestPaths(h.config)
 	cwd := strings.TrimSpace(req.GetCwd())
 	if cwd == "" {
@@ -64,8 +64,23 @@ func (h *ExecHandler) prepareExecCommand(sandbox *domain.Sandbox, req *agentcomp
 		TimeoutMs:      int64(req.GetTimeoutMs()),
 		MaxOutputBytes: int64(req.GetMaxOutputBytes()),
 	}, guestExecDir)
-	if err := execution.WriteJSONArtifact(filepath.Join(hostExecDir, "command-request.json"), runtimeRequest); err != nil {
+	hostRequestPath := filepath.Join(hostExecDir, "command-request.json")
+	if err := execution.WriteJSONArtifact(hostRequestPath, runtimeRequest); err != nil {
 		return execPreparation{}, connect.NewError(connect.CodeInternal, fmt.Errorf("write exec command request artifact: %w", err))
+	}
+	// A daemon-local write is only visible inside sandboxes backed by a shared
+	// mount. Drivers without one (k8s) need the artifact pushed to the guest
+	// path the runtime command reads, otherwise every exec fails with a missing
+	// command-request.json.
+	if writer, ok := runtime.(interface {
+		WriteGuestFile(context.Context, *domain.Sandbox, domain.VMState, string, []byte) error
+	}); ok {
+		writeGuestFile := func(ctx context.Context, guestPath string, content []byte) error {
+			return writer.WriteGuestFile(ctx, sandbox, vmState, guestPath, content)
+		}
+		if err := execution.SyncHostFileToGuest(ctx, hostRequestPath, filepath.Join(guestExecDir, "command-request.json"), writeGuestFile); err != nil {
+			return execPreparation{}, connect.NewError(connect.CodeInternal, fmt.Errorf("sync exec command request into sandbox: %w", err))
+		}
 	}
 	return execPreparation{Cwd: cwd, VMState: vmState, Runtime: runtime, HostExecDir: hostExecDir, GuestExecDir: guestExecDir}, nil
 }
@@ -141,7 +156,7 @@ func (h *ExecHandler) executeProjectCommand(ctx context.Context, req *agentcompo
 			return nil, connect.NewError(connect.CodeUnknown, err)
 		}
 	}
-	prep, err := h.prepareExecCommand(sandbox, req, execID)
+	prep, err := h.prepareExecCommand(ctx, sandbox, req, execID)
 	if err != nil {
 		return nil, err
 	}

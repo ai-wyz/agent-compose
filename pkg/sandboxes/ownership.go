@@ -44,8 +44,13 @@ type OwnershipRecord struct {
 	CacheDependencies []CacheDependency `json:"cache_dependencies,omitempty"`
 	LifecycleState    string            `json:"lifecycle_state"`
 	StopRequired      bool              `json:"stop_required,omitempty"`
-	CompletedStages   []DeletionStage   `json:"completed_stages,omitempty"`
-	UpdatedAt         time.Time         `json:"updated_at"`
+	// PreviousVMStatus is the sandbox status that the deletion intent replaced
+	// with DELETING. A rollback restores it, so a failed removal does not
+	// rewrite a state such as FAILED into a different lifecycle state. It is
+	// empty in journals written before the field existed.
+	PreviousVMStatus string          `json:"previous_vm_status,omitempty"`
+	CompletedStages  []DeletionStage `json:"completed_stages,omitempty"`
+	UpdatedAt        time.Time       `json:"updated_at"`
 }
 
 func LifecycleRoot(sandboxRoot string) string {

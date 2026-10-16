@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -105,6 +106,85 @@ func TestIntegrationCompletionManagerPersistsEventsBeforeCleanupAndRetriesFirstR
 
 func TestE2ECompletionManagerPersistsEventsBeforeCleanupAndRetriesFirstResult(t *testing.T) {
 	TestCompletionManagerPersistsEventsBeforeCleanupAndRetriesFirstResult(t)
+}
+
+// A permanent sandbox cleanup failure must not keep a run non-terminal
+// forever: after a bounded number of attempts the run is finalized anyway, the
+// cleanup failure is recorded on it, and the completion journal is deleted so
+// no further retry is scheduled.
+func TestCompletionManagerAbandonsCleanupAfterBoundedAttempts(t *testing.T) {
+	ctx := context.Background()
+	store := newCompletionTestStore(t)
+	run := createCompletionTestRun(t, store, domain.ProjectRunRecord{
+		RunID: "abandoned-run", ProjectID: "project-1", AgentName: "worker", AgentID: "agent-1",
+		Status: domain.ProjectRunStatusRunning, SandboxID: "sandbox-abandon", CleanupPolicy: domain.ProjectRunCleanupStopOnCompletion,
+	})
+	sandboxes := completionSandboxStoreFake{sandbox: &domain.Sandbox{Summary: domain.SandboxSummary{ID: run.SandboxID, VMStatus: domain.VMStatusRunning}}}
+	stopper := &completionStopperFake{err: errors.New("stop unavailable")}
+	manager := runs.NewCompletionManager(runs.CompletionManagerDeps{Store: store, Sandboxes: sandboxes, Lifecycle: stopper})
+
+	// Each Complete call is cancelled as soon as cleanup is attempted, so one
+	// loop iteration drives exactly one cleanup attempt instead of waiting out
+	// the real retry delays. Without the attempt bound the run stays RUNNING
+	// for every iteration and the assertions below fail.
+	const maxIterations = 20
+	var finalized domain.ProjectRunRecord
+	attempts := 0
+	for ; attempts < maxIterations; attempts++ {
+		attemptCtx, cancel := context.WithCancel(ctx)
+		stopper.onStop = cancel
+		current, err := manager.Complete(attemptCtx, runs.TransitionRequest{
+			RunID: run.RunID, Status: domain.ProjectRunStatusSucceeded, Output: "done",
+		})
+		cancel()
+		if err != nil {
+			t.Fatalf("Complete on attempt %d: %v", attempts+1, err)
+		}
+		if runs.StatusIsTerminal(current.Status) {
+			finalized = current
+			break
+		}
+		journal, err := store.GetProjectRunCompletion(ctx, run.RunID)
+		if err != nil {
+			t.Fatalf("read completion journal after attempt %d: %v", attempts+1, err)
+		}
+		if journal.Attempt != attempts+1 {
+			t.Fatalf("journal attempt = %d after %d attempts", journal.Attempt, attempts+1)
+		}
+		if err := store.RecordProjectRunCompletionFailure(ctx, domain.ProjectRunCompletionFailure{
+			RunID: run.RunID, Message: journal.LastError, Attempt: journal.Attempt, NextAttemptAt: time.Now().Add(-time.Second),
+		}); err != nil {
+			t.Fatalf("make completion due after attempt %d: %v", attempts+1, err)
+		}
+	}
+	if finalized.Status != domain.ProjectRunStatusSucceeded {
+		t.Fatalf("run did not reach a terminal state within %d attempts: %#v", maxIterations, finalized)
+	}
+	if !strings.Contains(finalized.CleanupError, "stop unavailable") {
+		t.Fatalf("finalized run recorded no cleanup error: %#v", finalized)
+	}
+	if _, err := store.GetProjectRunCompletion(ctx, run.RunID); err == nil {
+		t.Fatal("completion journal remained after the run was finalized")
+	}
+	persisted, err := store.GetProjectRun(ctx, run.RunID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if persisted.Status != domain.ProjectRunStatusSucceeded || !strings.Contains(persisted.CleanupError, "stop unavailable") {
+		t.Fatalf("persisted run = %#v", persisted)
+	}
+	if stopper.calls != attempts+1 {
+		t.Fatalf("cleanup attempts = %d, want %d", stopper.calls, attempts+1)
+	}
+	t.Logf("cleanup abandoned after %d attempts", attempts+1)
+}
+
+func TestIntegrationCompletionManagerAbandonsCleanupAfterBoundedAttempts(t *testing.T) {
+	TestCompletionManagerAbandonsCleanupAfterBoundedAttempts(t)
+}
+
+func TestE2ECompletionManagerAbandonsCleanupAfterBoundedAttempts(t *testing.T) {
+	TestCompletionManagerAbandonsCleanupAfterBoundedAttempts(t)
 }
 
 type completionSandboxStoreFake struct{ sandbox *domain.Sandbox }
