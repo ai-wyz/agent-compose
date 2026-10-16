@@ -943,30 +943,31 @@ manual `workflow_dispatch`. It compares every package pinned in
 `guest-images/providers.lock.json` with the version npm currently publishes and
 reports the result where a team already looks:
 
-- when the `DINGTALK_DEV_TARGETS_JSON` secret is configured, a short Simplified
-  Chinese summary of the report is pushed to the development DingTalk group
-  through `scripts/notify-dingtalk.sh`: which providers have a newer release and
-  their pinned and latest versions, one line for each retired companion, a line
-  when an npm query failed, and a pointer to the job summary. This is a channel of
-  its own: release announcements use the separate `DINGTALK_TARGETS_JSON` secret
-  consumed by the release workflow. That webhook is the notification path: there
-  is no tracking issue to watch. If the secret is unset, the run still succeeds
-  but emits a warning and says so in the job summary, because a silent run and an
+- when the `DINGTALK_DEV_TARGETS_JSON` secret is configured, the summary is
+  pushed to the development DingTalk group through `scripts/notify-dingtalk.sh`.
+  It is written for that group, so it is Simplified Chinese and lists only what
+  needs attention: which pinned providers have a newer release with their pinned
+  and latest versions, one line for each package retired by another provider's
+  release, and a line when an npm query failed. This is a channel of its own:
+  release announcements use the separate `DINGTALK_TARGETS_JSON` secret consumed
+  by the release workflow. That webhook is the notification path: there is no
+  tracking issue to watch. If the secret is unset, the run still succeeds but
+  emits a warning and says so in the job summary, because a silent run and an
   up-to-date run would otherwise look identical; and
-- the full report is written to the job summary.
+- the same summary is written to the job summary, and is the body of the draft
+  bump pull request.
 
 The workflow never edits a pin on its own. A package whose lock entry records a
-`retiredBy` release is reported as outdated together with that plan, and is left
-out of the bump list: the intended action is to delete it in the upgrade that
-retires it, not to follow its own releases. A `workflow_dispatch` input `bump`
-additionally opens a draft pull request that applies `provider-lock.sh bump` to
-the outdated pins and then runs `scripts/provider-lock.sh check`. The draft is
-deliberate: the bump is mechanical, while deciding whether a provider release is
-safe is not. A failing check does not block the draft — it is recorded in the
-pull request body, and CI enforces it once the draft is marked ready. Two
-optional repository variables refine the report: `PROVIDER_UPGRADE_MENTIONS` is
-appended to the report body and to the pushed summary for @-mentions, and
-`NPM_CONFIG_REGISTRY` is used for the npm queries.
+`retiredBy` release is reported together with that plan, and is left out of the
+bump list: the intended action is to delete it in the upgrade that retires it, not
+to follow its own releases. A `workflow_dispatch` input `bump` additionally opens
+a draft pull request that applies `provider-lock.sh bump` to the outdated pins and
+then runs `scripts/provider-lock.sh check`. The draft is deliberate: the bump is
+mechanical, while deciding whether a provider release is safe is not. A failing
+check does not block the draft — it is recorded in the pull request body, and CI
+enforces it once the draft is marked ready. Two optional repository variables
+refine the scan: `PROVIDER_UPGRADE_MENTIONS` is appended to the pushed summary for
+@-mentions, and `NPM_CONFIG_REGISTRY` is used for the npm queries.
 
 GitHub's scheduler is best-effort, so treat the job summary as the durable record
 and the DingTalk push as the notification:

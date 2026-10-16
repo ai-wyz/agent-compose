@@ -1,13 +1,13 @@
 name: Provider upstream check
 
-# Answers "is a provider we pin newer upstream?" once a day and reports it on
-# the DingTalk webhook the team already watches. Nothing is published and no
-# issue is filed: a person reads the report and decides what to upgrade, which
+# Answers "is a provider we pin newer upstream?" once a day and pushes the short
+# Chinese summary to the development DingTalk group. Nothing is published and no
+# issue is filed: a person reads the summary and decides what to upgrade, which
 # is why the safe path after decoupling is a small provider-only branch.
 #
 # GitHub's scheduler is best-effort: a cron entry can be delayed, and scheduled
 # workflows are disabled after 60 days of repository inactivity. workflow_dispatch
-# exists so the same report can be produced on demand.
+# exists so the same summary can be produced on demand.
 on:
   schedule:
     - cron: '17 1 * * *'
@@ -48,8 +48,10 @@ jobs:
           NPM_CONFIG_REGISTRY: ${{ vars.NPM_CONFIG_REGISTRY }}
         run: ./scripts/check-provider-upstreams.sh
 
+      # The scan's summary is the durable record: it is what both the job summary
+      # and the DingTalk push carry.
       - name: Summarize the scan
-        run: cat "${{ runner.temp }}/provider-upstream-report.md" >>"$GITHUB_STEP_SUMMARY"
+        run: cat "${{ runner.temp }}/provider-upstream-notify.md" >>"$GITHUB_STEP_SUMMARY"
 
       # The webhook is the whole notification path, so a missing secret must be
       # visible: a green run that reports nothing looks identical to "up to date".
@@ -59,9 +61,6 @@ jobs:
       # separate secrets: sharing DINGTALK_TARGETS_JSON here would move the
       # release announcements to whichever group this job is pointed at. The
       # script's own variable name is fixed, so only the secret it is fed changes.
-      #
-      # The push carries the short Simplified Chinese summary the scan writes for
-      # a DingTalk reader; the full English report stays in the job summary.
       - name: Notify about outdated providers
         if: steps.scan.outputs.outdated == 'true'
         env:
@@ -83,7 +82,7 @@ jobs:
         if: steps.scan.outputs.outdated == 'true' && inputs.bump
         env:
           GH_TOKEN: ${{ github.token }}
-          REPORT: ${{ runner.temp }}/provider-upstream-report.md
+          SUMMARY: ${{ runner.temp }}/provider-upstream-notify.md
           BUMP_FILE: ${{ runner.temp }}/provider-upstream-bump.txt
           PR_BODY: ${{ runner.temp }}/provider-upstream-pr-body.md
         run: |
@@ -102,7 +101,7 @@ jobs:
           check_output=$(./scripts/provider-lock.sh check 2>&1) || true
 
           body="$PR_BODY"
-          cp "$REPORT" "$body"
+          cp "$SUMMARY" "$body"
           if [[ -n $check_output ]]; then
             {
               printf '\n### Provider lock check output\n\n'
