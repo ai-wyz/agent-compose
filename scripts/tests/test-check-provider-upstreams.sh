@@ -25,6 +25,7 @@ fail() {
 }
 
 report() { cat "$scan_dir/out/provider-upstream-report.md" 2>/dev/null || true; }
+notify() { cat "$scan_dir/out/provider-upstream-notify.md" 2>/dev/null || true; }
 bump_args() { cat "$scan_dir/out/provider-upstream-bump.txt" 2>/dev/null || true; }
 status() { cat "$scan_dir/out/provider-upstream-outdated" 2>/dev/null || true; }
 row() { grep -F "| \`$1\` |" <(report) || true; }
@@ -45,12 +46,13 @@ write_stub() { # $1=case directory
 }
 
 # run_scan runs the check against a lock and records the outcome in scan_rc.
-run_scan() { # $1=case directory, $2=lock file
+run_scan() { # $1=case directory, $2=lock file, $3=optional PROVIDER_UPGRADE_MENTIONS
   mkdir -p "$1/out"
   set +e
   PATH="$1/bin:$PATH" \
     PROVIDER_LOCK_FILE="$2" \
     PROVIDER_UPSTREAM_OUTPUT_DIR="$1/out" \
+    PROVIDER_UPGRADE_MENTIONS="${3:-}" \
     GITHUB_OUTPUT="$1/github_output" \
     "$CHECK" >"$1/stdout" 2>&1
   scan_rc=$?
@@ -125,6 +127,15 @@ fi
 if ! grep -q '^outdated=false$' "$scan_dir/github_output"; then
   fail 'the GITHUB_OUTPUT status was not written for a current set of pins'
 fi
+# The summary written for the push has to carry the same facts the report does -
+# including the query failure, which is easy to drop when the summary is built
+# separately.
+if ! grep -qF '有 1 个包查询失败' <(notify); then
+  fail "the pushed summary hid a failed npm query: $(notify)"
+fi
+if grep -q '^- ' <(notify); then
+  fail "a scan with no newer release pushed provider bullets: $(notify)"
+fi
 
 # 2. A final release must be reported while a prerelease of it is pinned. GNU
 #    version sort orders 0.2.0-rc.1 after 0.2.0, so this is exactly the upgrade
@@ -149,6 +160,12 @@ fi
 if ! grep -q '^outdated=true$' "$scan_dir/github_output"; then
   fail 'the GITHUB_OUTPUT status was not written for an available release'
 fi
+if ! grep -qF '有 1 个上游 provider 有新版本' <(notify); then
+  fail "the pushed summary did not count the available release: $(notify)"
+fi
+if ! grep -qF -- '- `dsh`：`0.2.0-rc.1` → `0.2.0`' <(notify); then
+  fail "the pushed summary did not name the available upgrade: $(notify)"
+fi
 
 # 3. A prerelease upstream of the release we already pin is not an upgrade, so it
 #    must stay out of the bump arguments. This is the other half of case 2.
@@ -165,6 +182,9 @@ if [[ -n $(bump_args) ]]; then
 fi
 if [[ $(status) != 'false' ]]; then
   fail "a prerelease upstream reported outdated='$(status)'"
+fi
+if ! grep -qF '所有固定的 provider 版本都与 npm 最新版本一致，无需处理。' <(notify); then
+  fail "a scan with nothing to act on wrote a misleading summary: $(notify)"
 fi
 
 # A newer release core must preserve its prerelease suffix when returned by
@@ -201,6 +221,15 @@ fi
 if [[ $(status) != 'true' ]]; then
   fail "a retired companion reported outdated='$(status)'"
 fi
+if ! grep -qF '有 2 个上游 provider 有新版本' <(notify); then
+  fail "the pushed summary miscounted the providers to look at: $(notify)"
+fi
+if ! grep -qF -- '- `opencode`：`1.18.9` → `1.19.0`' <(notify); then
+  fail "the pushed summary dropped an ordinary outdated provider: $(notify)"
+fi
+if ! grep -qF -- '- `pi-mcp-adapter`：已被 `pi 0.99.0` 取代，随该升级删除' <(notify); then
+  fail "the pushed summary did not say a retired companion is deleted, not bumped: $(notify)"
+fi
 
 # 5. The committed lock must stay scannable: every pinned package is queried and
 #    reported. The stub echoes each package's own pin, read from the lock, so a
@@ -222,6 +251,21 @@ if [[ $actual_rows != "$expected_rows" ]]; then
 fi
 if [[ -n $(bump_args) || $(status) != 'false' ]]; then
   fail "the committed lock is not scannable as current: bump=($(bump_args)) outdated='$(status)'"
+fi
+if ! grep -qF '所有固定的 provider 版本都与 npm 最新版本一致，无需处理。' <(notify); then
+  fail "the committed lock did not produce an up-to-date summary: $(notify)"
+fi
+
+# 6. PROVIDER_UPGRADE_MENTIONS names the people who should read the report, and
+#    the push is the copy they actually read, so it must reach the summary as
+#    well as the job summary.
+scan mentions <<'EOF'
+opencode|opencode-ai|1.18.9|1.19.0|
+EOF
+run_scan "$scan_dir" "$scan_dir/lock.json" '<!-- @alice -->'
+
+if ! grep -qF '<!-- @alice -->' <(notify); then
+  fail 'PROVIDER_UPGRADE_MENTIONS did not reach the pushed summary'
 fi
 
 if ((failures > 0)); then

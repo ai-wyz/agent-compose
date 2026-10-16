@@ -54,16 +54,19 @@ jobs:
       # The webhook is the whole notification path, so a missing secret must be
       # visible: a green run that reports nothing looks identical to "up to date".
       #
-      # The provider report goes to the development group, not to the release
+      # The provider summary goes to the development group, not to the release
       # group the release workflow notifies. The two channels are deliberately
       # separate secrets: sharing DINGTALK_TARGETS_JSON here would move the
       # release announcements to whichever group this job is pointed at. The
       # script's own variable name is fixed, so only the secret it is fed changes.
+      #
+      # The push carries the short Simplified Chinese summary the scan writes for
+      # a DingTalk reader; the full English report stays in the job summary.
       - name: Notify about outdated providers
         if: steps.scan.outputs.outdated == 'true'
         env:
           DINGTALK_TARGETS_JSON: ${{ secrets.DINGTALK_DEV_TARGETS_JSON }}
-          REPORT: ${{ runner.temp }}/provider-upstream-report.md
+          NOTIFY: ${{ runner.temp }}/provider-upstream-notify.md
         run: |
           set -euo pipefail
           if [[ -z ${DINGTALK_TARGETS_JSON:-} ]]; then
@@ -74,7 +77,7 @@ jobs:
             } >>"$GITHUB_STEP_SUMMARY"
             exit 0
           fi
-          ./scripts/notify-dingtalk.sh 'agent-compose：上游 provider 有新版本' <"$REPORT"
+          ./scripts/notify-dingtalk.sh 'agent-compose：上游 provider 有新版本' <"$NOTIFY"
 
       - name: Open a draft bump pull request
         if: steps.scan.outputs.outdated == 'true' && inputs.bump
