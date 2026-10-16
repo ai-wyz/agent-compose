@@ -6,15 +6,21 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"golang.org/x/sys/unix"
 )
 
-// identifyBoxliteShimProcess reports whether pid's command line belongs to a
-// boxlite runtime process, which is the only thing this package is allowed to
-// signal: the shim is spawned as a boxlite child and runs from the runtime's
-// own bin directory.
+// identifyBoxliteShimProcess reports whether pid runs the boxlite runtime's own
+// shim binary, which is the only process this package is allowed to signal: the
+// shim is spawned as a boxlite child from the runtime's own bin directory.
+//
+// Only the program the process runs is examined - its executable, or the argv[0]
+// boxlite handed it - never the rest of the command line. Those arguments carry
+// free-form data (box ids, image names, host paths), so matching them would
+// accept an unrelated process that merely mentions boxlite in one, and the pid
+// comes from a file that outlives the process it names.
 func identifyBoxliteShimProcess(pid int) (bool, error) {
 	raw, err := os.ReadFile(fmt.Sprintf("/proc/%d/cmdline", pid))
 	switch {
@@ -23,7 +29,28 @@ func identifyBoxliteShimProcess(pid int) (bool, error) {
 	case err != nil:
 		return false, fmt.Errorf("read command line of boxlite shim process %d: %w", pid, err)
 	}
-	return strings.Contains(strings.ToLower(string(raw)), "boxlite"), nil
+	argv0, _, _ := strings.Cut(string(raw), "\x00")
+	if isBoxliteShimBinary(argv0) {
+		return true, nil
+	}
+	// A shim started through a wrapper keeps its own pid but not its argv[0], so
+	// the binary it executes decides as well. The kernel reports a binary
+	// replaced on disk while the shim ran as "<path> (deleted)".
+	exe, err := os.Readlink(fmt.Sprintf("/proc/%d/exe", pid))
+	switch {
+	case errors.Is(err, os.ErrNotExist):
+		return false, nil
+	case err != nil:
+		return false, fmt.Errorf("read executable of boxlite shim process %d: %w", pid, err)
+	}
+	return isBoxliteShimBinary(strings.TrimSuffix(exe, " (deleted)")), nil
+}
+
+// isBoxliteShimBinary reports whether path names the boxlite runtime's shim
+// binary. The comparison is on the file name, so a runtime that provides the
+// shim on PATH or through a symlink still identifies it.
+func isBoxliteShimBinary(path string) bool {
+	return filepath.Base(strings.TrimSpace(path)) == boxliteShimExecutableName
 }
 
 // terminateBoxliteShim kills the shim and, when it leads one, its whole process

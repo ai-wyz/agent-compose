@@ -40,6 +40,24 @@ func startBoxliteShimStandIn(t *testing.T) *exec.Cmd {
 	return startStandInProcess(t, shimPath)
 }
 
+// startBoxliteMentioningStandIn starts a long-lived process whose *arguments*
+// name boxlite while the program it runs does not. That is the look-alike the
+// reaper must refuse: a pid recorded on disk can be reused by any process, and
+// only the program it runs may decide whether it is the shim.
+func startBoxliteMentioningStandIn(t *testing.T) *exec.Cmd {
+	t.Helper()
+	cmd := exec.Command("/bin/sleep", "60")
+	cmd.Args[0] = filepath.Join(t.TempDir(), "boxlite-notes")
+	if err := cmd.Start(); err != nil {
+		t.Skipf("cannot start /bin/sleep: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+	})
+	return cmd
+}
+
 func writeBoxliteShimPID(t *testing.T, runtimeHome, boxID string, pid int) {
 	t.Helper()
 	boxDir := filepath.Join(runtimeHome, "boxes", boxID)
@@ -83,6 +101,27 @@ func TestReapBoxliteShimProcessesRefusesAProcessItDoesNotOwn(t *testing.T) {
 	reaped, err := ReapBoxliteShimProcesses(runtimeHome, "box-with-stale-pid")
 	if err == nil {
 		t.Fatal("ReapBoxliteShimProcesses accepted a pid that is not a boxlite process")
+	}
+	if reaped {
+		t.Fatal("ReapBoxliteShimProcesses reported reaping a process it must not signal")
+	}
+	if !boxliteProcessAlive(cmd.Process.Pid) {
+		t.Fatalf("unrelated process %d was signalled", cmd.Process.Pid)
+	}
+}
+
+// TestReapBoxliteShimProcessesRefusesAProcessThatOnlyMentionsBoxlite pins the
+// tightened identification: matching the whole command line accepted any
+// process with "boxlite" anywhere in its arguments, which a reused pid only has
+// to mention once to be killed.
+func TestReapBoxliteShimProcessesRefusesAProcessThatOnlyMentionsBoxlite(t *testing.T) {
+	runtimeHome := t.TempDir()
+	cmd := startBoxliteMentioningStandIn(t)
+	writeBoxliteShimPID(t, runtimeHome, "box-with-a-lookalike-pid", cmd.Process.Pid)
+
+	reaped, err := ReapBoxliteShimProcesses(runtimeHome, "box-with-a-lookalike-pid")
+	if err == nil {
+		t.Fatal("ReapBoxliteShimProcesses accepted a pid whose arguments merely mention boxlite")
 	}
 	if reaped {
 		t.Fatal("ReapBoxliteShimProcesses reported reaping a process it must not signal")
@@ -144,5 +183,54 @@ func TestWaitForBoxliteShimPIDWaitsForALatePIDFile(t *testing.T) {
 	}
 	if !found || pid != 1234 {
 		t.Fatalf("waitForBoxliteShimPID = (%d, %v), want (1234, true)", pid, found)
+	}
+}
+
+// TestWaitForBoxliteShimPIDWaitsForAnIncompletePIDFile pins the other half of
+// that window: boxlite creates the pid file before it writes the value, so a
+// read that lands in between sees empty content. Reporting that as a malformed
+// file leaves the shim and its /dev/kvm handle behind, which is the leak the
+// retry exists to close.
+func TestWaitForBoxliteShimPIDWaitsForAnIncompletePIDFile(t *testing.T) {
+	pidPath := filepath.Join(t.TempDir(), boxliteShimPIDFileName)
+	if err := os.WriteFile(pidPath, nil, 0o600); err != nil {
+		t.Fatalf("create the empty shim pid file: %v", err)
+	}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		time.Sleep(20 * time.Millisecond)
+		_ = os.WriteFile(pidPath, []byte("4321\n"), 0o600)
+	}()
+
+	pid, found, err := waitForBoxliteShimPID(pidPath, 40, 5*time.Millisecond)
+	<-done
+	if err != nil {
+		t.Fatalf("waitForBoxliteShimPID returned error: %v", err)
+	}
+	if !found || pid != 4321 {
+		t.Fatalf("waitForBoxliteShimPID = (%d, %v), want (4321, true)", pid, found)
+	}
+}
+
+// TestWaitForBoxliteShimPIDReportsAFileThatNeverHoldsAPID keeps the widened
+// retry from turning malformed input into a silent "nothing to reap": a file
+// that stays invalid is still an error, while one that never appears is not.
+func TestWaitForBoxliteShimPIDReportsAFileThatNeverHoldsAPID(t *testing.T) {
+	pidPath := filepath.Join(t.TempDir(), boxliteShimPIDFileName)
+	if err := os.WriteFile(pidPath, []byte("not-a-pid"), 0o600); err != nil {
+		t.Fatalf("write malformed shim pid file: %v", err)
+	}
+
+	pid, found, err := waitForBoxliteShimPID(pidPath, 3, time.Millisecond)
+	if err == nil {
+		t.Fatal("waitForBoxliteShimPID accepted a pid file that never holds a pid")
+	}
+	if found || pid != 0 {
+		t.Fatalf("waitForBoxliteShimPID = (%d, %v), want (0, false)", pid, found)
+	}
+
+	if pid, found, err := waitForBoxliteShimPID(filepath.Join(t.TempDir(), boxliteShimPIDFileName), 2, time.Millisecond); err != nil || found || pid != 0 {
+		t.Fatalf("waitForBoxliteShimPID for a missing file = (%d, %v, %v), want (0, false, nil)", pid, found, err)
 	}
 }

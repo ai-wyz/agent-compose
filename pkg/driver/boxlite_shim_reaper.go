@@ -15,6 +15,10 @@ const (
 	// boxliteShimPIDFileName is where boxlite records the pid of the detached VM
 	// shim it started for a box.
 	boxliteShimPIDFileName = "shim.pid"
+	// boxliteShimExecutableName is the runtime binary boxlite launches for that
+	// shim. It is the only program a recorded pid may name, because the pid is
+	// read from disk after the process it described may already be gone.
+	boxliteShimExecutableName = "boxlite-shim"
 	// boxliteShimPIDAttempts/boxliteShimPIDInterval bound the wait for that file
 	// after a failed start: a start that failed after boxlite handed control to
 	// the shim has written it already, while one cancelled earlier may write it
@@ -36,10 +40,10 @@ const (
 // accumulate handles until the host's kvm module can no longer be unloaded
 // (test round D2b). Releasing the process is therefore the caller's job.
 //
-// The signal is only sent to a process whose command line identifies it as part
-// of a boxlite runtime, because a pid recorded for a box that has since been
-// removed must never become a signal to an unrelated process that reused the
-// id. Callers reap immediately after a failed start, while the pid is current.
+// The signal is only sent to a process that runs the runtime's own shim binary,
+// because a pid recorded for a box that has since been removed must never become
+// a signal to an unrelated process that reused the id. Callers reap immediately
+// after a failed start, while the pid is current.
 //
 // It is exported because its only caller is the cgo boxlite start path, which
 // is compiled out of builds that do not include that driver.
@@ -107,21 +111,34 @@ func boxliteShimPIDPath(runtimeHome, boxID string) (string, error) {
 	return filepath.Join(runtimeHome, "boxes", boxID, boxliteShimPIDFileName), nil
 }
 
+// errBoxliteShimPIDIncomplete reports a pid file that exists but does not hold a
+// pid yet. boxlite creates the file before it writes the value, so a reader that
+// looks in between sees empty or partial content; that is a state to wait out,
+// not the malformed input the reaper should report.
+var errBoxliteShimPIDIncomplete = errors.New("boxlite shim pid file does not hold a pid yet")
+
 func waitForBoxliteShimPID(pidPath string, attempts int, interval time.Duration) (int, bool, error) {
+	var incomplete error
 	for attempt := 0; attempt < attempts; attempt++ {
 		pid, err := readBoxliteShimPID(pidPath)
 		switch {
 		case err == nil:
 			return pid, true, nil
 		case errors.Is(err, fs.ErrNotExist):
-			if attempt < attempts-1 {
-				time.Sleep(interval)
-			}
+			// boxlite may not have created the file yet; keep looking.
+		case errors.Is(err, errBoxliteShimPIDIncomplete):
+			incomplete = err
 		default:
 			return 0, false, err
 		}
+		if attempt < attempts-1 {
+			time.Sleep(interval)
+		}
 	}
-	return 0, false, nil
+	// A file that never appeared means there is no shim to release; one that
+	// stayed incomplete is reported, because its shim pid is unknown rather than
+	// absent.
+	return 0, false, incomplete
 }
 
 func readBoxliteShimPID(pidPath string) (int, error) {
@@ -131,11 +148,8 @@ func readBoxliteShimPID(pidPath string) (int, error) {
 	}
 	value := strings.TrimSpace(string(raw))
 	pid, err := strconv.Atoi(value)
-	if err != nil {
-		return 0, fmt.Errorf("parse boxlite shim pid %q: %w", value, err)
-	}
-	if pid <= 0 {
-		return 0, fmt.Errorf("boxlite shim pid %d is not a valid process id", pid)
+	if err != nil || pid <= 0 {
+		return 0, fmt.Errorf("%w (content %q)", errBoxliteShimPIDIncomplete, value)
 	}
 	return pid, nil
 }
