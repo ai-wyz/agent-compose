@@ -18,6 +18,20 @@ import (
 
 const completionWorkerCount = 2
 
+// completionMaxAttempts bounds how many times a run's sandbox cleanup is tried
+// before the run is finalized anyway with the cleanup failure recorded on it.
+// Without a bound, a permanent cleanup error (an unreachable runtime, a missing
+// kubeconfig) leaves the run non-terminal and re-runs the same failing driver
+// call every 30s for the rest of the daemon's lifetime, and no product path can
+// clear it. The delays below total about two minutes before the bound applies.
+const completionMaxAttempts = 8
+
+// completionWaitTimeout bounds how long Complete waits for a staged completion
+// to converge. It is generous relative to completionMaxAttempts retries; it
+// exists so a storage failure inside the completion path surfaces as an error
+// instead of hanging the caller forever.
+const completionWaitTimeout = 5 * time.Minute
+
 type CompletionStore interface {
 	GetProjectRun(context.Context, string) (domain.ProjectRunRecord, error)
 	StageProjectRunCompletion(context.Context, domain.ProjectRunCompletionRecord, []domain.ProjectRunEventRecord) (domain.ProjectRunCompletionRecord, bool, error)
@@ -25,6 +39,9 @@ type CompletionStore interface {
 	ListDueProjectRunCompletions(context.Context, time.Time, int) ([]domain.ProjectRunCompletionRecord, error)
 	RecordProjectRunCompletionFailure(context.Context, domain.ProjectRunCompletionFailure) error
 	FinalizeProjectRunCompletion(context.Context, domain.ProjectRunRecord, domain.ProjectRunEventRecord) (domain.ProjectRunRecord, error)
+	// AbandonProjectRunCompletion finalizes a run whose sandbox cleanup never
+	// succeeded, recording cleanupError on the run instead of clearing it.
+	AbandonProjectRunCompletion(context.Context, domain.ProjectRunRecord, domain.ProjectRunEventRecord, string) (domain.ProjectRunRecord, error)
 	ProjectRunCompletionForSandbox(context.Context, string) (string, bool, error)
 }
 
@@ -101,10 +118,14 @@ func (m *CompletionManager) Complete(ctx context.Context, req TransitionRequest)
 		return domain.ProjectRunRecord{}, err
 	}
 	m.signal()
+	deadline := m.nowUTC().Add(completionWaitTimeout)
 	for {
 		run, processErr := m.process(ctx, staged.RunID)
 		if processErr == nil && StatusIsTerminal(run.Status) {
 			return run, nil
+		}
+		if !m.nowUTC().Before(deadline) {
+			return m.completionWaitTimeout(ctx, staged.RunID, processErr)
 		}
 		select {
 		case <-ctx.Done():
@@ -130,6 +151,20 @@ func (m *CompletionManager) Complete(ctx context.Context, req TransitionRequest)
 			}
 		}
 	}
+}
+
+// completionWaitTimeout reports why Complete stopped waiting, returning the
+// latest run alongside the error so callers still see the state it is stuck in.
+func (m *CompletionManager) completionWaitTimeout(ctx context.Context, runID string, lastErr error) (domain.ProjectRunRecord, error) {
+	latest, err := m.store.GetProjectRun(context.WithoutCancel(ctx), runID)
+	if err != nil {
+		return domain.ProjectRunRecord{}, errors.Join(lastErr, err)
+	}
+	timeoutErr := fmt.Errorf("project run %s did not reach a terminal state within %s (last status %q)", runID, completionWaitTimeout, latest.Status)
+	if lastErr != nil {
+		return latest, errors.Join(timeoutErr, lastErr)
+	}
+	return latest, timeoutErr
 }
 
 func (m *CompletionManager) StageInterrupted(ctx context.Context, run domain.ProjectRunRecord, message string) error {
@@ -247,6 +282,9 @@ func (m *CompletionManager) process(ctx context.Context, runID string) (domain.P
 	}
 	if err := m.cleanup(ctx, run, completion.CleanupAction); err != nil {
 		attempt := completion.Attempt + 1
+		if attempt >= completionMaxAttempts {
+			return m.abandonCleanup(ctx, run, completion, attempt, err)
+		}
 		next := m.nowUTC().Add(completionRetryDelay(attempt))
 		if recordErr := m.store.RecordProjectRunCompletionFailure(context.WithoutCancel(ctx), domain.ProjectRunCompletionFailure{
 			RunID: runID, Message: err.Error(), Attempt: attempt, NextAttemptAt: next,
@@ -256,11 +294,42 @@ func (m *CompletionManager) process(ctx context.Context, runID string) (domain.P
 		m.logger.Warn("project run sandbox cleanup failed", "run_id", runID, "sandbox_id", run.SandboxID, "action", completion.CleanupAction, "attempt", attempt, "next_attempt_at", next, "error", err)
 		return run, err
 	}
+	next, statusEvent, err := terminalRunUpdate(run, completion, m.nowUTC())
+	if err != nil {
+		return run, err
+	}
+	return m.store.FinalizeProjectRunCompletion(ctx, next, statusEvent)
+}
+
+// abandonCleanup finalizes a run whose sandbox cleanup kept failing. The run
+// still reaches the terminal state its first completion writer selected, the
+// cleanup failure is recorded on the run, and the completion row is deleted, so
+// a permanent cleanup error converges instead of retrying forever.
+func (m *CompletionManager) abandonCleanup(ctx context.Context, run domain.ProjectRunRecord, completion domain.ProjectRunCompletionRecord, attempt int, cleanupErr error) (domain.ProjectRunRecord, error) {
+	next, statusEvent, err := terminalRunUpdate(run, completion, m.nowUTC())
+	if err != nil {
+		return run, err
+	}
+	// The terminal record must land even when the caller's context is already
+	// gone: a cleanup failure is often what cancelled the request, and leaving
+	// the run non-terminal here is the stuck state this bound exists to end.
+	finalized, err := m.store.AbandonProjectRunCompletion(context.WithoutCancel(ctx), next, statusEvent, cleanupErr.Error())
+	if err != nil {
+		return run, errors.Join(cleanupErr, err)
+	}
+	m.logger.Warn("abandoning project run sandbox cleanup after repeated failures",
+		"run_id", run.RunID, "sandbox_id", run.SandboxID, "action", completion.CleanupAction,
+		"attempt", attempt, "cleanup_error", cleanupErr)
+	return finalized, nil
+}
+
+// terminalRunUpdate builds the terminal run record and its status event from a
+// staged completion, applying the transition selected by the first writer.
+func terminalRunUpdate(run domain.ProjectRunRecord, completion domain.ProjectRunCompletionRecord, now time.Time) (domain.ProjectRunRecord, domain.ProjectRunEventRecord, error) {
 	var req TransitionRequest
 	if err := json.Unmarshal([]byte(completion.TransitionJSON), &req); err != nil {
-		return run, fmt.Errorf("decode project run completion %s: %w", runID, err)
+		return run, domain.ProjectRunEventRecord{}, fmt.Errorf("decode project run completion %s: %w", run.RunID, err)
 	}
-	now := m.nowUTC()
 	next := run
 	next.Status = completion.TargetStatus
 	applyProjectRunTransitionFields(&next, req)
@@ -269,8 +338,8 @@ func (m *CompletionManager) process(ctx context.Context, runID string) (domain.P
 	}
 	next.CompletedAt = now
 	next.DurationMs = max(0, next.CompletedAt.Sub(next.StartedAt).Milliseconds())
-	statusEvent := domain.ProjectRunEventRecord{ID: terminalStatusEventID(runID), RunID: runID, Kind: domain.ProjectRunEventKindStatus, PayloadJSON: next.ResultJSON, Success: next.Status == domain.ProjectRunStatusSucceeded, ExitCode: next.ExitCode, StopReason: next.Error}
-	return m.store.FinalizeProjectRunCompletion(ctx, next, statusEvent)
+	statusEvent := domain.ProjectRunEventRecord{ID: terminalStatusEventID(run.RunID), RunID: run.RunID, Kind: domain.ProjectRunEventKindStatus, PayloadJSON: next.ResultJSON, Success: next.Status == domain.ProjectRunStatusSucceeded, ExitCode: next.ExitCode, StopReason: next.Error}
+	return next, statusEvent, nil
 }
 
 func (m *CompletionManager) cleanup(ctx context.Context, run domain.ProjectRunRecord, action string) error {
