@@ -394,7 +394,7 @@ agent-compose run reviewer --jupyter --jupyter-expose --prompt "Inspect the note
 - detached run 可通过输出的 `agent-compose logs --run <run-id> --follow` 命令观察输出，也可继续使用 `stop`/`logs` 操作该 run。
 - `run -i --prompt` 仅支持可复用 provider conversation 的 Codex、Claude、OpenCode、Pi 和 DSH（`dsh`、`deepseek`、`deepseek-harness`、`deepseek_harness`）。
 - run 只有在 completion cleanup 成功后才进入终态。默认策略停止 sandbox；remove-on-completion 会完整删除由本 run 新建的 sandbox，但复用的 sandbox 只会停止；keep-running 是不执行清理的显式例外。
-- cleanup 失败时 run 保持 `running` 并写入 `cleanup_error`。daemon 会立即重试并采用有上限的退避，重启后也会继续；前台与流式调用继续等待，detached start 仍立即返回。
+- cleanup 失败时 run 保持 `running` 并写入 `cleanup_error`，daemon 会立即重试并采用有上限的退避，重启后也会继续。重试有上限：达到次数上限、或前台/流式调用到达完成等待 deadline 后，run 会以 `failed` 落终态并保留 `cleanup_error`，未完成的 completion 被放弃而不再无限重试；detached start 仍立即返回。
 - `StopRun` 只请求取消，因此可能返回 `stop_requested=true` 而 run 仍为 `running`。执行路径先记录取消结果并完成配置的 cleanup，再提交 `canceled`；daemon 重启后遗留的 running/pending run 也通过同一路径在清理后变为 `failed`，错误为 `daemon interrupted`。
 
 ## `scheduler`：调用、查看和操作 project scheduler
@@ -511,7 +511,7 @@ agent-compose sandbox prune --include-orphans
 
 Graceful stop 只覆盖由当前 daemon 进程启动并跟踪的 active guest execution；它不提供持久 cleanup hook、daemon 重启后的进行中 stop 恢复，也不管理 guest 内的 out-of-band process。
 
-可使用 `agent-compose inspect sandbox <sandbox> --json` 查看有效策略和 release 状态。`sandbox rm` 在 `<SANDBOX_ROOT>/.lifecycle` 写入持久 deletion journal；running sandbox 必须显式使用 `--force`，删除会按可恢复阶段清理 driver resource、sandbox accessories、sandbox 目录和 metadata。处于 `DELETING` 的 sandbox 不能 resume，也不能接收新的 exec/run；daemon 启动时只继续未完成的 deletion journal，不会猜测或自动删除普通历史残留。
+可使用 `agent-compose inspect sandbox <sandbox> --json` 查看有效策略和 release 状态。`sandbox rm` 在 `<SANDBOX_ROOT>/.lifecycle` 写入持久 deletion journal；running sandbox 必须显式使用 `--force`，删除会按可恢复阶段清理 driver resource、sandbox accessories、sandbox 目录和 metadata。处于 `DELETING` 的 sandbox 不能 resume，也不能接收新的 exec/run；daemon 启动时只继续未完成的 deletion journal，不会猜测或自动删除普通历史残留。删除阶段失败时，`sandbox rm` 会如实返回错误并把该 sandbox 记录回滚出 `DELETING`、恢复到删除前的生命周期状态，因此删除失败不会让 `sandbox ls -a` 长期显示一个 `DELETING` 的 sandbox；只有 daemon 退出导致中断的删除会保持 `DELETING`，并由 daemon 启动时继续该 journal。
 
 新建 sandbox 的目录位于 `<SANDBOX_ROOT>/<年>/<月>/<日>/<sandbox-id>`，日期取创建时 daemon 的本地日历时间，metadata 时间戳仍使用 UTC。升级时不会迁移已有的扁平 `<SANDBOX_ROOT>/<sandbox-id>` 目录，新版本仍可继续使用这些目录。旧版 daemon 不会扫描日期分层布局，因此降级后无法发现升级后新建的 sandbox，恢复新版本后可重新使用。如部署要求稳定的日期边界，应为 daemon 配置一致的 `TZ`。
 
