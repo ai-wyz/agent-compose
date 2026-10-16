@@ -682,6 +682,7 @@ func registerProxyRoutes(app *echo.Echo, di do.Injector) {
 	proxy.RegisterJupyterRoutes(app, proxy.JupyterOptions{
 		BasePath: do.MustInvoke[*appconfig.Config](di).JupyterProxyBasePath,
 		Store:    do.MustInvoke[*sandboxstore.Store](di),
+		Logger:   do.MustInvoke[*slog.Logger](di),
 		EnsureReady: func(ctx context.Context, sandboxID string) (domain.ProxyState, error) {
 			return bridge.EnsureSessionProxyReady(ctx, sandboxID)
 		},

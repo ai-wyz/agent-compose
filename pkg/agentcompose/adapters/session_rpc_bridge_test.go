@@ -610,6 +610,26 @@ func TestSandboxRuntimeLivenessAndNotifierBranches(t *testing.T) {
 	notifier.NotifyDashboard("test")
 }
 
+func TestSandboxRPCBridgeGetSandboxProxyReportsMissingSandboxAsNotFound(t *testing.T) {
+	ctx := context.Background()
+	bridge, _ := newTestSandboxRPCBridge(t)
+
+	_, err := callSandboxRPC(ctx, bridge, "GetSandboxProxy", `{"sandboxId":"deadbeefdead"}`)
+	if err == nil {
+		t.Fatal("GetSandboxProxy for a missing sandbox returned no error")
+	}
+	if got := connect.CodeOf(err); got != connect.CodeNotFound {
+		t.Fatalf("GetSandboxProxy error code = %v, want %v; error = %v", got, connect.CodeNotFound, err)
+	}
+	// The RPC error message is returned to clients, so the storage path behind the
+	// missing sandbox must not travel with it.
+	for _, leaked := range []string{"/", "metadata.json", "read session metadata"} {
+		if strings.Contains(err.Error(), leaked) {
+			t.Fatalf("GetSandboxProxy error %q leaks %q", err, leaked)
+		}
+	}
+}
+
 func newTestSandboxRPCBridge(t *testing.T) (*SandboxRPCBridge, *fakeRPCSandboxDriver) {
 	t.Helper()
 	root := t.TempDir()

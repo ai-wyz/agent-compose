@@ -2,12 +2,14 @@ package sandboxes
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	appconfig "github.com/chaitin/agent-compose/pkg/config"
 	driverpkg "github.com/chaitin/agent-compose/pkg/driver"
 	"github.com/chaitin/agent-compose/pkg/execution"
 	domain "github.com/chaitin/agent-compose/pkg/model"
 	"github.com/chaitin/agent-compose/pkg/workspaces"
+	"io/fs"
 	"net"
 	"time"
 
@@ -153,22 +155,57 @@ func (l Lifecycle) ReconcileRuntimeState(ctx context.Context, session *domain.Sa
 	return l.Store.GetSandbox(ctx, session.Summary.ID)
 }
 
+// sandboxLookupError classifies a failed sandbox lookup. The store reports a
+// missing sandbox as a wrapped fs.ErrNotExist whose message embeds the absolute
+// metadata path, and the Jupyter proxy route that consumes this error is exempt
+// from daemon authentication. A missing sandbox therefore becomes a domain
+// not-found naming only the id, which transports map to 404/NotFound; the cause
+// is deliberately dropped rather than exposed.
+func sandboxLookupError(id string, err error) error {
+	if errors.Is(err, fs.ErrNotExist) {
+		return domain.ResourceError(domain.ErrNotFound, "sandbox", id, "", nil)
+	}
+	return err
+}
+
+// proxyStateLookupError classifies a failed proxy-state read. A sandbox without
+// persisted proxy state never had Jupyter enabled, so it is reported as that
+// domain condition instead of a storage error that embeds the proxy-state path.
+func proxyStateLookupError(id string, err error) error {
+	if errors.Is(err, fs.ErrNotExist) {
+		return jupyterNotEnabledError(id)
+	}
+	return err
+}
+
+// ErrJupyterNotEnabled reports that a sandbox has no enabled Jupyter proxy. The
+// error carrying it names the session only, so a transport may return it to a
+// client verbatim instead of echoing the readiness failure behind it.
+var ErrJupyterNotEnabled = errors.New("jupyter is not enabled")
+
+// jupyterNotEnabledError classifies the condition so transports can tell it apart
+// from a readiness failure whose message is not safe to return, while keeping the
+// message clients already match on.
+func jupyterNotEnabledError(id string) error {
+	return domain.ClassifyError(ErrJupyterNotEnabled, fmt.Sprintf("jupyter is not enabled for session %s", id), nil)
+}
+
 func (l Lifecycle) EnsureProxyReady(ctx context.Context, sessionID string) (*domain.Sandbox, domain.ProxyState, error) {
 	unlock := l.Locks.Lock(sessionID)
 	defer unlock()
 	session, err := l.Store.GetSandbox(ctx, sessionID)
 	if err != nil {
-		return nil, domain.ProxyState{}, err
+		return nil, domain.ProxyState{}, sandboxLookupError(sessionID, err)
 	}
 	if session.Summary.VMStatus == domain.VMStatusDeleting {
 		return nil, domain.ProxyState{}, fmt.Errorf("sandbox %s is being deleted", session.Summary.ID)
 	}
 	proxyState, err := l.Store.GetProxyState(session.Summary.ID)
 	if err != nil {
-		return nil, domain.ProxyState{}, err
+		return nil, domain.ProxyState{}, proxyStateLookupError(session.Summary.ID, err)
 	}
 	if !proxyState.Enabled {
-		return nil, domain.ProxyState{}, fmt.Errorf("jupyter is not enabled for session %s", session.Summary.ID)
+		return nil, domain.ProxyState{}, jupyterNotEnabledError(session.Summary.ID)
 	}
 	if session.Summary.VMStatus == domain.VMStatusRunning && JupyterTargetReachable(proxyState, 1500*time.Millisecond) {
 		return session, proxyState, nil
@@ -200,11 +237,11 @@ func (l Lifecycle) EnsureProxyReady(ctx context.Context, sessionID string) (*dom
 	}
 	loaded, err := l.Store.GetSandbox(ctx, session.Summary.ID)
 	if err != nil {
-		return nil, domain.ProxyState{}, err
+		return nil, domain.ProxyState{}, sandboxLookupError(session.Summary.ID, err)
 	}
 	proxyState, err = l.Store.GetProxyState(session.Summary.ID)
 	if err != nil {
-		return nil, domain.ProxyState{}, err
+		return nil, domain.ProxyState{}, proxyStateLookupError(session.Summary.ID, err)
 	}
 	return loaded, proxyState, nil
 }
