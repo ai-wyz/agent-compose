@@ -53,18 +53,24 @@ jobs:
 
       # The webhook is the whole notification path, so a missing secret must be
       # visible: a green run that reports nothing looks identical to "up to date".
+      #
+      # The provider report goes to the development group, not to the release
+      # group the release workflow notifies. The two channels are deliberately
+      # separate secrets: sharing DINGTALK_TARGETS_JSON here would move the
+      # release announcements to whichever group this job is pointed at. The
+      # script's own variable name is fixed, so only the secret it is fed changes.
       - name: Notify about outdated providers
         if: steps.scan.outputs.outdated == 'true'
         env:
-          DINGTALK_TARGETS_JSON: ${{ secrets.DINGTALK_TARGETS_JSON }}
+          DINGTALK_TARGETS_JSON: ${{ secrets.DINGTALK_DEV_TARGETS_JSON }}
           REPORT: ${{ runner.temp }}/provider-upstream-report.md
         run: |
           set -euo pipefail
           if [[ -z ${DINGTALK_TARGETS_JSON:-} ]]; then
-            echo '::warning::upstream providers are outdated but DINGTALK_TARGETS_JSON is not configured, so nobody was notified'
+            echo '::warning::upstream providers are outdated but DINGTALK_DEV_TARGETS_JSON is not configured, so nobody was notified'
             {
               echo
-              echo '> **Warning:** `DINGTALK_TARGETS_JSON` is not configured, so this report reached nobody.'
+              echo '> **Warning:** `DINGTALK_DEV_TARGETS_JSON` is not configured, so this report reached nobody.'
             } >>"$GITHUB_STEP_SUMMARY"
             exit 0
           fi

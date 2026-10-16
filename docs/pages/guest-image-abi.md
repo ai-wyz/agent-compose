@@ -943,11 +943,14 @@ manual `workflow_dispatch`. It compares every package pinned in
 `guest-images/providers.lock.json` with the version npm currently publishes and
 reports the result where a team already looks:
 
-- when the `DINGTALK_TARGETS_JSON` secret is configured, the report is pushed to
-  DingTalk through `scripts/notify-dingtalk.sh`. That webhook is the notification
-  path: there is no tracking issue to watch. If the secret is unset, the run
-  still succeeds but emits a warning and says so in the job summary, because a
-  silent run and an up-to-date run would otherwise look identical; and
+- when the `DINGTALK_DEV_TARGETS_JSON` secret is configured, the report is pushed
+  to the development DingTalk group through `scripts/notify-dingtalk.sh`. This is
+  a channel of its own: release announcements use the separate
+  `DINGTALK_TARGETS_JSON` secret consumed by the release workflow. That webhook is
+  the notification path: there is no tracking issue to watch. If the secret is
+  unset, the run still succeeds but emits a warning and says so in the job
+  summary, because a silent run and an up-to-date run would otherwise look
+  identical; and
 - the same report is written to the job summary.
 
 The workflow never edits a pin on its own. A package whose lock entry records a
