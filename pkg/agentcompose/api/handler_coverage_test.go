@@ -81,6 +81,8 @@ func TestIntegrationAPIHandlerRuntimeWorkflows(t *testing.T) {
 	t.Run("exec run selector and stream sender", TestExecHandlerRunSelectorAndStreamSenderWorkflow)
 	t.Run("exec selector errors", TestExecHandlerSelectorErrors)
 	t.Run("project and run store backed handlers", TestProjectAndRunHandlersStoreBackedWorkflows)
+	t.Run("run handler abandons a stuck completion", TestRunHandlerAbandonRunCompletionEndsAStuckCleanup)
+	t.Run("run handler classifies abandon refusals", TestRunHandlerAbandonRunCompletionClassifiesRefusals)
 	t.Run("follow run logs offsets tail and final", TestFollowRunLogsStreamsOffsetsTailAndFinal)
 	t.Run("follow run logs missing terminal file", TestFollowRunLogsMissingLogFileReturnsEmptyFinalForTerminalRun)
 	t.Run("follow run logs project mismatch", TestFollowRunLogsRejectsProjectMismatch)

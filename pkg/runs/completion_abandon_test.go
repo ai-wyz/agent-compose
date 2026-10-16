@@ -114,3 +114,19 @@ func TestCompletionManagerAbandonCompletionRefusesARunThatIsStillExecuting(t *te
 		t.Fatalf("AbandonCompletion(empty) error = %v, want invalid argument", err)
 	}
 }
+
+func TestIntegrationCompletionManagerAbandonCompletionEndsARunWhoseCleanupCannotConverge(t *testing.T) {
+	TestCompletionManagerAbandonCompletionEndsARunWhoseCleanupCannotConverge(t)
+}
+
+func TestE2ECompletionManagerAbandonCompletionEndsARunWhoseCleanupCannotConverge(t *testing.T) {
+	TestCompletionManagerAbandonCompletionEndsARunWhoseCleanupCannotConverge(t)
+}
+
+func TestIntegrationCompletionManagerAbandonCompletionRefusesARunThatIsStillExecuting(t *testing.T) {
+	TestCompletionManagerAbandonCompletionRefusesARunThatIsStillExecuting(t)
+}
+
+func TestE2ECompletionManagerAbandonCompletionRefusesARunThatIsStillExecuting(t *testing.T) {
+	TestCompletionManagerAbandonCompletionRefusesARunThatIsStillExecuting(t)
+}
