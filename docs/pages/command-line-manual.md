@@ -520,7 +520,7 @@ Subcommands:
 
 | Option | Description |
 | --- | --- |
-| `--status <status>[,<status>...]` | Override the default `stopped,failed` status filter. `running` and `pending` are rejected; use `sandbox rm --force <sandbox>` for running sandboxes. |
+| `--status <status>[,<status>...]` | Override the default `stopped,failed` status filter. `deleting` is accepted so a record left in that intermediate state by an interrupted deletion can be cleared; `running` and `pending` are rejected, so use `sandbox rm --force <sandbox>` for running sandboxes. |
 | `--agent <agent>` | Match only sandboxes for one agent name. |
 | `--driver <docker|boxlite|microsandbox>` | Match only sandboxes using one runtime driver. |
 | `--older-than <duration>` | Match sandboxes whose `updated_at`, or `created_at` when `updated_at` is missing, is older than a duration such as `7d` or `168h`. |
@@ -533,7 +533,7 @@ Rules:
 - With `--include-orphans`, `--driver` and `--older-than` filter both record and residue candidates; `--status` and `--agent` only filter records. A runtime resource associated with any known sandbox record is never an orphan.
 - Ownership-incomplete, corrupt, path-escaping, active, or unknown-schema residue is displayed as non-removable and remains skipped even with `--force`.
 - `sandbox prune` calls the daemon `SandboxService.PruneSandboxes` use case. It removes sandbox-owned runtime/data state, not shared cache artifacts; use `cache prune` or `cache rm` for cache inventory.
-- If a forced prune fails to remove one matched sandbox, it continues with later matches, writes the skipped item, and exits non-zero.
+- If a forced prune fails to remove one matched sandbox, it continues with later matches, writes the skipped item, and exits non-zero. The failed record is rolled back to the status it had before the deletion was attempted, so it stays visible and retryable instead of remaining in `deleting`; the skipped reason carries the runtime error, because the runtime object may still exist.
 
 `sandbox stop` applies the stopped-runtime policy snapshotted when the sandbox was created. `retain` preserves resumable driver state; `remove` first confirms the latest start has stopped and then releases the private runtime while keeping durable sandbox data. The compatibility default is an immediate force stop. With `--graceful`, the daemon rejects new executions, sends `SIGTERM` to each active `agent-compose-runtime` process, and waits for the JS runtime to cancel its provider, run `finally` cleanup, persist partial output, and exit. The default grace period is 10 seconds and can be changed with `SANDBOX_GRACEFUL_STOP_TIMEOUT`; `--grace-period` overrides it for one request, up to 5 minutes. After timeout or signaling failure, the daemon force-terminates tracked executions before stopping the sandbox. Text and JSON output include `graceful`, `forced-after-grace-timeout`, or `forced-after-grace-error`. Escalation is a successful stop when the sandbox is ultimately stopped, so both the API and CLI return success while preserving the outcome for observability; an error is returned only if the sandbox itself cannot be stopped.
 

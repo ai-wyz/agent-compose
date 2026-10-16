@@ -492,7 +492,7 @@ agent-compose sandbox prune --include-orphans
 
 | 参数 | 说明 |
 | --- | --- |
-| `--status <status>[,<status>...]` | 覆盖默认的 `stopped,failed` 状态过滤。`running` 和 `pending` 会被拒绝；running sandbox 请使用 `sandbox rm --force <sandbox>`。 |
+| `--status <status>[,<status>...]` | 覆盖默认的 `stopped,failed` 状态过滤。`deleting` 也被接受，用于清理删除过程被中断后停在该中间态的记录；`running` 和 `pending` 会被拒绝，running sandbox 请使用 `sandbox rm --force <sandbox>`。 |
 | `--agent <agent>` | 只匹配指定 agent name 的 sandbox。 |
 | `--driver <docker|boxlite|microsandbox>` | 只匹配指定 runtime driver 的 sandbox。 |
 | `--older-than <duration>` | 匹配 `updated_at` 早于指定时长的 sandbox；缺少 `updated_at` 时回退使用 `created_at`。时长示例：`7d`、`168h`。 |
@@ -505,7 +505,7 @@ agent-compose sandbox prune --include-orphans
 - 带 `--include-orphans` 时，`--driver`、`--older-than` 同时过滤记录和残留；`--status`、`--agent` 只过滤记录。任何仍关联已知 sandbox 记录的 runtime 资源都不会成为 orphan。
 - ownership 不完整、manifest 损坏、路径越界、仍 active 或 schema 未知的残留会显示为不可删除；即使 `--force` 也只会 skipped。
 - `sandbox prune` 调用 daemon 的 `SandboxService.PruneSandboxes` use case，删除 sandbox 自有 runtime/data，不删除共享 cache artifact；cache inventory 仍由 `cache prune` 或 `cache rm` 管理。
-- forced prune 中某个 sandbox 删除失败时，命令会继续处理后续匹配项，输出 skipped 项，并以非零退出码结束。
+- forced prune 中某个 sandbox 删除失败时，命令会继续处理后续匹配项，输出 skipped 项，并以非零退出码结束。失败的记录会回滚到删除尝试之前的状态，从而保持可见、可重试，而不是停在 `deleting`；skipped 原因里带有 runtime 报错，因为运行时对象可能仍然存在。
 
 `sandbox stop` 会应用 sandbox 创建时快照的 stopped-runtime 策略：`retain` 保留可恢复的 driver state；`remove` 先确认最近一次启动已经停止，再释放私有 runtime，同时保留 sandbox 的持久数据。为保持兼容，默认行为是立即 force stop。使用 `--graceful` 时，daemon 会拒绝新的 execution，向每个 active `agent-compose-runtime` 进程发送 `SIGTERM`，等待 JS runtime 取消 provider、执行已有的 `finally` 清理、持久化部分输出并退出。默认 grace period 为 10 秒，可通过 `SANDBOX_GRACEFUL_STOP_TIMEOUT` 修改；单次请求可用 `--grace-period` 覆盖，最大 5 分钟。等待超时或发送信号失败时，daemon 会先强制终止已跟踪 execution，再停止 sandbox。文本与 JSON 输出会给出 `graceful`、`forced-after-grace-timeout` 或 `forced-after-grace-error`。只要 sandbox 最终成功停止，升级为 force 仍属于成功的停止操作，因此 API 和 CLI 都返回成功，并保留 outcome 用于观测；只有 sandbox 本身无法停止时才返回错误。
 
