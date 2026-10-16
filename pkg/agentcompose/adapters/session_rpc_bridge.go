@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"log/slog"
 	"net/url"
-	"os"
 	"strings"
 	"time"
 
@@ -440,9 +439,11 @@ func (b *SandboxRPCBridge) EnsureSessionProxyReady(ctx context.Context, sessionI
 func (b *SandboxRPCBridge) getSandboxProxy(ctx context.Context, sandboxID string) (*domain.Sandbox, api.SandboxProxy, error) {
 	session, proxyState, err := b.sessionLifecycle().EnsureProxyReady(ctx, sandboxID)
 	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, api.SandboxProxy{}, connect.NewError(connect.CodeNotFound, err)
-		}
+		// EnsureProxyReady reports a sandbox that does not exist as a domain
+		// not-found, which ConnectErrorForDomain turns into CodeNotFound. An
+		// os.IsNotExist check here cannot see through the store's error wrapping,
+		// and it would also misreport a raw filesystem failure from sandbox
+		// provisioning as a missing sandbox.
 		return nil, api.SandboxProxy{}, api.ConnectErrorForDomain(err)
 	}
 	notebookURL := session.Summary.ProxyPath

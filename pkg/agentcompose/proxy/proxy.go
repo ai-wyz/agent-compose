@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
@@ -32,9 +33,10 @@ func RegisterJupyterRoutes(app *echo.Echo, opts JupyterOptions) {
 	base := strings.TrimRight(opts.BasePath, "/")
 	transport := newJupyterProxyTransport()
 	app.GET(base+"/:sessionID", func(c echo.Context) error {
-		proxyState, err := opts.EnsureReady(c.Request().Context(), c.Param("sessionID"))
+		sessionID := c.Param("sessionID")
+		proxyState, err := opts.EnsureReady(c.Request().Context(), sessionID)
 		if err != nil {
-			return echo.NewHTTPError(http.StatusBadGateway, err.Error())
+			return jupyterEnsureReadyHTTPError(sessionID, err)
 		}
 		location := strings.TrimRight(proxyState.ProxyPath, "/")
 		if proxyState.Token != "" {
@@ -52,12 +54,15 @@ func RegisterJupyterRoutes(app *echo.Echo, opts JupyterOptions) {
 			return proxyState
 		}(), 250*time.Millisecond) {
 			if _, err := opts.EnsureReady(c.Request().Context(), sessionID); err != nil {
-				return echo.NewHTTPError(http.StatusBadGateway, err.Error())
+				return jupyterEnsureReadyHTTPError(sessionID, err)
 			}
 		}
 		proxyState, err := opts.Store.GetProxyState(sessionID)
 		if err != nil {
-			return echo.NewHTTPError(http.StatusNotFound, err.Error())
+			// The store's error embeds the sandbox's absolute proxy-state path,
+			// which must not reach this unauthenticated route. Keep the not-found
+			// status the route already reported and answer with the id alone.
+			return echo.NewHTTPError(http.StatusNotFound, missingSandboxMessage(sessionID))
 		}
 		target, err := url.Parse("http://" + driverpkg.JupyterConnectAddress(execution.ToDriverProxyState(proxyState)))
 		if err != nil {
@@ -83,6 +88,30 @@ func RegisterJupyterRoutes(app *echo.Echo, opts JupyterOptions) {
 		proxy.ServeHTTP(c.Response(), c.Request())
 		return nil
 	})
+}
+
+// jupyterEnsureReadyHTTPError maps a failed proxy readiness check to the HTTP
+// error this route returns. A sandbox that does not exist is a missing resource
+// (404); every other failure — Jupyter disabled, an unreachable guest, a runtime
+// that will not start — keeps its 502 because the upstream is unavailable rather
+// than the resource missing. Only the domain classification decides this: a raw
+// filesystem error from sandbox provisioning also means "unavailable", and the
+// lifecycle layer reports a genuinely missing sandbox as a domain not-found. The
+// 502 branch keeps the domain message so operators can tell those conditions
+// apart, while the 404 branch is answered with the id alone: this subtree is
+// exempt from daemon authentication and the storage errors behind a missing
+// sandbox embed absolute paths.
+func jupyterEnsureReadyHTTPError(sessionID string, err error) error {
+	if errors.Is(err, domain.ErrNotFound) {
+		return echo.NewHTTPError(http.StatusNotFound, missingSandboxMessage(sessionID))
+	}
+	return echo.NewHTTPError(http.StatusBadGateway, err.Error())
+}
+
+// missingSandboxMessage is the only sandbox detail this unauthenticated route
+// discloses, so a storage path can never reach the response body.
+func missingSandboxMessage(sessionID string) string {
+	return "sandbox " + sessionID + " not found"
 }
 
 func newJupyterProxyTransport() *http.Transport {

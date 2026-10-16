@@ -88,8 +88,14 @@ func TestSetupRegistersServiceGraph(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, strings.TrimRight(config.JupyterProxyBasePath, "/")+"/missing", nil)
 	rec := httptest.NewRecorder()
 	app.ServeHTTP(rec, req)
-	if rec.Code != http.StatusBadGateway {
-		t.Fatalf("proxy route status = %d, want %d", rec.Code, http.StatusBadGateway)
+	// A sandbox that does not exist is a missing resource, not a daemon fault,
+	// and this route is exempt from daemon authentication, so the answer must not
+	// echo the storage path behind the missing sandbox.
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("proxy route status for a missing sandbox = %d, want %d", rec.Code, http.StatusNotFound)
+	}
+	if body := rec.Body.String(); strings.Contains(body, "/") {
+		t.Fatalf("proxy route body for a missing sandbox leaks a storage path: %s", body)
 	}
 }
 

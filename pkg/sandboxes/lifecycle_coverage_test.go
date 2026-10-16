@@ -3,6 +3,8 @@ package sandboxes
 import (
 	"context"
 	"errors"
+	"fmt"
+	"io/fs"
 	"net"
 	"strings"
 	"testing"
@@ -228,6 +230,41 @@ func TestLifecycleEnsureProxyReadyBranches(t *testing.T) {
 		_, _, err := lifecycle.EnsureProxyReady(context.Background(), session.Summary.ID)
 		if err == nil || !stringsContains(err.Error(), "jupyter is not enabled") {
 			t.Fatalf("disabled proxy error = %v", err)
+		}
+	})
+
+	t.Run("missing sandbox is a path-free domain not found", func(t *testing.T) {
+		storeErr := fmt.Errorf("read session metadata missing-sandbox: %w", fs.ErrNotExist)
+		lifecycle := Lifecycle{
+			Config: &appconfig.Config{SandboxStartTimeout: time.Second},
+			Store:  &fakeLifecycleStore{getSandboxErr: storeErr},
+		}
+		_, _, err := lifecycle.EnsureProxyReady(context.Background(), "missing-sandbox")
+		if !errors.Is(err, domain.ErrNotFound) {
+			t.Fatalf("EnsureProxyReady error = %v, want a domain not-found", err)
+		}
+		// The Jupyter proxy route is unauthenticated, so the storage path behind
+		// this error must not survive into the message a client can read.
+		for _, leaked := range []string{"/", "metadata.json", "read session metadata"} {
+			if stringsContains(err.Error(), leaked) {
+				t.Fatalf("EnsureProxyReady error %q leaks %q", err, leaked)
+			}
+		}
+	})
+
+	t.Run("missing proxy state keeps the jupyter disabled classification", func(t *testing.T) {
+		session := lifecycleTestSession("session-no-proxy-state", driverpkg.RuntimeDriverDocker, domain.VMStatusStopped)
+		storeErr := fmt.Errorf("read %s: %w", "/data/sandboxes/session-no-proxy-state/proxy/jupyter.json", fs.ErrNotExist)
+		lifecycle := Lifecycle{
+			Config: &appconfig.Config{SandboxStartTimeout: time.Second},
+			Store:  &fakeLifecycleStore{session: session, proxyStateErr: storeErr},
+		}
+		_, _, err := lifecycle.EnsureProxyReady(context.Background(), session.Summary.ID)
+		if err == nil || err.Error() != "jupyter is not enabled for session session-no-proxy-state" {
+			t.Fatalf("EnsureProxyReady error = %v, want the jupyter disabled message", err)
+		}
+		if errors.Is(err, domain.ErrNotFound) {
+			t.Fatalf("EnsureProxyReady classified a missing proxy state as a missing sandbox: %v", err)
 		}
 	})
 
@@ -647,19 +684,24 @@ func lifecycleTestSession(id, driver, status string) *domain.Sandbox {
 }
 
 type fakeLifecycleStore struct {
-	session    *domain.Sandbox
-	vmState    domain.VMState
-	vmStateErr error
-	savedVM    domain.VMState
-	proxyState domain.ProxyState
-	updated    int
-	events     int
-	eventItems []domain.SandboxEvent
-	onUpdate   func()
-	onEvent    func()
+	session       *domain.Sandbox
+	getSandboxErr error
+	vmState       domain.VMState
+	vmStateErr    error
+	savedVM       domain.VMState
+	proxyState    domain.ProxyState
+	proxyStateErr error
+	updated       int
+	events        int
+	eventItems    []domain.SandboxEvent
+	onUpdate      func()
+	onEvent       func()
 }
 
 func (s *fakeLifecycleStore) GetSandbox(context.Context, string) (*domain.Sandbox, error) {
+	if s.getSandboxErr != nil {
+		return nil, s.getSandboxErr
+	}
 	return s.session, nil
 }
 
@@ -682,6 +724,9 @@ func (s *fakeLifecycleStore) SaveVMState(_ string, state domain.VMState) error {
 }
 
 func (s *fakeLifecycleStore) GetProxyState(string) (domain.ProxyState, error) {
+	if s.proxyStateErr != nil {
+		return domain.ProxyState{}, s.proxyStateErr
+	}
 	return s.proxyState, nil
 }
 
