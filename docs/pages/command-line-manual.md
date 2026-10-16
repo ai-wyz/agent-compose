@@ -426,6 +426,38 @@ Rules:
 - A run normally becomes terminal only after its completion cleanup succeeds. The default policy stops the sandbox; remove-on-completion fully deletes a sandbox created by that run, while a reused sandbox is only stopped. Keep-running is the explicit exception and performs no cleanup.
 - Cleanup failures leave the run `running` with `cleanup_error` populated while the daemon retries immediately and then with bounded backoff, including after restart. Retries are bounded: once the attempt limit is reached the run is finalized in the terminal state its first completion writer selected (`succeeded` for a successful execution, `canceled` for a stop request) with `cleanup_error` still populated, and the pending completion is abandoned instead of retried indefinitely. A foreground or streaming call stops waiting at its own completion deadline and returns an error naming the status the run is stuck in; the run still converges through those background retries. Detached starts remain asynchronous.
 - `StopRun` requests cancellation and can return `stop_requested=true` while the run is still `running`. Execution records the cancellation result, performs the configured cleanup, and only then commits `canceled`. Pending/running runs left behind after daemon restart follow the same path to `failed` with a `daemon interrupted` error.
+- A stuck cleanup can also be abandoned explicitly; see `abandon-completion`.
+
+## `abandon-completion`: End a Run Whose Cleanup Cannot Converge
+
+End a run whose sandbox cleanup is staged but cannot succeed, for example when a cluster or runtime is permanently unreachable. This is the operator path out of a run that the bounded background cleanup retries cannot finish.
+
+```bash
+agent-compose abandon-completion <run>
+agent-compose abandon-completion <run> --reason "kubeconfig points at a deleted cluster"
+```
+
+| Option | Description |
+| --- | --- |
+| `--reason <text>` | Operator note recorded with the abandoned cleanup. |
+
+Rules:
+
+- The run reaches the terminal state its first completion writer selected (`succeeded`, `failed`, or `canceled`) instead of staying `running`, and the pending completion is released.
+- The recorded `cleanup_error` says the cleanup was abandoned by the operator and that the sandbox runtime may still exist. It also keeps the last cleanup error the retry loop recorded, because the abandoned completion no longer holds it.
+- The command does not stop or remove the sandbox runtime. Clean it up separately, for example with `sandbox stop`, `sandbox rm`, or the driver's own tooling.
+- The command waits for a cleanup attempt already in flight for that run to return before it finalizes the run, so its own response is bounded by that attempt rather than by the retry schedule.
+- Use `stop` for a run that is still executing: that path still cleans up the runtime. Abandoning such a run is rejected with `failed_precondition`.
+- A run that is already terminal exits 0 and reports `already terminal; nothing was abandoned`, so repeating the command after a lost response is safe.
+- Abandonment is a decision, not a repair: the runtime is left as it was, and the run record is the only note that it may still exist.
+
+Examples:
+
+```bash
+agent-compose abandon-completion run_123
+agent-compose abandon-completion run_123 --reason "cluster deleted during incident"
+agent-compose abandon-completion run_123 --json
+```
 
 ## `scheduler`: Invoke, Inspect, and Operate Project Schedulers
 

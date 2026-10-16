@@ -782,11 +782,25 @@ func TestExecAttachInputFrameMapping(t *testing.T) {
 	}
 }
 
-type sequenceRunStopper struct{ calls int }
+type sequenceRunStopper struct {
+	calls int
+	// abandonRun and abandonErr let a test drive AbandonRunCompletion.
+	abandonRun   domain.ProjectRunRecord
+	abandoned    bool
+	abandonErr   error
+	abandonCalls int
+	abandonNote  string
+}
 
 func (s *sequenceRunStopper) StopActiveRun(context.Context, string, string) (bool, error) {
 	s.calls++
 	return s.calls == 1, nil
+}
+
+func (s *sequenceRunStopper) AbandonRunCompletion(_ context.Context, _ string, reason string) (domain.ProjectRunRecord, bool, error) {
+	s.abandonCalls++
+	s.abandonNote = reason
+	return s.abandonRun, s.abandoned, s.abandonErr
 }
 
 func TestProjectAndRunHandlersStoreBackedWorkflows(t *testing.T) {

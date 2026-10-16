@@ -396,6 +396,38 @@ agent-compose run reviewer --jupyter --jupyter-expose --prompt "Inspect the note
 - run 通常只有在 completion cleanup 成功后才进入终态。默认策略停止 sandbox；remove-on-completion 会完整删除由本 run 新建的 sandbox，但复用的 sandbox 只会停止；keep-running 是不执行清理的显式例外。
 - cleanup 失败时 run 保持 `running` 并写入 `cleanup_error`，daemon 会立即重试并采用有上限的退避，重启后也会继续。重试有上限：达到次数上限后，run 会以首个 completion 写入者选定的终态落终态（成功执行为 `succeeded`，停止请求为 `canceled`）并保留 `cleanup_error`，未完成的 completion 被放弃而不再无限重试。前台与流式调用在自身的完成等待 deadline 到达后停止等待并返回错误，错误中给出 run 停留的状态；run 本身仍由这些后台重试收敛。detached start 仍立即返回。
 - `StopRun` 只请求取消，因此可能返回 `stop_requested=true` 而 run 仍为 `running`。执行路径先记录取消结果并完成配置的 cleanup，再提交 `canceled`；daemon 重启后遗留的 running/pending run 也通过同一路径在清理后变为 `failed`，错误为 `daemon interrupted`。
+- 卡住的 cleanup 也可以显式放弃，见 `abandon-completion`。
+
+## `abandon-completion`：结束 cleanup 无法收敛的 run
+
+结束一条已进入 cleanup 阶段但无法成功的 run，例如集群或 runtime 已永久不可达。当后台 cleanup 重试有上限仍无法完成时，这是操作者的退出路径。
+
+```bash
+agent-compose abandon-completion <run>
+agent-compose abandon-completion <run> --reason "kubeconfig points at a deleted cluster"
+```
+
+| 参数 | 说明 |
+| --- | --- |
+| `--reason <text>` | 随被放弃的 cleanup 一起记录的说明。 |
+
+规则：
+
+- run 会以首个 completion 写入者选定的终态落终态（`succeeded`、`failed` 或 `canceled`），不再停在 `running`，同时释放未完成的 completion。
+- 记录的 `cleanup_error` 会说明 cleanup 被操作者放弃、sandbox runtime 可能仍然存在；其中也会保留重试循环最后记录的 cleanup 错误，因为被释放的 completion 不再持有它。
+- 该命令不会停止或删除 sandbox runtime。请另行清理，例如 `sandbox stop`、`sandbox rm` 或 driver 自带工具。
+- 如果该 run 已有一次 cleanup 尝试在进行中，命令会等它返回后再落终态；也就是说响应时间由这次尝试决定，而不是由重试计划决定。
+- 仍在执行的 run 请使用 `stop`，该路径仍会清理 runtime；对这类 run 执行放弃会返回 `failed_precondition`。
+- run 已是终态时命令退出码为 0，并输出 `already terminal; nothing was abandoned`，因此在响应丢失后重试是安全的。
+- 放弃是操作者的决定，而不是修复：runtime 保持原状，run 记录是「它可能仍然存在」的唯一说明。
+
+示例：
+
+```bash
+agent-compose abandon-completion run_123
+agent-compose abandon-completion run_123 --reason "cluster deleted during incident"
+agent-compose abandon-completion run_123 --json
+```
 
 ## `scheduler`：调用、查看和操作 project scheduler
 
