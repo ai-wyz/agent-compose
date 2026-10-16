@@ -178,8 +178,16 @@ func proxyStateLookupError(id string, err error) error {
 	return err
 }
 
+// ErrJupyterNotEnabled reports that a sandbox has no enabled Jupyter proxy. The
+// error carrying it names the session only, so a transport may return it to a
+// client verbatim instead of echoing the readiness failure behind it.
+var ErrJupyterNotEnabled = errors.New("jupyter is not enabled")
+
+// jupyterNotEnabledError classifies the condition so transports can tell it apart
+// from a readiness failure whose message is not safe to return, while keeping the
+// message clients already match on.
 func jupyterNotEnabledError(id string) error {
-	return fmt.Errorf("jupyter is not enabled for session %s", id)
+	return domain.ClassifyError(ErrJupyterNotEnabled, fmt.Sprintf("jupyter is not enabled for session %s", id), nil)
 }
 
 func (l Lifecycle) EnsureProxyReady(ctx context.Context, sessionID string) (*domain.Sandbox, domain.ProxyState, error) {

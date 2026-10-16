@@ -1,10 +1,12 @@
 package proxy
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"io/fs"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -17,58 +19,69 @@ import (
 
 	"github.com/chaitin/agent-compose/pkg/fxgo/echofn"
 	domain "github.com/chaitin/agent-compose/pkg/model"
+	"github.com/chaitin/agent-compose/pkg/sandboxes"
 )
 
 // A sandbox that does not exist is a missing resource, not a daemon fault, and
-// the route that answers it is exempt from daemon authentication, so the response
-// must name the sandbox without disclosing where its state is stored. Every other
-// readiness failure keeps its 502 classification and message.
-func TestJupyterProxyClassifiesMissingSandboxWithoutLeakingStoragePaths(t *testing.T) {
+// the route that answers it is exempt from daemon authentication. Neither branch
+// may disclose where daemon-side state lives, so the body stays path-free and the
+// failure detail goes to the log instead. The one message clients already match on
+// is the "jupyter is not enabled" condition, which names the session only.
+func TestJupyterProxyAnswersWithoutLeakingStoragePaths(t *testing.T) {
 	cases := []struct {
 		name       string
 		ensureErr  error
 		wantStatus int
 		wantMsg    string
 		wantErrTyp string
-		// A 404 body must stay path-free; a 502 from a genuine daemon fault keeps
-		// its diagnostic message.
-		wantNoPath bool
+		// The detail the body must not carry, which the log must keep instead.
+		wantLogged string
 	}{
 		{
-			name:       "domain not found",
+			name:       "missing sandbox is not found",
 			ensureErr:  domain.ResourceError(domain.ErrNotFound, "sandbox", "deadbeef", "", nil),
 			wantStatus: http.StatusNotFound,
 			wantMsg:    "sandbox deadbeef not found",
 			wantErrTyp: "Unknown",
-			wantNoPath: true,
 		},
 		{
-			name:       "jupyter disabled stays bad gateway",
-			ensureErr:  errors.New("jupyter is not enabled for session deadbeef"),
+			name: "wrapped storage not-exist without classification stays unavailable",
+			ensureErr: fmt.Errorf(
+				"read session metadata deadbeef: open /data/sandboxes/deadbeef/metadata.json: %w", fs.ErrNotExist),
+			wantStatus: http.StatusBadGateway,
+			wantMsg:    "jupyter is unavailable for sandbox deadbeef",
+			wantErrTyp: "Internal",
+			wantLogged: "/data/sandboxes/deadbeef/metadata.json",
+		},
+		{
+			name: "jupyter disabled keeps its message",
+			ensureErr: domain.ClassifyError(
+				sandboxes.ErrJupyterNotEnabled, "jupyter is not enabled for session deadbeef", nil),
 			wantStatus: http.StatusBadGateway,
 			wantMsg:    "jupyter is not enabled for session deadbeef",
 			wantErrTyp: "Internal",
-			wantNoPath: true,
 		},
 		{
-			// A raw filesystem error from sandbox provisioning means the upstream
-			// is unavailable, not that the sandbox is absent, so it must not be
-			// folded into the 404 branch.
+			// A provisioning failure means the upstream is unavailable, not that
+			// the sandbox is absent, so it must not be folded into the 404 branch.
 			name:       "provisioning failure stays bad gateway",
 			ensureErr:  fmt.Errorf("ensure workspace: read /data/sandboxes/deadbeef/workspace: %w", fs.ErrNotExist),
 			wantStatus: http.StatusBadGateway,
-			wantMsg:    "ensure workspace",
+			wantMsg:    "jupyter is unavailable for sandbox deadbeef",
 			wantErrTyp: "Internal",
+			wantLogged: "/data/sandboxes/deadbeef/workspace",
 		},
 	}
 	for _, tc := range cases {
 		for _, path := range []string{"/jupyter/deadbeef", "/jupyter/deadbeef/api/status"} {
 			t.Run(tc.name+" "+path, func(t *testing.T) {
+				var logs bytes.Buffer
 				e := echo.New()
 				e.HTTPErrorHandler = echofn.EchoHTTPErrorHandler
 				RegisterJupyterRoutes(e, JupyterOptions{
 					BasePath: "/jupyter",
 					Store:    fakeJupyterStore{err: tc.ensureErr},
+					Logger:   slog.New(slog.NewTextHandler(&logs, nil)),
 					EnsureReady: func(context.Context, string) (domain.ProxyState, error) {
 						return domain.ProxyState{}, tc.ensureErr
 					},
@@ -85,12 +98,19 @@ func TestJupyterProxyClassifiesMissingSandboxWithoutLeakingStoragePaths(t *testi
 				if !strings.Contains(body, `"err":"`+tc.wantErrTyp+`"`) {
 					t.Fatalf("body = %s, want err type %q", body, tc.wantErrTyp)
 				}
-				if tc.wantNoPath {
-					for _, leaked := range []string{"/", "metadata.json", "sandboxes", "session metadata"} {
-						if strings.Contains(body, leaked) {
-							t.Fatalf("body leaks %q: %s", leaked, body)
-						}
+				for _, leaked := range []string{"/", "metadata.json", "sandboxes", "session metadata"} {
+					if strings.Contains(body, leaked) {
+						t.Fatalf("body leaks %q: %s", leaked, body)
 					}
+				}
+				if tc.wantLogged == "" {
+					if logs.Len() != 0 {
+						t.Fatalf("classified failure logged %q, want nothing", logs.String())
+					}
+					return
+				}
+				if !strings.Contains(logs.String(), tc.wantLogged) {
+					t.Fatalf("log = %q, want the withheld detail %q", logs.String(), tc.wantLogged)
 				}
 			})
 		}

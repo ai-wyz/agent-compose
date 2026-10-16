@@ -263,6 +263,11 @@ func TestLifecycleEnsureProxyReadyBranches(t *testing.T) {
 		if err == nil || err.Error() != "jupyter is not enabled for session session-no-proxy-state" {
 			t.Fatalf("EnsureProxyReady error = %v, want the jupyter disabled message", err)
 		}
+		// The condition is classified so a transport can return this message
+		// verbatim while answering every unclassified failure without detail.
+		if !errors.Is(err, ErrJupyterNotEnabled) {
+			t.Fatalf("EnsureProxyReady error = %v, want the jupyter-not-enabled classification", err)
+		}
 		if errors.Is(err, domain.ErrNotFound) {
 			t.Fatalf("EnsureProxyReady classified a missing proxy state as a missing sandbox: %v", err)
 		}
