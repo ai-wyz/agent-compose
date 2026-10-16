@@ -83,6 +83,11 @@ func TestRemovalCoordinatorRollsBackDeletionIntentWhenRuntimeRemovalFails(t *tes
 			wantStatus: domain.VMStatusStopped, wantErr: "remove sandbox runtime",
 		},
 		{
+			name: "runtime removal fails while failed", status: domain.VMStatusFailed,
+			removeErr:  errors.New("invalid configuration: no configuration has been provided"),
+			wantStatus: domain.VMStatusFailed, wantErr: "remove sandbox runtime",
+		},
+		{
 			name: "runtime stop fails", status: domain.VMStatusRunning,
 			stopErr:    errors.New("stop unavailable"),
 			wantStatus: domain.VMStatusRunning, wantErr: "stop sandbox runtime",
@@ -127,6 +132,81 @@ func TestRemovalCoordinatorRollsBackDeletionIntentWhenRuntimeRemovalFails(t *tes
 				}
 			}
 		})
+	}
+}
+
+// A deletion resumed from a journal must restore the predecessor the intent
+// recorded, including states such as FAILED. Guessing the predecessor would
+// rewrite a failed sandbox into STOPPED even though nothing was removed.
+func TestRemovalCoordinatorRollbackRestoresRecordedPredecessorStatus(t *testing.T) {
+	root := t.TempDir()
+	sandbox := removalTestSandbox(t, removalTestSandboxSpec{
+		Root: root, ID: "sandbox-resumed", Status: domain.VMStatusDeleting, Updated: time.Now().Add(-time.Hour),
+	})
+	store := &removalTestStore{sandboxes: map[string]*domain.Sandbox{sandbox.Summary.ID: sandbox}}
+	runtime := &removalTestRuntime{removeErrors: []error{errors.New("cluster unreachable")}}
+	coordinator := &sandboxes.RemovalCoordinator{SandboxRoot: root, Store: store, Runtime: runtime}
+
+	// Simulate a daemon that persisted the deletion intent and exited before the
+	// runtime removal ran: the sandbox shows DELETING and only the journal knows
+	// what it was before.
+	if err := sandboxes.WriteOwnershipRecord(root, sandboxes.OwnershipRecord{
+		Version: sandboxes.OwnershipRecordVersion, SandboxID: sandbox.Summary.ID, Driver: "docker",
+		RuntimeID: sandbox.Summary.RuntimeRef, SandboxPath: filepath.Dir(sandbox.Summary.WorkspacePath),
+		LifecycleState: "deleting", PreviousVMStatus: domain.VMStatusFailed,
+		CompletedStages: []sandboxes.DeletionStage{sandboxes.DeletionStageIntent},
+	}); err != nil {
+		t.Fatalf("WriteOwnershipRecord: %v", err)
+	}
+
+	if _, err := coordinator.Remove(context.Background(), sandbox.Summary.ID, true); err == nil {
+		t.Fatal("Remove returned nil for injected runtime failure")
+	}
+	stored, err := store.GetSandbox(context.Background(), sandbox.Summary.ID)
+	if err != nil {
+		t.Fatalf("GetSandbox: %v", err)
+	}
+	if stored.Summary.VMStatus != domain.VMStatusFailed {
+		t.Fatalf("sandbox status after rolled-back resume = %q, want %q", stored.Summary.VMStatus, domain.VMStatusFailed)
+	}
+	record, err := sandboxes.ReadOwnershipRecord(root, sandbox.Summary.ID)
+	if err != nil {
+		t.Fatalf("ReadOwnershipRecord: %v", err)
+	}
+	if record.LifecycleState != "active" || record.StageCompleted(sandboxes.DeletionStageRuntime) {
+		t.Fatalf("record after rolled-back resume = %#v", record)
+	}
+}
+
+// A journal written before the predecessor status was recorded cannot name it,
+// but it must still roll back to a real, retryable lifecycle state instead of
+// stranding the sandbox in DELETING.
+func TestRemovalCoordinatorRollbackFallsBackForPredecessorlessJournal(t *testing.T) {
+	root := t.TempDir()
+	sandbox := removalTestSandbox(t, removalTestSandboxSpec{
+		Root: root, ID: "sandbox-legacy", Status: domain.VMStatusDeleting, Updated: time.Now().Add(-time.Hour),
+	})
+	store := &removalTestStore{sandboxes: map[string]*domain.Sandbox{sandbox.Summary.ID: sandbox}}
+	runtime := &removalTestRuntime{removeErrors: []error{errors.New("cluster unreachable")}}
+	coordinator := &sandboxes.RemovalCoordinator{SandboxRoot: root, Store: store, Runtime: runtime}
+
+	if err := sandboxes.WriteOwnershipRecord(root, sandboxes.OwnershipRecord{
+		Version: sandboxes.OwnershipRecordVersion, SandboxID: sandbox.Summary.ID, Driver: "docker",
+		RuntimeID: sandbox.Summary.RuntimeRef, SandboxPath: filepath.Dir(sandbox.Summary.WorkspacePath),
+		LifecycleState: "deleting", CompletedStages: []sandboxes.DeletionStage{sandboxes.DeletionStageIntent},
+	}); err != nil {
+		t.Fatalf("WriteOwnershipRecord: %v", err)
+	}
+
+	if _, err := coordinator.Remove(context.Background(), sandbox.Summary.ID, true); err == nil {
+		t.Fatal("Remove returned nil for injected runtime failure")
+	}
+	stored, err := store.GetSandbox(context.Background(), sandbox.Summary.ID)
+	if err != nil {
+		t.Fatalf("GetSandbox: %v", err)
+	}
+	if stored.Summary.VMStatus != domain.VMStatusStopped {
+		t.Fatalf("sandbox status after rolled-back legacy journal = %q, want %q", stored.Summary.VMStatus, domain.VMStatusStopped)
 	}
 }
 
