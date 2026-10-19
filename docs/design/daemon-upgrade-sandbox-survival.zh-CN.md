@@ -140,13 +140,14 @@ guest
 - **run 记录新增字段**：
   - `execution_id`：daemon 生成（UUID），在执行 `start --detach` **之前**写入。
   - `detach`：这个 run 是否走 detach 模式，启动时由能力探测决定，shutdown 时据此决定断开还是终止。
+  - `deadline`：run 超时的绝对截止时间（或剩余超时）。启动时持久化，重启后对账 attach 时据此重新挂上超时，否则超时计时器随重启丢失、detach 的 run 永远到不了超时终态。
   - 已确认的 offset 不单独建字段，以 run 日志最后一条记录的 offset 为准。
-- **兜底清理**：supervisor 自己异常退出时，任务可能没人管。所以 `start --detach` 那次 exec 用 `execution_id` 作为 marker，任务的整棵进程树都带着它；停止时如果 supervisor 没在宽限期内结束任务，daemon 按这个 marker 清理。这需要 driver 新增两点（PR #789 的 marker 是 driver 在 exec 内部生成的，调用方传不进去，也只在取消那次 exec 时才清理）：
+- **兜底清理**：supervisor 自己异常退出时，任务可能没人管。所以 `start --detach` 那次 exec 用 `execution_id` 作为 marker，任务的整棵进程树都带着它；下面两处触发按 marker 清理进程树：停止时 supervisor 没在宽限期内结束任务；attach 报任务异常死亡（pid 和 nonce 对不上、且没有 `exit` 文件）——supervisor 已退出、停止请求送不到，只能靠 marker 直接清理。这需要 driver 新增两点（PR #789 的 marker 是 driver 在 exec 内部生成的，调用方传不进去，也只在取消那次 exec 时才清理）：
   - `ExecSpec` 允许调用方指定 marker；
   - 一个不依赖任何 exec、单独"按 marker 清理进程树"的方法。
 - **能力探测**：daemon 对任意镜像没有启动握手，也不会因为声明缺失而拒绝（`docs/pages/guest-image-abi.md` 第 1 节），所以不读镜像里的 ABI 声明，而是在沙箱里执行一次 `agent-compose-runtime capabilities --json`，结果按沙箱缓存。输出里有 `detach: true` 就支持；命令不存在或解析失败就走现有路径。不用"`start --detach` 失败就回退"：那样分不清是旧 runtime 不认识这个命令，还是任务启动本身出错，后者回退会把任务再跑一遍。
-- **去重**：daemon 写 run 日志时记录每条输出的 offset，重连时从最后一条的 offset 续读，收到不大于它的直接丢弃。所以 run 日志里的输出不重复，即使 daemon 被硬杀。客户端在 daemon 重启后是新连接，从哪里续读由它自己的游标决定：交互会话用 `InteractiveSession` 的事件序号续订（`resumable-interactive-session.md`）；`InteractiveSession` 的回放数据改从 journal 来，不再自己维护一份。
-- **对账**：对 running 且 `detach` 为真的 run，**先用 `IsSandboxAlive` 确认沙箱活着，再执行任何 exec**（BoxLite 的 exec 会自动拉起已停止的 box，见第 2 节结论 5）。活着就 `attach --execution-id <id> --from <offset>` 接回来；沙箱不在或接不上，走中断收尾。
+- **去重**：daemon 写 run 日志时记录每条输出的 offset，重连时从最后一条的 offset 续读，收到不大于它的直接丢弃。所以 run 日志里的输出不重复，即使 daemon 被硬杀。客户端在 daemon 重启后是新连接，续读游标统一用 journal offset，不再沿用 `InteractiveSession` 的进程内事件序号：事件序号随 daemon 重启丢失，而 offset 是 guest 磁盘上唯一跨重启自洽的坐标，统一到 offset 也免去了两套坐标之间的映射。`InteractiveSession` 的回放数据改从 journal 来，不再自己维护一份；`resumable-interactive-session.md` 中「daemon 重启后 session not found、事件序号是进程内状态」的限制随之更新（见该文档）。
+- **对账**：对 running 且 `detach` 为真的 run，**先用 `IsSandboxAlive` 确认沙箱活着，再执行任何 exec**（BoxLite 的 exec 会自动拉起已停止的 box，见第 2 节结论 5）。活着就 `attach --execution-id <id> --from <offset>` 接回来，并按持久化的 `deadline` 重新挂上 run 超时；沙箱不在或接不上，走中断收尾。
 - **调度器 run 的行为变更**：`RecoverInterruptedRuns` 现在把重启前没跑完的调度器 run 一律判失败，改为与 project run 一致，先尝试 attach。要单独验收。
 
 **终态映射**：退出码由 `attach` 读到的 `exit` 文件提供，结果仍经由现有的 run 状态机和 `CompletionManager` 写回。
@@ -158,7 +159,7 @@ guest
 | supervisor 因超时终止 | failed（超时） | 与现有超时行为一致 |
 | supervisor 因用户停止终止 | canceled | 与现有取消行为一致 |
 | 被别的信号杀死 | failed，错误信息带上信号 | 128 + 信号值 |
-| 任务异常死亡（pid 和 nonce 对不上，且没有 `exit`） | failed，标明 guest 任务异常终止 | ExitCode -1 |
+| 任务异常死亡（pid 和 nonce 对不上，且没有 `exit`） | failed，标明 guest 任务异常终止；同时按 marker 清理进程树（见兜底清理） | ExitCode -1 |
 | 沙箱已不在 | 走现有的中断收尾 | — |
 
 **不改 guest ABI。** 按 `docs/pages/guest-image-abi.md`，runtime CLI 属于 release boundary，不归 `guestAbi` 管，新增子命令是 boundary 之内的正常演进。版本不匹配的旧镜像本来就不保证兼容，`capabilities` 探测只是让它优雅降级：不支持 detach 的 guest 走现有路径，daemon 收到 SIGTERM 时仍然终止任务。
@@ -226,6 +227,8 @@ services:
 - run 日志里的输出无重复（daemon 被硬杀后重连也一样）；有缺口时显式标出。
 - 调度器 run 在 daemon 重启后能被接回。
 - 对账时沙箱已死（含 BoxLite），run 走中断收尾，VM 不会被 exec 重新拉起。
+- supervisor 异常退出后，run 判失败，且 guest 里按 marker 清掉孤儿进程树。
+- run 超时跨越 daemon 重启仍按持久化的 `deadline` 进入超时终态。
 - 多个 run 并发时，daemon 正常关闭不超过 10 秒（detach 和旧 guest 两种情况都测）。
 - 旧 guest 镜像行为不变。
 

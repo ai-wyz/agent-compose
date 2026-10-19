@@ -79,6 +79,8 @@ attachment 应支持从事件序号继续订阅。初期可复用现有 `ListRun
 
 session manager 当前是进程内资源。daemon 重启后，持久化 run 记录可能仍为 running，但 runtime 的 stdin、输出流和进程控制句柄无法从数据库重建；按 `run_id` attach 必须返回 session not found，而不能创建新的 runtime 或假装恢复。未来只有 driver 提供稳定的 operation lookup/reattach 原语后，才可增加持久化 session ownership 和启动恢复。
 
+`daemon-upgrade-sandbox-survival.zh-CN.md` 给出另一条不依赖 driver 原语的路径：把任务 detach 到 guest 内（supervisor + journal + `attach --execution-id`），daemon 重启后用新 exec 按 offset 重新 attach。该设计落地后，本节「daemon 重启后恢复 runtime interaction = 不支持」的限制随之解除，跨重启续读游标由进程内事件序号改为 journal offset（见该文档 3.3 的「去重」）；在那之前，上面的能力矩阵仍是准确的当前状态。
+
 历史输出恢复复用 `ListRunEvents` 和 `FollowRunLogs`；`AttachAgentRun` 的 session 输出订阅只负责连接后的实时数据。客户端应先读取持久事件/日志，再 attach 实时流，并依据事件/frame ID 去重。
 
 实时订阅采用有界缓冲。慢订阅者耗尽缓冲时，服务端关闭该 attachment 的输出订阅，而不是静默丢帧；客户端随后按持久事件/日志恢复并重新 attach。
