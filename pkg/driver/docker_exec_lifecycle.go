@@ -47,30 +47,8 @@ type dockerExecTarget struct {
 func (r *dockerRuntime) terminateDockerExec(ctx context.Context, dockerClient *client.Client, target dockerExecTarget) error {
 	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), execTerminationTimeout)
 	defer cancel()
-
-	control, err := dockerClient.ContainerExecCreate(cleanupCtx, target.ContainerID, containerapi.ExecOptions{
-		AttachStdout: true,
-		AttachStderr: true,
-		Cmd:          markedExecTerminationCommand(dockerExecMarkerEnv, target.Marker),
-		User:         "0",
-		WorkingDir:   "/",
-	})
-	if err != nil {
-		return fmt.Errorf("create docker exec termination control: %w", err)
-	}
-	attach, err := dockerClient.ContainerExecAttach(cleanupCtx, control.ID, containerapi.ExecAttachOptions{})
-	if err != nil {
-		return fmt.Errorf("start docker exec termination control %s: %w", control.ID, err)
-	}
-	if err := drainDockerControlExec(attach); err != nil {
-		return fmt.Errorf("read docker exec termination control %s: %w", control.ID, err)
-	}
-	controlInfo, err := r.waitForExecExit(cleanupCtx, dockerClient, control.ID)
-	if err != nil {
+	if err := r.terminateDockerProcessTree(cleanupCtx, dockerClient, target.ContainerID, target.Marker); err != nil {
 		return err
-	}
-	if controlInfo.ExitCode != 0 {
-		return fmt.Errorf("docker exec termination control %s exited with code %d", control.ID, controlInfo.ExitCode)
 	}
 	execInfo, err := r.waitForExecExit(cleanupCtx, dockerClient, target.ExecID)
 	if err != nil {
@@ -78,6 +56,37 @@ func (r *dockerRuntime) terminateDockerExec(ctx context.Context, dockerClient *c
 	}
 	if execInfo.Running {
 		return fmt.Errorf("docker exec %s is still running after termination", target.ExecID)
+	}
+	return nil
+}
+
+// terminateDockerProcessTree runs the marker termination control exec against a
+// container. It has no dependence on a specific exec handle, so it also backs
+// ProcessTreeTerminator for a detached task whose supervisor died.
+func (r *dockerRuntime) terminateDockerProcessTree(ctx context.Context, dockerClient *client.Client, containerID, marker string) error {
+	control, err := dockerClient.ContainerExecCreate(ctx, containerID, containerapi.ExecOptions{
+		AttachStdout: true,
+		AttachStderr: true,
+		Cmd:          markedExecTerminationCommand(dockerExecMarkerEnv, marker),
+		User:         "0",
+		WorkingDir:   "/",
+	})
+	if err != nil {
+		return fmt.Errorf("create docker exec termination control: %w", err)
+	}
+	attach, err := dockerClient.ContainerExecAttach(ctx, control.ID, containerapi.ExecAttachOptions{})
+	if err != nil {
+		return fmt.Errorf("start docker exec termination control %s: %w", control.ID, err)
+	}
+	if err := drainDockerControlExec(attach); err != nil {
+		return fmt.Errorf("read docker exec termination control %s: %w", control.ID, err)
+	}
+	controlInfo, err := r.waitForExecExit(ctx, dockerClient, control.ID)
+	if err != nil {
+		return err
+	}
+	if controlInfo.ExitCode != 0 {
+		return fmt.Errorf("docker exec termination control %s exited with code %d", control.ID, controlInfo.ExitCode)
 	}
 	return nil
 }
