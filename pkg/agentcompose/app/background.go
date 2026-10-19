@@ -61,7 +61,13 @@ func startBackgroundManagers(ctx context.Context, deps backgroundManagersDeps) e
 	if err := deps.Completions.Start(ctx); err != nil {
 		return err
 	}
-	if err := reconcilePersistedProjectRuns(ctx, reconcileCtx, deps.ConfigDB, deps.Completions, deps.Controller, startedAt); err != nil {
+	if err := reconcilePersistedProjectRuns(reconcileCtx, projectRunReconcileContext{
+		ConfigDB:    deps.ConfigDB,
+		Completions: deps.Completions,
+		Controller:  deps.Controller,
+		RootCtx:     ctx,
+		StartedAt:   startedAt,
+	}); err != nil {
 		slog.Warn("failed to reconcile persisted project runs", "error", err)
 	}
 	deps.Schedulers.Start()
@@ -124,9 +130,9 @@ func reconcilePendingSandboxState(ctx context.Context, store *sandboxstore.Store
 	return store.GetSandbox(ctx, session.Summary.ID)
 }
 
-// projectRunReconcileContext bundles the store/manager and startup timestamp
-// reconcilePersistedProjectRunsWithStatus needs, shared across every status
-// it's called with.
+// projectRunReconcileContext bundles the store/manager, startup timestamp, and
+// the daemon root context reconcilePersistedProjectRuns needs to re-attach
+// detached runs that may outlive the startup reconciliation window.
 type projectRunReconcileContext struct {
 	ConfigDB    *configstore.ConfigStore
 	Completions *runs.CompletionManager
@@ -135,11 +141,10 @@ type projectRunReconcileContext struct {
 	StartedAt   time.Time
 }
 
-func reconcilePersistedProjectRuns(rootCtx, ctx context.Context, configDB *configstore.ConfigStore, completions *runs.CompletionManager, controller *runs.Controller, startedAt time.Time) error {
-	if configDB == nil {
+func reconcilePersistedProjectRuns(ctx context.Context, reconcile projectRunReconcileContext) error {
+	if reconcile.ConfigDB == nil {
 		return nil
 	}
-	reconcile := projectRunReconcileContext{ConfigDB: configDB, Completions: completions, Controller: controller, RootCtx: rootCtx, StartedAt: startedAt}
 	for _, status := range []string{domain.ProjectRunStatusPending, domain.ProjectRunStatusRunning} {
 		if err := reconcilePersistedProjectRunsWithStatus(ctx, reconcile, status); err != nil {
 			return err

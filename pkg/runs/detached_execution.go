@@ -148,32 +148,44 @@ func detachStopReason(ctx context.Context) string {
 // detach supervisor and returns its reconstructed result. It records the
 // execution id and detach decision on the run before starting, and persists
 // the journal cursor as it follows the task so a restart resumes cleanly.
-func (c *Controller) executeDetachedProjectRunCommand(ctx context.Context, runtime Runtime, sandbox *domain.Sandbox, vmState domain.VMState, run domain.ProjectRunRecord, guestRequestPath string, writer func(domain.ExecChunk)) (domain.ExecResult, error) {
+func (c *Controller) executeDetachedProjectRunCommand(ctx context.Context, input detachedRunCommand) (domain.ExecResult, error) {
+	run := input.Run
 	executionID := newDetachExecutionID(run)
 	if err := c.persistDetachedRunFields(ctx, run, executionID); err != nil {
 		return domain.ExecResult{}, fmt.Errorf("persist detached run fields: %w", err)
 	}
-	artifactsDir := projectRunCommandArtifactsDir(run, sandbox)
-	taskArgs := execution.RuntimeCommandCLIArgs(c.config, guestRequestPath, c.config.GuestHomePath)
-	env := execution.BuildSandboxExecEnv(ctx, c.config, sandbox, c.config.GuestHomePath)
+	artifactsDir := projectRunCommandArtifactsDir(run, input.Sandbox)
+	taskArgs := execution.RuntimeCommandCLIArgs(c.config, input.GuestRequestPath, c.config.GuestHomePath)
+	env := execution.BuildSandboxExecEnv(ctx, c.config, input.Sandbox, c.config.GuestHomePath)
 	env["AGENT_COMPOSE_RUN_ID"] = run.RunID
 	env["AGENT_COMPOSE_PROJECT_ID"] = run.ProjectID
 
 	result := executeDetachedCommand(ctx, detachedExecutionOptions{
 		Config:      c.config,
-		Runtime:     runtime,
-		Sandbox:     sandbox,
-		VMState:     vmState,
+		Runtime:     input.Runtime,
+		Sandbox:     input.Sandbox,
+		VMState:     input.VMState,
 		ExecutionID: executionID,
 		TaskArgs:    taskArgs,
 		Env:         env,
 		Cursor:      readDetachCursor(artifactsDir),
-		Writer:      writer,
+		Writer:      input.Writer,
 		PersistCursor: func(offset uint64) error {
 			return writeDetachCursor(artifactsDir, offset)
 		},
 	})
 	return result.Result, result.Err
+}
+
+// detachedRunCommand bundles the inputs for a detached project-run command so
+// executeDetachedProjectRunCommand stays below the argument limit.
+type detachedRunCommand struct {
+	Runtime          Runtime
+	Sandbox          *domain.Sandbox
+	VMState          domain.VMState
+	Run              domain.ProjectRunRecord
+	GuestRequestPath string
+	Writer           func(domain.ExecChunk)
 }
 
 // detachFollower parses the NDJSON records emitted by `attach` and reconstructs

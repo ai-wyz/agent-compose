@@ -108,7 +108,14 @@ func (c *Controller) executeProjectRunCommand(ctx context.Context, exec projectR
 	var result domain.ExecResult
 	var execErr error
 	if c.detachSupported(execCtx, runtime, sandbox, vmState) {
-		result, execErr = c.executeDetachedProjectRunCommand(execCtx, runtime, sandbox, vmState, run, guestRequestPath, writer)
+		result, execErr = c.executeDetachedProjectRunCommand(execCtx, detachedRunCommand{
+			Runtime:          runtime,
+			Sandbox:          sandbox,
+			VMState:          vmState,
+			Run:              run,
+			GuestRequestPath: guestRequestPath,
+			Writer:           writer,
+		})
 	} else {
 		spec := execution.BuildRuntimeCommandExecSpec(execCtx, c.config, sandbox, guestRequestPath, c.config.GuestHomePath)
 		spec.Env["AGENT_COMPOSE_RUN_ID"] = run.RunID
