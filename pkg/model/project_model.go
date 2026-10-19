@@ -170,6 +170,16 @@ type ProjectRunRecord struct {
 	CreatedAt       time.Time `json:"created_at"`
 	UpdatedAt       time.Time `json:"updated_at"`
 	Warnings        []string  `json:"warnings,omitempty"`
+	// ExecutionID identifies the guest-side detached execution (journal +
+	// supervisor) for a detach-capable run. Empty for runs on the legacy path.
+	ExecutionID string `json:"execution_id,omitempty"`
+	// Detach reports that the run was started through the detached supervisor
+	// and can be re-attached after a daemon restart instead of being declared
+	// interrupted.
+	Detach bool `json:"detach,omitempty"`
+	// Deadline is the absolute run deadline, persisted so a restarted daemon
+	// can re-arm the run's timeout without the original in-memory timer.
+	Deadline time.Time `json:"deadline,omitempty"`
 	// Labels holds user-defined key/value pairs attached to the run at start
 	// time. It is not a column on project_run; it is populated by GetProjectRun
 	// from the project_run_label table on read, and by Coordinator.BeginRun on
