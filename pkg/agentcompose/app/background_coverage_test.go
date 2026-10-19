@@ -108,7 +108,7 @@ func TestReconcilePersistedProjectRunsMarksInterruptedRunsFailed(t *testing.T) {
 		}
 	}
 	completions := runs.NewCompletionManager(runs.CompletionManagerDeps{Store: store})
-	if err := reconcilePersistedProjectRuns(ctx, store, completions, time.Now().Add(2*time.Second)); err != nil {
+	if err := reconcilePersistedProjectRuns(ctx, ctx, store, completions, nil, time.Now().Add(2*time.Second)); err != nil {
 		t.Fatalf("reconcilePersistedProjectRuns returned error: %v", err)
 	}
 	for _, runID := range []string{"run-pending", "run-running"} {
@@ -140,7 +140,7 @@ func TestReconcilePersistedProjectRunsMarksInterruptedRunsFailed(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("CreateProjectRun(run-fresh) returned error: %v", err)
 	}
-	if err := reconcilePersistedProjectRuns(ctx, store, completions, time.Now().Add(-2*time.Second)); err != nil {
+	if err := reconcilePersistedProjectRuns(ctx, ctx, store, completions, nil, time.Now().Add(-2*time.Second)); err != nil {
 		t.Fatalf("fresh reconcilePersistedProjectRuns returned error: %v", err)
 	}
 	fresh, err := store.GetProjectRun(ctx, "run-fresh")

@@ -40,6 +40,7 @@ type backgroundManagersDeps struct {
 	CapProxy    *capproxy.Server
 	CapTokens   *adapters.CapabilitySandboxResolver
 	Completions *runs.CompletionManager
+	Controller  *runs.Controller
 }
 
 func startBackgroundManagers(ctx context.Context, deps backgroundManagersDeps) error {
@@ -60,7 +61,7 @@ func startBackgroundManagers(ctx context.Context, deps backgroundManagersDeps) e
 	if err := deps.Completions.Start(ctx); err != nil {
 		return err
 	}
-	if err := reconcilePersistedProjectRuns(reconcileCtx, deps.ConfigDB, deps.Completions, startedAt); err != nil {
+	if err := reconcilePersistedProjectRuns(ctx, reconcileCtx, deps.ConfigDB, deps.Completions, deps.Controller, startedAt); err != nil {
 		slog.Warn("failed to reconcile persisted project runs", "error", err)
 	}
 	deps.Schedulers.Start()
@@ -129,14 +130,16 @@ func reconcilePendingSandboxState(ctx context.Context, store *sandboxstore.Store
 type projectRunReconcileContext struct {
 	ConfigDB    *configstore.ConfigStore
 	Completions *runs.CompletionManager
+	Controller  *runs.Controller
+	RootCtx     context.Context
 	StartedAt   time.Time
 }
 
-func reconcilePersistedProjectRuns(ctx context.Context, configDB *configstore.ConfigStore, completions *runs.CompletionManager, startedAt time.Time) error {
+func reconcilePersistedProjectRuns(rootCtx, ctx context.Context, configDB *configstore.ConfigStore, completions *runs.CompletionManager, controller *runs.Controller, startedAt time.Time) error {
 	if configDB == nil {
 		return nil
 	}
-	reconcile := projectRunReconcileContext{ConfigDB: configDB, Completions: completions, StartedAt: startedAt}
+	reconcile := projectRunReconcileContext{ConfigDB: configDB, Completions: completions, Controller: controller, RootCtx: rootCtx, StartedAt: startedAt}
 	for _, status := range []string{domain.ProjectRunStatusPending, domain.ProjectRunStatusRunning} {
 		if err := reconcilePersistedProjectRunsWithStatus(ctx, reconcile, status); err != nil {
 			return err
@@ -169,6 +172,20 @@ func reconcilePersistedProjectRunsWithStatus(ctx context.Context, reconcile proj
 		offset += len(result.Runs)
 	}
 	for _, run := range staleRuns {
+		if run.Detach && reconcile.Controller != nil {
+			// A detached run survives the daemon that started it: re-attach to
+			// its guest journal and complete it when the task exits instead of
+			// declaring it interrupted. The follower may outlive this startup
+			// reconciliation, so it runs on the daemon root context.
+			run := run
+			go func() {
+				reattachCtx := runs.WithDaemonShutdown(reconcile.RootCtx, reconcile.RootCtx.Done())
+				if _, err := reconcile.Controller.ReattachDetachedRun(reattachCtx, run); err != nil {
+					slog.Warn("failed to re-attach detached project run", "run_id", run.RunID, "error", err)
+				}
+			}()
+			continue
+		}
 		if err := reconcile.Completions.StageInterrupted(ctx, run, staleProjectRunError); err != nil {
 			slog.Warn("failed to stage stale project run completion", "run_id", run.RunID, "error", err)
 		}

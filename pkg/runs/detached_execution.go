@@ -55,6 +55,15 @@ type detachedExecutionResult struct {
 // (the signal attached with WithDaemonShutdown) it disconnects the follower
 // and returns ErrRunDisconnected without terminating the task.
 func executeDetachedCommand(ctx context.Context, opts detachedExecutionOptions) detachedExecutionResult {
+	if result := startDetachedCommand(ctx, opts); result.Err != nil {
+		return result
+	}
+	return followDetachedCommand(ctx, opts)
+}
+
+// startDetachedCommand launches the supervisor in the guest and waits for its
+// ready record (the start exec blocks until the task is detached).
+func startDetachedCommand(ctx context.Context, opts detachedExecutionOptions) detachedExecutionResult {
 	startSpec := execution.BuildDetachStartSpec(opts.Config, opts.ExecutionID, opts.TaskArgs)
 	startSpec.Env = opts.Env
 	if _, err := opts.Runtime.ExecStream(ctx, opts.Sandbox, opts.VMState, startSpec, nil); err != nil {
@@ -63,7 +72,13 @@ func executeDetachedCommand(ctx context.Context, opts detachedExecutionOptions) 
 		}
 		return detachedExecutionResult{Err: fmt.Errorf("start detached execution: %w", err)}
 	}
+	return detachedExecutionResult{}
+}
 
+// followDetachedCommand attaches to a detached task and follows its journal to
+// completion. It assumes the task is already running (startDetachedCommand, or
+// an earlier daemon that is now gone).
+func followDetachedCommand(ctx context.Context, opts detachedExecutionOptions) detachedExecutionResult {
 	follower := newDetachFollower(opts.Writer, opts.PersistCursor)
 	attachCtx, cancelAttach := context.WithCancelCause(context.WithoutCancel(ctx))
 	defer cancelAttach(nil)

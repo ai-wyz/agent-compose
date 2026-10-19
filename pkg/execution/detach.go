@@ -1,6 +1,7 @@
 package execution
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -118,7 +119,7 @@ func ExecResultFromDetachExit(exit DetachExitResult) (domain.ExecResult, error) 
 	case DetachExitStopped:
 		result := domain.ExecResult{ExitCode: exit.ExitCode}
 		if exit.StopReason == DetachStopReasonUser {
-			return result, errors.New("detached execution stopped by user")
+			return result, fmt.Errorf("detached execution stopped by user: %w", context.Canceled)
 		}
 		return result, fmt.Errorf("detached execution stopped by %s", firstNonEmpty(exit.StopReason, "supervisor"))
 	case DetachExitSignal:
