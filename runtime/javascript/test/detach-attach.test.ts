@@ -53,8 +53,8 @@ describe("attachExecution", () => {
 
       expect(exitCode).toBe(7);
       expect(records).toEqual([
-        { t: "out", s: "stdout", text: "hello\n" },
-        { t: "out", s: "stderr", text: "warn\n" },
+        { t: "out", s: "stdout", text: "hello\n", offset: 0 },
+        { t: "out", s: "stderr", text: "warn\n", offset: 6 },
         { t: "exit", code: 7, reason: "completed" },
       ]);
     });
@@ -82,8 +82,8 @@ describe("attachExecution", () => {
       expect(exitCode).toBe(0);
       const outs = records.filter((r) => r.t === "out");
       expect(outs).toEqual([
-        { t: "out", s: "stdout", text: "a\n" },
-        { t: "out", s: "stdout", text: "b\n" },
+        { t: "out", s: "stdout", text: "a\n", offset: 0 },
+        { t: "out", s: "stdout", text: "b\n", offset: 2 },
       ]);
       expect(records.at(-1)).toEqual({ t: "exit", code: 0, reason: "completed" });
     });
@@ -103,7 +103,7 @@ describe("attachExecution", () => {
       await attachExecution({ stateRoot, executionId, from: 6, stdout: sink, pollMs: 10 });
 
       expect(records).toEqual([
-        { t: "out", s: "stdout", text: "6789" },
+        { t: "out", s: "stdout", text: "6789", offset: 6 },
         { t: "exit", code: 0, reason: "completed" },
       ]);
     });
@@ -142,7 +142,7 @@ describe("attachExecution", () => {
 
       expect(records).toEqual([
         { t: "gap", from: 0, to: 100 },
-        { t: "out", s: "stdout", text: "tail" },
+        { t: "out", s: "stdout", text: "tail", offset: 100 },
         { t: "exit", code: 0, reason: "completed" },
       ]);
     });

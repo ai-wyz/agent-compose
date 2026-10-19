@@ -131,7 +131,7 @@ export { executionDir, journalPath, JournalWriter, journalMaxBytes, runSuperviso
 
 function journalToAttach(record: JournalRecord): AttachRecord {
   if (record.kind === "out") {
-    return { t: "out", s: record.stream, text: record.text };
+    return { t: "out", s: record.stream, text: record.text, offset: record.offset };
   }
   return { t: "gap", from: record.from, to: record.to };
 }

@@ -52,7 +52,7 @@ export interface StopRecord {
 
 /** One line the `attach` command writes to its own stdout. */
 export type AttachRecord =
-  | { t: "out"; s: StdioStream; text: string }
+  | { t: "out"; s: StdioStream; text: string; offset: number }
   | { t: "gap"; from: number; to: number }
   | { t: "exit"; code: number; reason: ExitReason; stopReason?: StopReason; signal?: string };
 
