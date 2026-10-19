@@ -126,6 +126,7 @@ type Controller struct {
 	completion          *CompletionManager
 	interactiveSessions *InteractiveSessionManager
 	recorder            *telemetry.Recorder
+	detachCache         *detachCapabilityCache
 }
 
 type llmFacadeTokenDeleter interface {
@@ -192,6 +193,7 @@ func NewController(deps ControllerDependencies) *Controller {
 		completion:          deps.Completion,
 		interactiveSessions: interactiveSessions,
 		recorder:            deps.Recorder,
+		detachCache:         &detachCapabilityCache{},
 	}
 }
 
@@ -624,6 +626,11 @@ func (c *Controller) completeProjectRunCommand(ctx context.Context, sandboxed sa
 		CommandText: commandText,
 		Sink:        sandboxed.Stream,
 	})
+	if errors.Is(execErr, ErrRunDisconnected) {
+		// The daemon is shutting down but the detached task keeps running. Leave
+		// the run running for a later reconciliation to re-attach.
+		return withRunWarnings(run, warnings), nil, nil
+	}
 	if execErr != nil || transition.ExitCode != 0 {
 		run, err := c.completeProjectRunError(sandboxed.TransitionCtx, ctx, transition, execErr)
 		if err != nil {

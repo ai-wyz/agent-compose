@@ -69,7 +69,7 @@ func (s *RunSupervisor) StartRun(ctx context.Context, req runs.RunAgentRequest) 
 	if runs.StatusIsTerminal(started.Run.Status) {
 		return started.Run, nil
 	}
-	execCtx, cancel := context.WithCancelCause(s.root)
+	execCtx, cancel := context.WithCancelCause(runs.WithDaemonShutdown(context.WithoutCancel(s.root), s.root.Done()))
 	s.register(started.Run.RunID, cancel)
 	s.wg.Add(1)
 	go func() {
@@ -134,7 +134,7 @@ func (s *RunSupervisor) Run(ctx context.Context, req runs.RunAgentRequest, strea
 	if runs.StatusIsTerminal(started.Run.Status) {
 		return started.Run, nil, nil
 	}
-	execCtx, cancel := context.WithCancelCause(ctx)
+	execCtx, cancel := context.WithCancelCause(runs.WithDaemonShutdown(ctx, s.root.Done()))
 	s.register(started.Run.RunID, cancel)
 	s.wg.Add(1)
 	defer s.wg.Done()
