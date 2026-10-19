@@ -118,6 +118,34 @@ describe("runSupervisor", () => {
     });
   });
 
+  it("reassembles a multi-byte UTF-8 character split across stdout chunks", async () => {
+    await withTempSession(async (root) => {
+      const stateRoot = path.join(root, "state");
+      const executionId = "ex-utf8";
+      // Write the three bytes of '中' (U+4E2D) as two separate pipe writes so the
+      // decoder must reassemble them across chunks rather than emitting the
+      // replacement character for each half.
+      const script = [
+        "const fs = require('node:fs');",
+        "fs.writeSync(1, Buffer.from([0xe4]));",
+        "setTimeout(() => { fs.writeSync(1, Buffer.from([0xb8, 0xad, 0x0a])); process.exit(0); }, 100);",
+      ].join("\n");
+      await runSupervisor({
+        stateRoot,
+        executionId,
+        nonce: "n5",
+        taskCommand: process.execPath,
+        taskArgs: ["-e", script],
+        pollMs: 10,
+      });
+
+      const records = journalRecordsBeyond(await readRaw(journalPath(stateRoot, executionId)), 0);
+      expect(records).toEqual([
+        { kind: "out", offset: 0, stream: "stdout", text: "中\n" },
+      ]);
+    });
+  });
+
   it("records a signal kill of the task as reason signal", async () => {
     await withTempSession(async (root) => {
       const stateRoot = path.join(root, "state");

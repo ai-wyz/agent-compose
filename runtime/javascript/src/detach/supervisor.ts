@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
 import type { ChildProcess } from "node:child_process";
+import { StringDecoder } from "node:string_decoder";
 import type { ExitRecord, StopReason, StopRecord } from "./contract.js";
 import { journalMaxBytes, stopGraceMs } from "./contract.js";
 import { writeExit, writeReady, readStop } from "./execution-state.js";
@@ -49,11 +50,15 @@ export async function runSupervisor(options: SupervisorOptions): Promise<void> {
 
   const closePromise = waitForClose(task);
   const journal = new JournalWriter(journalPath(stateRoot, executionId), maxBytes);
+  // Decode per stream so a UTF-8 multi-byte sequence split across chunks is
+  // reassembled instead of being written as replacement characters.
+  const stdoutDecoder = new StringDecoder("utf8");
+  const stderrDecoder = new StringDecoder("utf8");
   task.stdout?.on("data", (chunk: Buffer) => {
-    void journal.append("stdout", chunk.toString("utf8"));
+    void journal.append("stdout", stdoutDecoder.write(chunk));
   });
   task.stderr?.on("data", (chunk: Buffer) => {
-    void journal.append("stderr", chunk.toString("utf8"));
+    void journal.append("stderr", stderrDecoder.write(chunk));
   });
 
   await writeReady(stateRoot, executionId, { pid: process.pid, nonce, taskPid: task.pid ?? 0 });
@@ -75,6 +80,17 @@ export async function runSupervisor(options: SupervisorOptions): Promise<void> {
   if (stopRecord !== null) {
     await terminateTask(task, graceMs);
     outcome = await waitForClose(task);
+  }
+
+  // Flush any trailing multi-byte sequence buffered by the decoders so a
+  // truncated final character still lands in the journal before the exit record.
+  const stdoutTail = stdoutDecoder.end();
+  const stderrTail = stderrDecoder.end();
+  if (stdoutTail) {
+    void journal.append("stdout", stdoutTail);
+  }
+  if (stderrTail) {
+    void journal.append("stderr", stderrTail);
   }
 
   await journal.flush();
