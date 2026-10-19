@@ -42,10 +42,14 @@ func (c *Controller) ReattachDetachedRun(ctx context.Context, run domain.Project
 		return run, err
 	}
 
-	runCtx := ctx
+	// The re-attach must survive a daemon shutdown so the task keeps running:
+	// derive from WithoutCancel(ctx) and re-apply only the deadline (if any) and
+	// the shutdown signal carried by the parent. The run context's Done then
+	// fires solely for the deadline, never for shutdown.
+	runCtx := context.WithoutCancel(ctx)
 	if !run.Deadline.IsZero() {
 		var cancel context.CancelFunc
-		runCtx, cancel = context.WithDeadline(ctx, run.Deadline)
+		runCtx, cancel = context.WithDeadline(runCtx, run.Deadline)
 		defer cancel()
 	}
 	runCtx = WithDaemonShutdown(runCtx, daemonShutdownFromContext(ctx))
@@ -53,7 +57,9 @@ func (c *Controller) ReattachDetachedRun(ctx context.Context, run domain.Project
 	artifactsDir := projectRunCommandArtifactsDir(run, sandbox)
 	logsPath := run.LogsPath
 	if logsPath == "" {
-		logsPath = filepath.Join(artifactsDir, "output.txt")
+		// Match the runtime's transcript path so re-attach appends to the same
+		// file the original run was writing, keeping pre-restart output intact.
+		logsPath = projectRunCommandTranscriptPath(run, sandbox)
 	}
 	var sendErr error
 	writer := func(chunk domain.ExecChunk) {

@@ -67,6 +67,12 @@ func startDetachedCommand(ctx context.Context, opts detachedExecutionOptions) de
 	startSpec := execution.BuildDetachStartSpec(opts.Config, opts.ExecutionID, opts.TaskArgs)
 	startSpec.Env = opts.Env
 	if _, err := opts.Runtime.ExecStream(ctx, opts.Sandbox, opts.VMState, startSpec, nil); err != nil {
+		if detachIsShutdown(ctx) {
+			// The daemon shut down before the task detached. Whether or not the
+			// supervisor was spawned, the run must be left running for the next
+			// reconciliation rather than recorded as a terminal failure.
+			return detachedExecutionResult{Err: ErrRunDisconnected}
+		}
 		if ctx.Err() != nil {
 			return detachedExecutionResult{Err: ctx.Err()}
 		}
@@ -96,15 +102,26 @@ func followDetachedCommand(ctx context.Context, opts detachedExecutionOptions) d
 
 	select {
 	case <-ctx.Done():
+		if detachIsShutdown(ctx) {
+			// Daemon shutdown: the detached task keeps running. Disconnect the
+			// follower and surface ErrRunDisconnected instead of terminating it.
+			cancelAttach(ErrRunDisconnected)
+			return <-outcome
+		}
 		reason := detachStopReason(ctx)
 		stopCtx, cancelStop := context.WithTimeout(context.WithoutCancel(ctx), detachStopTimeout)
 		defer cancelStop()
 		stopSpec := execution.BuildDetachStopSpec(opts.Config, opts.ExecutionID, reason)
 		stopSpec.Env = opts.Env
 		if _, stopErr := opts.Runtime.ExecStream(stopCtx, opts.Sandbox, opts.VMState, stopSpec, nil); stopErr != nil {
-			// The stop request could not reach the supervisor. Drop the follower
-			// and report the failure; the caller falls back to marker cleanup.
-			cancelAttach(fmt.Errorf("detached execution stop request failed: %w", stopErr))
+			// The stop request could not reach the supervisor. Terminate the
+			// task's process tree directly by marker so it cannot outlive the
+			// run, then drop the follower with the combined failure.
+			stopErr = fmt.Errorf("detached execution stop request failed: %w", stopErr)
+			if terminateErr := terminateDetachedProcessTree(stopCtx, opts); terminateErr != nil {
+				stopErr = errors.Join(stopErr, terminateErr)
+			}
+			cancelAttach(stopErr)
 		}
 		result := <-outcome
 		result.StopReason = reason
@@ -142,6 +159,46 @@ func detachStopReason(ctx context.Context) string {
 		return execution.DetachStopReasonTimeout
 	}
 	return execution.DetachStopReasonUser
+}
+
+// detachIsShutdown reports whether ctx's cancellation is the daemon shutdown
+// rather than a user stop or timeout. The fresh-run path cancels the exec
+// context with ErrRunDisconnected when the shutdown signal fires; the re-attach
+// path keeps the run context alive and carries the signal as a value, so both
+// are checked.
+func detachIsShutdown(ctx context.Context) bool {
+	if cause := context.Cause(ctx); errors.Is(cause, ErrRunDisconnected) {
+		return true
+	}
+	shutdown, ok := DaemonShutdown(ctx)
+	if !ok {
+		return false
+	}
+	select {
+	case <-shutdown:
+		return true
+	default:
+		return false
+	}
+}
+
+// processTreeTerminator is the optional Runtime capability to terminate a
+// detached task's whole guest process tree by marker once its supervisor can no
+// longer be reached. driverRuntimeAdapter forwards it to drivers that support
+// ProcessTreeTerminator; fakes and unsupported drivers simply do not satisfy it.
+type processTreeTerminator interface {
+	TerminateProcessTree(context.Context, *domain.Sandbox, domain.VMState, string) error
+}
+
+// terminateDetachedProcessTree best-effort terminates the task's guest process
+// tree by execution marker. It is a no-op when the runtime does not support
+// marker-based termination.
+func terminateDetachedProcessTree(ctx context.Context, opts detachedExecutionOptions) error {
+	terminator, ok := opts.Runtime.(processTreeTerminator)
+	if !ok {
+		return nil
+	}
+	return terminator.TerminateProcessTree(ctx, opts.Sandbox, opts.VMState, opts.ExecutionID)
 }
 
 // executeDetachedProjectRunCommand runs a project-run command task behind the
@@ -293,8 +350,14 @@ func (f *detachFollower) result(execErr error, attachCtx context.Context) detach
 	if f.exit == nil {
 		result.ExitCode = -1
 		if execErr != nil {
-			if cause := context.Cause(attachCtx); errors.Is(cause, ErrRunDisconnected) {
+			cause := context.Cause(attachCtx)
+			if errors.Is(cause, ErrRunDisconnected) {
 				return detachedExecutionResult{Result: result, Err: ErrRunDisconnected}
+			}
+			// Surface a specific cancellation cause (e.g. a failed stop request)
+			// rather than masking it behind the attach exec's context.Canceled.
+			if cause != nil && !errors.Is(cause, context.Canceled) && !errors.Is(cause, context.DeadlineExceeded) {
+				return detachedExecutionResult{Result: result, Err: cause}
 			}
 			return detachedExecutionResult{Result: result, Err: execErr}
 		}

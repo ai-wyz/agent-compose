@@ -32,7 +32,7 @@ type projectRunCommandExecution struct {
 func (c *Controller) executeProjectRunCommand(ctx context.Context, exec projectRunCommandExecution) (TransitionRequest, error) {
 	run, sandbox, req, commandText, sink := exec.Run, exec.Sandbox, exec.Request, exec.CommandText, exec.Sink
 	artifactsDir := projectRunCommandArtifactsDir(run, sandbox)
-	logsPath := filepath.Join(artifactsDir, "transcript.txt")
+	logsPath := projectRunCommandTranscriptPath(run, sandbox)
 	transition := TransitionRequest{RunID: run.RunID, SandboxID: sandbox.Summary.ID, LogsPath: logsPath}
 	if c.store == nil || c.runtime == nil {
 		err := fmt.Errorf("command runtime dependencies are required")

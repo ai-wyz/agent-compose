@@ -129,4 +129,9 @@ func TestReattachDetachedRunFollowsJournalAndCompletes(t *testing.T) {
 	if got.Status != domain.ProjectRunStatusSucceeded || got.ExitCode != 0 {
 		t.Fatalf("run = %+v, want succeeded", got)
 	}
+	// Re-attach must append to the same transcript the live run was writing, not
+	// a fresh output.txt, so pre-restart output stays in the run log.
+	if filepath.Base(got.LogsPath) != "transcript.txt" {
+		t.Fatalf("LogsPath = %q, want transcript.txt", got.LogsPath)
+	}
 }
