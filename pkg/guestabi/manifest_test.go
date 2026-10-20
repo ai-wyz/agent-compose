@@ -135,14 +135,14 @@ func TestVerifyCompatible(t *testing.T) {
 func TestLoadFile(t *testing.T) {
 	t.Run("loads a valid manifest", func(t *testing.T) {
 		path := filepath.Join(t.TempDir(), "guest-abi.json")
-		if err := os.WriteFile(path, []byte(`{"guestAbi":1,"providers":{"pi":{"version":"0.82.1"}}}`), 0o600); err != nil {
+		if err := os.WriteFile(path, []byte(`{"guestAbi":1,"providers":{"pi":{"version":"1.3.0"}}}`), 0o600); err != nil {
 			t.Fatalf("write manifest: %v", err)
 		}
 		manifest, err := LoadFile(path)
 		if err != nil {
 			t.Fatalf("LoadFile() error = %v", err)
 		}
-		if manifest.GuestAbi != CurrentGuestAbi || manifest.Providers["pi"].Version != "0.82.1" {
+		if manifest.GuestAbi != CurrentGuestAbi || manifest.Providers["pi"].Version != "1.3.0" {
 			t.Fatalf("LoadFile() = %+v, want the manifest on disk", manifest)
 		}
 	})

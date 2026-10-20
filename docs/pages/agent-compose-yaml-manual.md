@@ -454,6 +454,12 @@ mcp_servers:
 | `args` | string[] | Forbidden | A remote MCP does not accept command arguments. |
 | `env` | map | Forbidden | A remote MCP does not accept process environment values. |
 
+The Pi provider in the default guest supports remote MCP servers over streamable
+HTTP only; it does not support the legacy SSE transport. Declare remote servers
+used by Pi with `transport: http`; declaring `transport: sse` fails the Pi run
+with an unsupported-transport error instead of silently treating the server as
+HTTP.
+
 Project MCP definitions are not injected into every agent automatically. Each agent selects or defines the servers it needs under its own `mcp_servers` field.
 
 ## `octobus_servers`: project OctoBus servers

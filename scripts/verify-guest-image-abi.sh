@@ -49,7 +49,7 @@ else
   # A provider version that differs from the lock means the image was built from
   # different pins than the checkout claims, which is exactly the drift the lock
   # exists to prevent. Only packages that ship an agent executable are compared:
-  # companions such as pi-mcp-adapter are build inputs, and the manifest
+  # companion packages are build inputs, and the manifest
   # deliberately omits them.
   while IFS=$'\t' read -r kind want; do
     got=$(jq -r --arg kind "$kind" '.providers[$kind].version // ""' <<<"$manifest")

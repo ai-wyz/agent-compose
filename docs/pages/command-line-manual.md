@@ -1064,7 +1064,7 @@ automatically deployed.
 | Claude Code 2.1.304 | Metrics and logs/events; beta traces are not enabled |
 | OpenCode 1.18.9 | Infrastructure logs and traces; LLM spans require content opt-in |
 | DeepSeek Harness | FULL session logs only with content opt-in and a backend that actually exports `SessionTelemetryMode.FULL` |
-| Pi 0.82.1 | No integrated official native exporter; a runtime warning is emitted and collector credentials are not passed to Pi |
+| Pi 1.3.0 | No integrated official native exporter; a runtime warning is emitted and collector credentials are not passed to Pi |
 
 All native signals listed for a provider are enabled together; there is no
 per-signal selector in this initial integration. The same endpoint also makes the
@@ -1091,10 +1091,10 @@ on spans and events, so metrics never become a per-run identity store.
 
 Daemon instrumentation records operation status only: the daemon never synthesizes
 spans from agent-compose's event stream, and never exports prompt, tool, or error
-text. Pi's
-[official observability design](https://github.com/badlogic/pi-mono/blob/v0.82.1/packages/agent/docs/observability.md)
-describes external listeners and a possible future OTel package, not a shipped
-exporter. Its `PI_TELEMETRY` switch controls installation statistics, not OTLP.
+text. Pi 1.3.0 ships no integrated OTLP exporter. Its
+[environment-variable reference](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/environment-variables.md)
+documents `PI_TELEMETRY` as installation and update statistics, not an OTLP
+switch.
 
 An empty endpoint disables daemon-managed export. Explicit native settings supplied
 by the guest/user remain native settings; disabling this feature does not erase

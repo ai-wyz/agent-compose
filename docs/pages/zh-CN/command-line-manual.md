@@ -1038,7 +1038,7 @@ collector 还必须从 **daemon 主机**可达。系统不会自动部署 collec
 | Claude Code 2.1.304 | metrics、logs/events；不启用 beta traces |
 | OpenCode 1.18.9 | 基础运行 logs 和 traces；LLM spans 需要显式开启内容采集 |
 | DeepSeek Harness | 仅在开启内容采集且实际 backend 导出 `SessionTelemetryMode.FULL` 时导出 FULL 会话 logs |
-| Pi 0.82.1 | 尚无已集成的官方原生 exporter；runtime 提示后继续执行，不向 Pi 传递 collector 凭证 |
+| Pi 1.3.0 | 尚无已集成的官方原生 exporter；runtime 提示后继续执行，不向 Pi 传递 collector 凭证 |
 
 此初版同时启用表中 provider 支持的信号，没有单独的信号选择器。同一地址还使 daemon 导出
 自身的 OTLP/HTTP traces 与 metrics：每个 daemon RPC 一个 server span，每次执行（流式与
@@ -1060,10 +1060,9 @@ run 状态）；run、project、agent 标识只保留在 span 与事件中，因
 身份存储。
 
 daemon 插桩只记录操作状态：daemon 不把 agent-compose 事件流转换为 spans，也不导出
-prompt、工具或错误文本。Pi 的
-[官方 observability 设计](https://github.com/badlogic/pi-mono/blob/v0.82.1/packages/agent/docs/observability.md)
-描述了外部监听器及可能的未来 OTel 包，并非已发布的 exporter；其 `PI_TELEMETRY` 开关
-控制安装统计，不是 OTLP。
+prompt、工具或错误文本。Pi 1.3.0 没有已集成的 OTLP exporter；其
+[环境变量参考](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/environment-variables.md)
+说明 `PI_TELEMETRY` 控制安装与更新统计，不是 OTLP 开关。
 
 endpoint 为空时关闭 daemon 管理的导出，但不会删除用户在 guest 中自行配置的原生遥测设置。
 启用时，受支持 provider 继承的 `OTEL_*` 地址、headers 和 beta tracing 地址会被替换，
