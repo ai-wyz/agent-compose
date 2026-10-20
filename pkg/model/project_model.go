@@ -177,6 +177,10 @@ type ProjectRunRecord struct {
 	// and can be re-attached after a daemon restart instead of being declared
 	// interrupted.
 	Detach bool `json:"detach,omitempty"`
+	// DetachKind is what the detached task runs, so a restarted daemon knows
+	// how to finish it: DetachKindCommand or DetachKindAgent. Empty on a
+	// detached run means command, the only kind before agent runs detached.
+	DetachKind string `json:"detach_kind,omitempty"`
 	// Deadline is the absolute run deadline, persisted so a restarted daemon
 	// can re-arm the run's timeout without the original in-memory timer.
 	Deadline time.Time `json:"deadline,omitempty"`
@@ -186,6 +190,11 @@ type ProjectRunRecord struct {
 	// write for the store layer to persist into project_run_label.
 	Labels map[string]string `json:"labels,omitempty"`
 }
+
+const (
+	DetachKindCommand = "command"
+	DetachKindAgent   = "agent"
+)
 
 // ProjectRunCompletionRecord is the durable intent to finish a run after its
 // sandbox lifecycle action succeeds. TransitionJSON preserves the exact

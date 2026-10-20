@@ -66,8 +66,8 @@ func (r *detachRecordingRuntime) seen() []string {
 	return append([]string(nil), r.commands...)
 }
 
-func detachTestOptions(rt Runtime) detachedExecutionOptions {
-	return detachedExecutionOptions{
+func detachTestOptions(rt Runtime) DetachedTask {
+	return DetachedTask{
 		Config:      &config.Config{},
 		Runtime:     rt,
 		Sandbox:     &domain.Sandbox{},

@@ -189,7 +189,7 @@ func TestFollowDetachedCommandDoesNotStopOnShutdown(t *testing.T) {
 	defer cancel()
 
 	rt := &detachStopFakeRuntime{}
-	opts := detachedExecutionOptions{
+	opts := DetachedTask{
 		Config:      &config.Config{},
 		Runtime:     rt,
 		Sandbox:     &domain.Sandbox{},
@@ -214,7 +214,7 @@ func TestFollowDetachedCommandDoesNotStopOnShutdown(t *testing.T) {
 func TestFollowDetachedCommandTerminatesTreeWhenStopFails(t *testing.T) {
 	rt := &detachStopFakeRuntime{stopErr: errors.New("stop failed")}
 	ctx, cancel := context.WithCancel(context.Background())
-	opts := detachedExecutionOptions{
+	opts := DetachedTask{
 		Config:      &config.Config{},
 		Runtime:     rt,
 		Sandbox:     &domain.Sandbox{},
@@ -283,7 +283,7 @@ func TestFollowDetachedCommandTerminatesTreeWithFreshContextAfterStopTimeout(t *
 
 	rt := &detachStopFakeRuntime{stopBlocks: true}
 	ctx, cancel := context.WithCancel(context.Background())
-	opts := detachedExecutionOptions{
+	opts := DetachedTask{
 		Config:      &config.Config{},
 		Runtime:     rt,
 		Sandbox:     &domain.Sandbox{},

@@ -28,8 +28,9 @@ var detachStopTimeout = 30 * time.Second
 // execution's guest state.
 var detachCleanupTimeout = 10 * time.Second
 
-// detachedExecutionOptions bundles the inputs for a detached command run.
-type detachedExecutionOptions struct {
+// DetachedTask describes a guest task run behind the detach supervisor: a
+// project command or agent run, fresh or re-attached after a daemon restart.
+type DetachedTask struct {
 	Config      *appconfig.Config
 	Runtime     Runtime
 	Sandbox     *domain.Sandbox
@@ -42,8 +43,15 @@ type detachedExecutionOptions struct {
 	// TaskTimeout is the remaining run timeout handed to the supervisor so it
 	// can stop the task on its own while no daemon is attached; 0 disables it.
 	TaskTimeout time.Duration
-	// Cursor is the journal offset to resume from (0 for a fresh run).
+	// Cursor is the journal offset to resume from (0 for a fresh run). Output
+	// before it was already delivered and is not forwarded again.
 	Cursor uint64
+	// ReplayAll attaches from the start of the journal instead of Cursor, so
+	// the result is rebuilt from the whole output while records before Cursor
+	// are still not forwarded. A re-attached agent run needs it: its result
+	// payload may be before the cursor when the daemon stopped between the
+	// payload and the exit record.
+	ReplayAll bool
 	// Writer forwards task output chunks to the run log; may be nil.
 	Writer func(domain.ExecChunk)
 	// PersistCursor records the highest consumed journal offset so a restart
@@ -64,7 +72,7 @@ type detachedExecutionResult struct {
 // request to the supervisor and waits for the exit record; on daemon shutdown
 // (the signal attached with WithDaemonShutdown) it disconnects the follower
 // and returns ErrRunDisconnected without terminating the task.
-func executeDetachedCommand(ctx context.Context, opts detachedExecutionOptions) detachedExecutionResult {
+func executeDetachedCommand(ctx context.Context, opts DetachedTask) detachedExecutionResult {
 	if result := startDetachedCommand(ctx, opts); result.Err != nil {
 		return result
 	}
@@ -73,7 +81,7 @@ func executeDetachedCommand(ctx context.Context, opts detachedExecutionOptions) 
 
 // startDetachedCommand launches the supervisor in the guest and waits for its
 // ready record (the start exec blocks until the task is detached).
-func startDetachedCommand(ctx context.Context, opts detachedExecutionOptions) detachedExecutionResult {
+func startDetachedCommand(ctx context.Context, opts DetachedTask) detachedExecutionResult {
 	startSpec := execution.BuildDetachStartSpec(opts.Config, opts.ExecutionID, opts.TaskTimeout, opts.TaskArgs)
 	startSpec.Env = opts.Env
 	if _, err := opts.Runtime.ExecStream(ctx, opts.Sandbox, opts.VMState, startSpec, nil); err != nil {
@@ -96,7 +104,7 @@ func startDetachedCommand(ctx context.Context, opts detachedExecutionOptions) de
 // an earlier daemon that is now gone). Once the run is over for the daemon it
 // removes the execution's guest state; after a disconnect it keeps it so the
 // next daemon can resume.
-func followDetachedCommand(ctx context.Context, opts detachedExecutionOptions) detachedExecutionResult {
+func followDetachedCommand(ctx context.Context, opts DetachedTask) detachedExecutionResult {
 	result := followDetachedJournal(ctx, opts)
 	if !errors.Is(result.Err, ErrRunDisconnected) {
 		cleanupDetachedExecution(ctx, opts)
@@ -108,7 +116,7 @@ func followDetachedCommand(ctx context.Context, opts detachedExecutionOptions) d
 // state records from the guest. The guest refuses while the task still runs
 // (e.g. a stop that never landed), and any failure is left to the guest's
 // retention-based pruning.
-func cleanupDetachedExecution(ctx context.Context, opts detachedExecutionOptions) {
+func cleanupDetachedExecution(ctx context.Context, opts DetachedTask) {
 	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), detachCleanupTimeout)
 	defer cancel()
 	spec := execution.BuildDetachCleanupSpec(opts.Config, opts.ExecutionID)
@@ -116,13 +124,18 @@ func cleanupDetachedExecution(ctx context.Context, opts detachedExecutionOptions
 	_, _ = opts.Runtime.ExecStream(cleanupCtx, opts.Sandbox, opts.VMState, spec, nil)
 }
 
-func followDetachedJournal(ctx context.Context, opts detachedExecutionOptions) detachedExecutionResult {
+func followDetachedJournal(ctx context.Context, opts DetachedTask) detachedExecutionResult {
 	follower := newDetachFollower(opts.Writer, opts.PersistCursor)
+	follower.forwardFrom = opts.Cursor
+	attachFrom := opts.Cursor
+	if opts.ReplayAll {
+		attachFrom = 0
+	}
 	attachCtx, cancelAttach := context.WithCancelCause(context.WithoutCancel(ctx))
 	defer cancelAttach(nil)
 	attachStop := detachAttachShutdownWatcher(attachCtx, cancelAttach, ctx)
 
-	attachSpec := execution.BuildDetachAttachSpec(opts.Config, opts.ExecutionID, opts.Cursor)
+	attachSpec := execution.BuildDetachAttachSpec(opts.Config, opts.ExecutionID, attachFrom)
 	attachSpec.Env = opts.Env
 
 	outcome := make(chan detachedExecutionResult, 1)
@@ -230,7 +243,7 @@ type processTreeTerminator interface {
 // terminateDetachedProcessTree best-effort terminates the task's guest process
 // tree by execution marker. It is a no-op when the runtime does not support
 // marker-based termination.
-func terminateDetachedProcessTree(ctx context.Context, opts detachedExecutionOptions) error {
+func terminateDetachedProcessTree(ctx context.Context, opts DetachedTask) error {
 	terminator, ok := opts.Runtime.(processTreeTerminator)
 	if !ok {
 		return nil
@@ -245,7 +258,8 @@ func terminateDetachedProcessTree(ctx context.Context, opts detachedExecutionOpt
 func (c *Controller) executeDetachedProjectRunCommand(ctx context.Context, input detachedRunCommand) (domain.ExecResult, error) {
 	run := input.Run
 	executionID := newDetachExecutionID(run)
-	if err := c.persistDetachedRunFields(ctx, run, executionID); err != nil {
+	deadline, _ := ctx.Deadline()
+	if err := c.persistDetachedRunFields(ctx, run, executionID, domain.DetachKindCommand, deadline); err != nil {
 		return domain.ExecResult{}, fmt.Errorf("persist detached run fields: %w", err)
 	}
 	artifactsDir := projectRunCommandArtifactsDir(run, input.Sandbox)
@@ -254,7 +268,7 @@ func (c *Controller) executeDetachedProjectRunCommand(ctx context.Context, input
 	env["AGENT_COMPOSE_RUN_ID"] = run.RunID
 	env["AGENT_COMPOSE_PROJECT_ID"] = run.ProjectID
 
-	result := executeDetachedCommand(ctx, detachedExecutionOptions{
+	result := executeDetachedCommand(ctx, DetachedTask{
 		Config:      c.config,
 		Runtime:     input.Runtime,
 		Sandbox:     input.Sandbox,
@@ -304,6 +318,10 @@ type detachFollower struct {
 	stderr strings.Builder
 	output strings.Builder
 	cursor uint64
+	// forwardFrom is the offset below which output was already delivered by
+	// an earlier daemon: it still counts towards the result but is not
+	// forwarded or re-persisted.
+	forwardFrom uint64
 }
 
 func newDetachFollower(writer func(domain.ExecChunk), persist func(uint64) error) *detachFollower {
@@ -366,6 +384,9 @@ func (f *detachFollower) handleLine(line string) {
 	case record.IsOut():
 		f.appendOut(record)
 	case record.Type == "gap":
+		if record.To <= f.forwardFrom {
+			return
+		}
 		if record.To > f.cursor {
 			f.cursor = record.To
 		}
@@ -384,10 +405,18 @@ func (f *detachFollower) appendOut(record execution.DetachAttachRecord) {
 		f.stderr.WriteString(record.Text)
 	}
 	f.output.WriteString(record.Text)
-	if end := record.Offset + uint64(len(record.Text)); end > f.cursor {
+	end := record.Offset + uint64(len(record.Text))
+	if end <= f.forwardFrom {
+		return
+	}
+	text := record.Text
+	if record.Offset < f.forwardFrom {
+		text = text[f.forwardFrom-record.Offset:]
+	}
+	if end > f.cursor {
 		f.cursor = end
 	}
-	f.queued = append(f.queued, domain.ExecChunk{Stream: stream, Text: record.Text})
+	f.queued = append(f.queued, domain.ExecChunk{Stream: stream, Text: text})
 }
 
 func (f *detachFollower) persistCursor() {
@@ -463,6 +492,26 @@ func remainingTimeout(ctx context.Context) time.Duration {
 		return remaining
 	}
 	return time.Millisecond
+}
+
+// ExecuteDetachedTask starts task behind the guest supervisor and follows it
+// to completion. On daemon shutdown it returns ErrRunDisconnected and leaves
+// the task running; the caller must then leave the run running too.
+func ExecuteDetachedTask(ctx context.Context, task DetachedTask) (domain.ExecResult, error) {
+	result := executeDetachedCommand(ctx, task)
+	return result.Result, result.Err
+}
+
+// FollowDetachedTask re-attaches to a task started by an earlier daemon.
+func FollowDetachedTask(ctx context.Context, task DetachedTask) (domain.ExecResult, error) {
+	result := followDetachedCommand(ctx, task)
+	return result.Result, result.Err
+}
+
+// RemainingTimeout returns the time left before ctx's deadline, or 0 when ctx
+// has none. Callers hand it to the supervisor as DetachedTask.TaskTimeout.
+func RemainingTimeout(ctx context.Context) time.Duration {
+	return remainingTimeout(ctx)
 }
 
 // truncateUTF8 returns at most limit bytes of s without splitting a rune.

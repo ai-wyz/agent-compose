@@ -79,15 +79,20 @@ func (c *Controller) detachSupported(ctx context.Context, runtime Runtime, sandb
 // persistDetachedRunFields records the detach decision on the run before the
 // detached task starts, so a restarted daemon can re-attach it and re-arm its
 // deadline.
-func (c *Controller) persistDetachedRunFields(ctx context.Context, run domain.ProjectRunRecord, executionID string) error {
+func (c *Controller) persistDetachedRunFields(ctx context.Context, run domain.ProjectRunRecord, executionID, kind string, deadline time.Time) error {
 	if c.configDB == nil {
 		return nil
 	}
+	// Write onto the stored record, not the caller's snapshot: the run may
+	// have moved on since (an agent run records its cell log path when the
+	// cell starts), and re-attach needs those fields too.
+	if current, err := c.configDB.GetProjectRun(ctx, run.RunID); err == nil {
+		run = current
+	}
 	run.ExecutionID = executionID
 	run.Detach = true
-	if deadline, ok := ctx.Deadline(); ok {
-		run.Deadline = deadline
-	}
+	run.DetachKind = kind
+	run.Deadline = deadline
 	_, err := c.configDB.UpdateProjectRun(ctx, run)
 	return err
 }
@@ -100,7 +105,13 @@ func detachCursorFile(artifactsDir string) string {
 }
 
 func readDetachCursor(artifactsDir string) uint64 {
-	data, err := os.ReadFile(detachCursorFile(artifactsDir))
+	return ReadDetachCursorFile(detachCursorFile(artifactsDir))
+}
+
+// ReadDetachCursorFile returns the journal offset recorded in path, or 0 when
+// none was recorded yet.
+func ReadDetachCursorFile(path string) uint64 {
+	data, err := os.ReadFile(path)
 	if err != nil {
 		return 0
 	}
@@ -109,7 +120,11 @@ func readDetachCursor(artifactsDir string) uint64 {
 }
 
 func writeDetachCursor(artifactsDir string, offset uint64) error {
-	path := detachCursorFile(artifactsDir)
+	return WriteDetachCursorFile(detachCursorFile(artifactsDir), offset)
+}
+
+// WriteDetachCursorFile atomically records offset in path.
+func WriteDetachCursorFile(path string, offset uint64) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}

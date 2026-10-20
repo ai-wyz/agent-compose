@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"strings"
 
 	"github.com/chaitin/agent-compose/pkg/execution"
 	domain "github.com/chaitin/agent-compose/pkg/model"
@@ -55,6 +56,9 @@ func (c *Controller) ReattachDetachedRun(ctx context.Context, run domain.Project
 		runCtx, cancel = context.WithDeadline(runCtx, run.Deadline)
 		defer cancel()
 	}
+	if run.DetachKind == domain.DetachKindAgent {
+		return c.reattachDetachedAgentRun(transitionCtx, runCtx, run, sandbox)
+	}
 
 	artifactsDir := projectRunCommandArtifactsDir(run, sandbox)
 	logsPath := run.LogsPath
@@ -84,7 +88,7 @@ func (c *Controller) ReattachDetachedRun(ctx context.Context, run domain.Project
 	env["AGENT_COMPOSE_RUN_ID"] = run.RunID
 	env["AGENT_COMPOSE_PROJECT_ID"] = run.ProjectID
 
-	result := followDetachedCommand(runCtx, detachedExecutionOptions{
+	result := followDetachedCommand(runCtx, DetachedTask{
 		Config:      c.config,
 		Runtime:     runtime,
 		Sandbox:     sandbox,
@@ -123,4 +127,61 @@ func (c *Controller) ReattachDetachedRun(ctx context.Context, run domain.Project
 	}
 	transition.Status = domain.ProjectRunStatusSucceeded
 	return c.completeProjectRun(transitionCtx, transition)
+}
+
+// agentResumer is the optional AgentExecutor capability to finish a detached
+// agent run started by an earlier daemon.
+type agentResumer interface {
+	ResumeAgentRequest(context.Context, *domain.Sandbox, execution.ResumeAgentRequest) (domain.NotebookCell, domain.SandboxEvent, domain.SandboxEvent, error)
+}
+
+// reattachDetachedAgentRun resumes a detached agent run: the executor
+// re-attaches to the journal, appends the missed output to the run's cell
+// log, and finishes the cell; the run is then finished from the cell as a
+// fresh run would be.
+func (c *Controller) reattachDetachedAgentRun(transitionCtx, runCtx context.Context, run domain.ProjectRunRecord, sandbox *domain.Sandbox) (domain.ProjectRunRecord, error) {
+	fail := func(reason string) (domain.ProjectRunRecord, error) {
+		transition := TransitionRequest{RunID: run.RunID, SandboxID: run.SandboxID, ExitCode: 1, Output: run.Output, LogsPath: run.LogsPath, Error: reason}
+		return c.completeProjectRunError(transitionCtx, runCtx, transition, errors.New(reason))
+	}
+	resumer, ok := c.executor.(agentResumer)
+	if !ok {
+		return fail("detached agent run cannot be resumed: executor does not support resume")
+	}
+	cellID := agentCellIDFromLogsPath(run.LogsPath)
+	if cellID == "" {
+		return fail("detached agent run cannot be resumed: run has no agent cell")
+	}
+	cell, _, assistantEvent, execErr := resumer.ResumeAgentRequest(runCtx, sandbox, execution.ResumeAgentRequest{
+		RunID:       run.RunID,
+		CellID:      cellID,
+		ExecutionID: run.ExecutionID,
+		Stream: projectRunAgentExecutionStream(transitionCtx, agentExecutionStreamRequest{
+			Run:     run,
+			Sandbox: sandbox,
+			Hub:     c.runLogs,
+		}),
+	})
+	if errors.Is(execErr, ErrRunDisconnected) {
+		// Shut down again while following; leave the run running.
+		return run, nil
+	}
+	return c.finishProjectRunAgent(transitionCtx, runCtx, agentRunOutcome{
+		Run: run, Sandbox: sandbox, Cell: cell, Assistant: assistantEvent, ExecErr: execErr,
+	})
+}
+
+// agentCellIDFromLogsPath recovers the agent cell id from the run's log path,
+// which an agent run points at its cell's output file
+// (<sandbox>/state/cells/<cell-id>/output.txt) when the cell starts.
+func agentCellIDFromLogsPath(logsPath string) string {
+	logsPath = strings.TrimSpace(logsPath)
+	if logsPath == "" || filepath.Base(logsPath) != "output.txt" {
+		return ""
+	}
+	cellDir := filepath.Dir(logsPath)
+	if filepath.Base(filepath.Dir(cellDir)) != "cells" {
+		return ""
+	}
+	return filepath.Base(cellDir)
 }
