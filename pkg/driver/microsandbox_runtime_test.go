@@ -3,7 +3,9 @@
 package driver
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"os/exec"
@@ -616,6 +618,102 @@ func TestMicrosandboxPrepareEnvironmentPreservesDockerDisks(t *testing.T) {
 	}
 }
 
+// The SDK resolves sandbox runtimes from MSB_HOME, which agent-compose points
+// at MicrosandboxHome. Installing the mounted pair under the process user's
+// ~/.microsandbox leaves that home without a resolvable pair, so every sandbox
+// start fails with "microsandbox runtime is not installed".
+func TestMicrosandboxPrepareEnvironmentInstallsRuntimeIntoHome(t *testing.T) {
+	config := testMicrosandboxConfig(t)
+	runtime := &microsandboxRuntime{config: config}
+	installFakeMicrosandboxDiskTools(t, filepath.Dir(config.MicrosandboxMSBPath))
+	sourceLib := filepath.Join(filepath.Dir(config.MicrosandboxLibPath), "libkrunfw.so.5.2.1")
+	t.Setenv("MSB_PATH", filepath.Join(t.TempDir(), "stale-msb"))
+	t.Setenv("MSB_LIBKRUNFW_PATH", filepath.Join(t.TempDir(), "stale-libkrunfw.so"))
+
+	runtimeConfig, err := runtime.prepareEnvironment()
+	if err != nil {
+		t.Fatalf("prepareEnvironment: %v", err)
+	}
+
+	installedMSB := filepath.Join(config.MicrosandboxHome, "bin", "msb")
+	assertMicrosandboxFileContent(t, installedMSB, config.MicrosandboxMSBPath)
+	info, err := os.Stat(installedMSB)
+	if err != nil {
+		t.Fatalf("stat installed msb: %v", err)
+	}
+	if info.Mode().Perm()&0o111 == 0 {
+		t.Fatalf("installed msb mode = %v, want an executable", info.Mode().Perm())
+	}
+	if got := os.Getenv("MSB_PATH"); got != installedMSB {
+		t.Fatalf("MSB_PATH = %q, want the installed msb %q", got, installedMSB)
+	}
+
+	installedLib := filepath.Join(config.MicrosandboxHome, "lib", filepath.Base(sourceLib))
+	assertMicrosandboxFileContent(t, installedLib, sourceLib)
+	if got := os.Getenv("MSB_LIBKRUNFW_PATH"); got != installedLib {
+		t.Fatalf("MSB_LIBKRUNFW_PATH = %q, want the installed libkrunfw %q", got, installedLib)
+	}
+	for link, target := range map[string]string{
+		"libkrunfw.so.5": filepath.Base(sourceLib),
+		"libkrunfw.so":   "libkrunfw.so.5",
+	} {
+		path := filepath.Join(config.MicrosandboxHome, "lib", link)
+		got, err := os.Readlink(path)
+		if err != nil {
+			t.Fatalf("readlink %s: %v", path, err)
+		}
+		if got != target {
+			t.Fatalf("%s -> %s, want %s", path, got, target)
+		}
+	}
+
+	userHome, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatalf("resolve user home: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(userHome, ".microsandbox")); !os.IsNotExist(err) {
+		t.Fatalf("prepareEnvironment wrote the default microsandbox home: %v", err)
+	}
+
+	payload := readMicrosandboxConfig(t, filepath.Join(config.MicrosandboxHome, "config.json"))
+	if payload.Home != config.MicrosandboxHome {
+		t.Fatalf("config home = %q, want %q", payload.Home, config.MicrosandboxHome)
+	}
+	if payload.Paths["msb"] != installedMSB {
+		t.Fatalf("config paths.msb = %q, want %q", payload.Paths["msb"], installedMSB)
+	}
+	if payload.Paths["libkrunfw"] != installedLib {
+		t.Fatalf("config paths.libkrunfw = %q, want %q", payload.Paths["libkrunfw"], installedLib)
+	}
+	if runtimeConfig != (microsandbox.RuntimeConfig{Home: config.MicrosandboxHome}) {
+		t.Fatalf("resolve config = %+v, want only the microsandbox home", runtimeConfig)
+	}
+}
+
+// A runtime mount that only carries the soname link has no released filename
+// for the SDK's home resolver, so prepareEnvironment must fail before it
+// publishes a broken home instead of copying the link onto itself.
+func TestMicrosandboxPrepareEnvironmentRejectsSonameOnlyLibkrunfw(t *testing.T) {
+	config := testMicrosandboxConfig(t)
+	runtime := &microsandboxRuntime{config: config}
+	installFakeMicrosandboxDiskTools(t, filepath.Dir(config.MicrosandboxMSBPath))
+	libDir := filepath.Dir(config.MicrosandboxLibPath)
+	if err := os.Remove(filepath.Join(libDir, "libkrunfw.so.5.2.1")); err != nil {
+		t.Fatalf("remove versioned libkrunfw fixture: %v", err)
+	}
+	soname := filepath.Join(libDir, "libkrunfw.so.5")
+	if err := os.WriteFile(soname, []byte("krun"), 0o644); err != nil {
+		t.Fatalf("write soname-only libkrunfw: %v", err)
+	}
+
+	if _, err := runtime.prepareEnvironment(); err == nil {
+		t.Fatal("prepareEnvironment accepted a soname-only libkrunfw")
+	}
+	if _, err := os.Lstat(filepath.Join(config.MicrosandboxHome, "lib", "libkrunfw.so.5")); !os.IsNotExist(err) {
+		t.Fatalf("prepareEnvironment published a self-referential home link: %v", err)
+	}
+}
+
 func TestMicrosandboxCreateMountsUseRootfsForDockerData(t *testing.T) {
 	config := testMicrosandboxConfig(t)
 	runtime := &microsandboxRuntime{config: config}
@@ -703,6 +801,39 @@ func writeMicrosandboxFile(t *testing.T, root string, parts ...string) string {
 		t.Fatalf("write %s: %v", path, err)
 	}
 	return path
+}
+
+func assertMicrosandboxFileContent(t *testing.T, got string, want string) {
+	t.Helper()
+	gotContent, err := os.ReadFile(got)
+	if err != nil {
+		t.Fatalf("read %s: %v", got, err)
+	}
+	wantContent, err := os.ReadFile(want)
+	if err != nil {
+		t.Fatalf("read %s: %v", want, err)
+	}
+	if !bytes.Equal(gotContent, wantContent) {
+		t.Fatalf("%s does not match the mounted artifact %s", got, want)
+	}
+}
+
+type microsandboxConfigFile struct {
+	Home  string            `json:"home"`
+	Paths map[string]string `json:"paths"`
+}
+
+func readMicrosandboxConfig(t *testing.T, path string) microsandboxConfigFile {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	var payload microsandboxConfigFile
+	if err := json.Unmarshal(data, &payload); err != nil {
+		t.Fatalf("decode %s: %v", path, err)
+	}
+	return payload
 }
 
 func installFakeMicrosandboxDiskTools(t *testing.T, binDir string) {

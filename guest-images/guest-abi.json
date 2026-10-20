@@ -2,7 +2,7 @@
   "guestAbi": 1,
   "providers": {
     "codex": {
-      "version": "0.146.0",
+      "version": "0.163.0",
       "features": [
         "structured_output",
         "session_resume",
@@ -10,7 +10,7 @@
       ]
     },
     "claude": {
-      "version": "2.1.220",
+      "version": "2.1.304",
       "features": [
         "structured_output",
         "session_resume",

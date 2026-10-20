@@ -1034,8 +1034,8 @@ collector 还必须从 **daemon 主机**可达。系统不会自动部署 collec
 
 | 默认 guest 中的 provider | 受管理的原生导出 |
 | --- | --- |
-| Codex 0.146.0 | logs、traces、metrics；通过每次调用的 SDK 配置覆盖启用 |
-| Claude Code 2.1.220 | metrics、logs/events；不启用 beta traces |
+| Codex 0.163.0 | logs、traces、metrics；通过每次调用的 SDK 配置覆盖启用 |
+| Claude Code 2.1.304 | metrics、logs/events；不启用 beta traces |
 | OpenCode 1.18.9 | 基础运行 logs 和 traces；LLM spans 需要显式开启内容采集 |
 | DeepSeek Harness | 仅在开启内容采集且实际 backend 导出 `SessionTelemetryMode.FULL` 时导出 FULL 会话 logs |
 | Pi 1.3.0 | 尚无已集成的官方原生 exporter；runtime 提示后继续执行，不向 Pi 传递 collector 凭证 |

@@ -935,39 +935,55 @@ non-zero on any disagreement. Run it against a digest or an immutable tag, not
 against a moving alias, and use the checkout that built the image because the
 provider versions are compared against that checkout's lock.
 
-### 11.3 Daily Upstream Provider Check
+### 11.3 Daily Upstream Dependency Check
 
-[`.github/workflows/provider-upstream-check.yml`](https://github.com/chaitin/agent-compose/blob/main/.github/workflows/provider-upstream-check.yml)
-runs `scripts/check-provider-upstreams.sh` daily at `17 1 * * *` UTC and on
-manual `workflow_dispatch`. It compares every package pinned in
-`guest-images/providers.lock.json` with the version npm currently publishes and
-reports the result where a team already looks:
+[`.github/workflows/upstream-check.yml`](https://github.com/chaitin/agent-compose/blob/main/.github/workflows/upstream-check.yml)
+runs `scripts/check-upstreams.sh` daily at `17 1 * * *` UTC and on manual
+`workflow_dispatch`. It compares two kinds of pinned dependency and reports the
+result where a team already looks:
 
-- when the `DINGTALK_DEV_TARGETS_JSON` secret is configured, the summary is
+- every package pinned in `guest-images/providers.lock.json` is compared with the
+  version npm currently publishes; and
+- every native runtime driver pinned in `drivers.lock.json` is compared with the
+  latest stable GitHub release of its repository. The lock currently covers
+  BoxLite and Microsandbox. Docker and Kubernetes are deliberately not tracked:
+  they are host-provided deployment dependencies rather than artifacts this
+  repository builds against a pinned SDK, so there is no version here to chase.
+
+The scan refuses to run when a driver lock entry disagrees with the `Dockerfile`
+ARG that actually builds it, or with the Go SDK module it must move in lockstep
+with. The committed contract test also checks the committed pins, so a change
+that moves one without the other fails CI.
+
+- when the `DINGTALK_DEV_TARGETS_JSON` secret is configured, one summary is
   pushed to the development DingTalk group through `scripts/notify-dingtalk.sh`.
   It is written for that group, so it is Simplified Chinese and lists only what
-  needs attention: which pinned providers have a newer release with their pinned
-  and latest versions, one line for each package retired by another provider's
-  release, and a line when an npm query failed. This is a channel of its own:
-  release announcements use the separate `DINGTALK_TARGETS_JSON` secret consumed
-  by the release workflow. That webhook is the notification path: there is no
-  tracking issue to watch. If the secret is unset, the run still succeeds but
-  emits a warning and says so in the job summary, because a silent run and an
-  up-to-date run would otherwise look identical; and
+  needs attention: which pinned providers or drivers have a newer release with
+  their pinned and latest versions, one line for each package retired by another
+  provider's release, and a line when an npm or GitHub release query failed. This
+  is a channel of its own: release announcements use the separate
+  `DINGTALK_TARGETS_JSON` secret consumed by the release workflow. That webhook is
+  the notification path: there is no tracking issue to watch. If the secret is
+  unset, the run still succeeds but emits a warning and says so in the job
+  summary, because a silent run and an up-to-date run would otherwise look
+  identical; and
 - the same summary is written to the job summary, and is the body of the draft
   bump pull request.
 
-The workflow never edits a pin on its own. A package whose lock entry records a
-`retiredBy` release is reported together with that plan, and is left out of the
-bump list: the intended action is to delete it in the upgrade that retires it, not
-to follow its own releases. A `workflow_dispatch` input `bump` additionally opens
-a draft pull request that applies `provider-lock.sh bump` to the outdated pins and
-then runs `scripts/provider-lock.sh check`. The draft is deliberate: the bump is
-mechanical, while deciding whether a provider release is safe is not. A failing
-check does not block the draft — it is recorded in the pull request body, and CI
-enforces it once the draft is marked ready. Two optional repository variables
-refine the scan: `PROVIDER_UPGRADE_MENTIONS` is appended to the pushed summary for
-@-mentions, and `NPM_CONFIG_REGISTRY` is used for the npm queries.
+The workflow never edits a provider or driver pin on its own. A package whose
+lock entry records a `retiredBy` release is reported together with that plan, and
+is left out of the bump list: the intended action is to delete it in the upgrade
+that retires it, not to follow its own releases. A `workflow_dispatch` input
+`bump` additionally opens a draft pull request that applies `provider-lock.sh
+bump` to the outdated provider pins and then runs `scripts/provider-lock.sh
+check`. Driver pins are only reported: their Dockerfile artifacts, lock entry, and
+Go SDK module must move together, so a person upgrades them by hand. The draft is
+deliberate: the provider bump is mechanical, while deciding whether a provider
+release is safe is not. A failing check does not block the draft — it is recorded
+in the pull request body, and CI enforces it once the draft is marked ready. Two
+optional repository variables refine the scan: `PROVIDER_UPGRADE_MENTIONS` is
+appended to the pushed summary for @-mentions, and `NPM_CONFIG_REGISTRY` is used
+for the npm queries.
 
 GitHub's scheduler is best-effort, so treat the job summary as the durable record
 and the DingTalk push as the notification:
@@ -980,5 +996,5 @@ and the DingTalk push as the notification:
 Run the same scan on demand with:
 
 ```bash
-scripts/check-provider-upstreams.sh
+scripts/check-upstreams.sh
 ```

@@ -355,7 +355,7 @@ type promptStartFrame struct {
 //
 // This follows what the harness versions pinned in
 // guest-images/Dockerfile.agent-compose-guest were observed to do
-// (CODEX_VERSION 0.146.0, CLAUDE_CODE_VERSION 2.1.220, OPENCODE_VERSION 1.18.9).
+// (CODEX_VERSION 0.163.0, CLAUDE_CODE_VERSION 2.1.304, OPENCODE_VERSION 1.18.9).
 // Nothing asserts it automatically: recheck when one of those is bumped.
 func providerNeedsNamedSkills(provider string) bool {
 	switch domain.NormalizeAgentKind(provider) {

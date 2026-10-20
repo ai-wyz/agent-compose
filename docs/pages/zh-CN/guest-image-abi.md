@@ -630,14 +630,19 @@ scripts/verify-guest-image-abi.sh \
 
 该脚本会把镜像的 `io.agent-compose.guest-abi` label、镜像内烘焙的 manifest 以及每个 agent provider 版本与本 checkout 的 `guest-images/providers.lock.json` 逐一比对，打印发现的 provider，并在任何一处不一致时以非零状态退出。请针对 digest 或不可变 tag 执行，不要针对移动别名；provider 版本是与执行该脚本的 checkout 的 lock 比较的，因此要使用构建该镜像的 checkout。
 
-### 11.3 每日上游 provider 检查
+### 11.3 每日上游依赖检查
 
-[`.github/workflows/provider-upstream-check.yml`](https://github.com/chaitin/agent-compose/blob/main/.github/workflows/provider-upstream-check.yml) 每天 UTC `17 1 * * *` 运行 `scripts/check-provider-upstreams.sh`，并支持手动 `workflow_dispatch`。它会将 `guest-images/providers.lock.json` 中固定的每个包与 npm 当前发布的版本比较，并把结果汇报到团队已经关注的位置：
+[`.github/workflows/upstream-check.yml`](https://github.com/chaitin/agent-compose/blob/main/.github/workflows/upstream-check.yml) 每天 UTC `17 1 * * *` 运行 `scripts/check-upstreams.sh`，并支持手动 `workflow_dispatch`。它会比较两类固定的上游依赖，并把结果汇报到团队已经关注的位置：
 
-- 配置了 `DINGTALK_DEV_TARGETS_JSON` secret 时，通过 `scripts/notify-dingtalk.sh` 把简报推送到研发钉钉群。这份简报就是为群消息写的：使用中文，且只列出需要关注的内容——有哪些固定版本落后于上游（含当前版本与最新版本）、哪些包已被其他 provider 的版本取代、以及有多少个包查询 npm 失败。这是独立于发版通知的渠道：发版公告由 release workflow 读取的 `DINGTALK_TARGETS_JSON` secret 发送。该 webhook 就是通知渠道：没有需要盯的 tracking issue。若未配置该 secret，运行仍然成功，但会输出 warning 并在 job summary 中说明——否则「静默无通知」和「全部是最新」看起来完全一样；
+- 将 `guest-images/providers.lock.json` 中固定的每个包与 npm 当前发布的版本比较；
+- 将 `drivers.lock.json` 中固定的每个 native runtime driver 与其仓库最新的稳定 GitHub Release 比较。该 lock 目前覆盖 BoxLite 与 Microsandbox。Docker 与 Kubernetes 刻意不在扫描范围内：它们是宿主机提供的部署依赖，而不是本仓库按固定 SDK 构建的产物，因此这里没有需要跟随的版本。
+
+当 driver lock 条目与实际构建它的 `Dockerfile` ARG 不一致，或与必须保持同步的 Go SDK module 不一致时，扫描会拒绝运行。提交的契约测试也会检查现有固定版本，因此只改其中一处的变更会在 CI 失败。
+
+- 配置了 `DINGTALK_DEV_TARGETS_JSON` secret 时，通过 `scripts/notify-dingtalk.sh` 把一份简报推送到研发钉钉群。这份简报就是为群消息写的：使用中文，且只列出需要关注的内容——有哪些固定的 provider 或 driver 版本落后于上游（含当前版本与最新版本）、哪些包已被其他 provider 的版本取代、以及有多少个 npm 或 GitHub Release 查询失败。这是独立于发版通知的渠道：发版公告由 release workflow 读取的 `DINGTALK_TARGETS_JSON` secret 发送。该 webhook 就是通知渠道：没有需要盯的 tracking issue。若未配置该 secret，运行仍然成功，但会输出 warning 并在 job summary 中说明——否则「静默无通知」和「全部是最新」看起来完全一样；
 - 同一份简报写入 job summary，并作为 draft bump pull request 的正文。
 
-该 workflow 不会自行修改任何固定版本。若某个包的 lock 条目记录了 `retiredBy` 版本，简报会同时给出该计划，且不会把它放进 bump 列表：预期动作是在使其退役的那次升级里删除它，而不是跟随它自己的版本。`workflow_dispatch` 输入 `bump` 会额外打开一个 draft pull request，其中对过期版本执行 `provider-lock.sh bump`，再运行 `scripts/provider-lock.sh check`。之所以是 draft：版本提升本身是机械操作，而判断某个 provider release 是否安全不是。check 失败不会阻止该 draft —— 失败内容会写进 PR 正文，等 draft 标记为 ready 后由 CI 强制。两个可选 repository variable 可以细化扫描：`PROVIDER_UPGRADE_MENTIONS` 会追加到推送简报用于 @ 提醒，`NPM_CONFIG_REGISTRY` 用于 npm 查询。
+该 workflow 不会自行修改任何 provider 或 driver 固定版本。若某个包的 lock 条目记录了 `retiredBy` 版本，简报会同时给出该计划，且不会把它放进 bump 列表：预期动作是在使其退役的那次升级里删除它，而不是跟随它自己的版本。`workflow_dispatch` 输入 `bump` 会额外打开一个 draft pull request，其中只对过期的 provider 版本执行 `provider-lock.sh bump`，再运行 `scripts/provider-lock.sh check`。driver 固定版本只报告、不自动提升：它们的 Dockerfile 产物、lock 条目和 Go SDK module 必须一起移动，因此由人工升级。之所以是 draft：provider 版本提升本身是机械操作，而判断某个 release 是否安全不是。check 失败不会阻止该 draft —— 失败内容会写进 PR 正文，等 draft 标记为 ready 后由 CI 强制。两个可选 repository variable 可以细化扫描：`PROVIDER_UPGRADE_MENTIONS` 会追加到推送简报用于 @ 提醒，`NPM_CONFIG_REGISTRY` 用于 npm 查询。
 
 GitHub 的 scheduler 是尽力而为的，因此应把 job summary 视为持久记录，把钉钉推送视为通知渠道：
 
@@ -648,5 +653,5 @@ GitHub 的 scheduler 是尽力而为的，因此应把 job summary 视为持久�
 也可以随时手动执行同一扫描：
 
 ```bash
-scripts/check-provider-upstreams.sh
+scripts/check-upstreams.sh
 ```
