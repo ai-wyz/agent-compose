@@ -28,6 +28,14 @@ export interface ReadyRecord {
   nonce: string;
   /** Task (runner) pid. */
   taskPid: number;
+  /**
+   * Supervisor start time (field 22 of /proc/<pid>/stat) and the guest boot
+   * id. Together with pid they identify the supervisor exactly, so a pid
+   * recycled after a guest reboot or a supervisor crash is not mistaken for
+   * it. Absent where /proc is unavailable.
+   */
+  startTime?: string;
+  bootId?: string;
 }
 
 export type ExitReason = "completed" | "stopped" | "signal" | "abnormal";
@@ -71,6 +79,9 @@ export const DETACH_POLL_INTERVAL_MS = 50;
 
 /** How long `start --detach` waits for the supervisor's readiness file. */
 export const DEFAULT_READY_TIMEOUT_MS = 30_000;
+
+/** Finished executions older than this are removed when a new one starts. */
+export const FINISHED_EXECUTION_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 
 const JOURNAL_MAX_BYTES_ENV = "AGENT_COMPOSE_JOURNAL_MAX_BYTES";
 const STOP_GRACE_MS_ENV = "AGENT_COMPOSE_DETACH_STOP_GRACE_MS";

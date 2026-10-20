@@ -24,6 +24,10 @@ var ErrRunDisconnected = errors.New("run disconnected: task still running in gue
 // shorten it.
 var detachStopTimeout = 30 * time.Second
 
+// detachCleanupTimeout bounds the best-effort removal of a finished
+// execution's guest state.
+var detachCleanupTimeout = 10 * time.Second
+
 // detachedExecutionOptions bundles the inputs for a detached command run.
 type detachedExecutionOptions struct {
 	Config      *appconfig.Config
@@ -35,6 +39,9 @@ type detachedExecutionOptions struct {
 	// "--request-file", ...]); the supervisor re-enters the CLI with them.
 	TaskArgs []string
 	Env      map[string]string
+	// TaskTimeout is the remaining run timeout handed to the supervisor so it
+	// can stop the task on its own while no daemon is attached; 0 disables it.
+	TaskTimeout time.Duration
 	// Cursor is the journal offset to resume from (0 for a fresh run).
 	Cursor uint64
 	// Writer forwards task output chunks to the run log; may be nil.
@@ -67,7 +74,7 @@ func executeDetachedCommand(ctx context.Context, opts detachedExecutionOptions) 
 // startDetachedCommand launches the supervisor in the guest and waits for its
 // ready record (the start exec blocks until the task is detached).
 func startDetachedCommand(ctx context.Context, opts detachedExecutionOptions) detachedExecutionResult {
-	startSpec := execution.BuildDetachStartSpec(opts.Config, opts.ExecutionID, opts.TaskArgs)
+	startSpec := execution.BuildDetachStartSpec(opts.Config, opts.ExecutionID, opts.TaskTimeout, opts.TaskArgs)
 	startSpec.Env = opts.Env
 	if _, err := opts.Runtime.ExecStream(ctx, opts.Sandbox, opts.VMState, startSpec, nil); err != nil {
 		if detachIsShutdown(ctx) {
@@ -86,8 +93,30 @@ func startDetachedCommand(ctx context.Context, opts detachedExecutionOptions) de
 
 // followDetachedCommand attaches to a detached task and follows its journal to
 // completion. It assumes the task is already running (startDetachedCommand, or
-// an earlier daemon that is now gone).
+// an earlier daemon that is now gone). Once the run is over for the daemon it
+// removes the execution's guest state; after a disconnect it keeps it so the
+// next daemon can resume.
 func followDetachedCommand(ctx context.Context, opts detachedExecutionOptions) detachedExecutionResult {
+	result := followDetachedJournal(ctx, opts)
+	if !errors.Is(result.Err, ErrRunDisconnected) {
+		cleanupDetachedExecution(ctx, opts)
+	}
+	return result
+}
+
+// cleanupDetachedExecution best-effort removes the execution's journal and
+// state records from the guest. The guest refuses while the task still runs
+// (e.g. a stop that never landed), and any failure is left to the guest's
+// retention-based pruning.
+func cleanupDetachedExecution(ctx context.Context, opts detachedExecutionOptions) {
+	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), detachCleanupTimeout)
+	defer cancel()
+	spec := execution.BuildDetachCleanupSpec(opts.Config, opts.ExecutionID)
+	spec.Env = opts.Env
+	_, _ = opts.Runtime.ExecStream(cleanupCtx, opts.Sandbox, opts.VMState, spec, nil)
+}
+
+func followDetachedJournal(ctx context.Context, opts detachedExecutionOptions) detachedExecutionResult {
 	follower := newDetachFollower(opts.Writer, opts.PersistCursor)
 	attachCtx, cancelAttach := context.WithCancelCause(context.WithoutCancel(ctx))
 	defer cancelAttach(nil)
@@ -233,6 +262,7 @@ func (c *Controller) executeDetachedProjectRunCommand(ctx context.Context, input
 		ExecutionID: executionID,
 		TaskArgs:    taskArgs,
 		Env:         env,
+		TaskTimeout: remainingTimeout(ctx),
 		Cursor:      readDetachCursor(artifactsDir),
 		Writer:      input.Writer,
 		PersistCursor: func(offset uint64) error {
@@ -261,7 +291,10 @@ type detachFollower struct {
 	sendErr error
 
 	pending strings.Builder
-	exit    *execution.DetachAttachRecord
+	// queued holds the output parsed from the current chunk until its cursor
+	// is persisted.
+	queued []domain.ExecChunk
+	exit   *execution.DetachAttachRecord
 	// attachStderr keeps the head of the attach process's own stderr (Node
 	// warnings, a crash trace). It is not journal data, so it is never parsed;
 	// it only explains an attach that ended without an exit record.
@@ -291,6 +324,7 @@ func (f *detachFollower) consume(chunk domain.ExecChunk) {
 	if f.sendErr != nil || f.exit != nil {
 		return
 	}
+	before := f.cursor
 	f.pending.WriteString(chunk.Text)
 	for {
 		line, rest, ok := strings.Cut(f.pending.String(), "\n")
@@ -300,6 +334,19 @@ func (f *detachFollower) consume(chunk domain.ExecChunk) {
 		f.pending.Reset()
 		f.pending.WriteString(rest)
 		f.handleLine(line)
+	}
+	// Persist once per chunk rather than per record: attach batches every
+	// record it read in one poll, so this is one cursor write per poll instead
+	// of one per output line. As before, the cursor is written before the
+	// output is forwarded, so a hard kill in between can drop this chunk from
+	// the run log but never duplicates it on resume.
+	if f.cursor != before {
+		f.persistCursor()
+	}
+	queued := f.queued
+	f.queued = nil
+	for _, out := range queued {
+		f.forward(out)
 	}
 }
 
@@ -321,9 +368,8 @@ func (f *detachFollower) handleLine(line string) {
 	case record.Type == "gap":
 		if record.To > f.cursor {
 			f.cursor = record.To
-			f.persistCursor()
 		}
-		f.forward(domain.ExecChunk{Stream: domain.StdioStderr, Text: fmt.Sprintf("\n[detach journal gap: %d..%d]\n", record.From, record.To)})
+		f.queued = append(f.queued, domain.ExecChunk{Stream: domain.StdioStderr, Text: fmt.Sprintf("\n[detach journal gap: %d..%d]\n", record.From, record.To)})
 	}
 }
 
@@ -341,8 +387,7 @@ func (f *detachFollower) appendOut(record execution.DetachAttachRecord) {
 	if end := record.Offset + uint64(len(record.Text)); end > f.cursor {
 		f.cursor = end
 	}
-	f.persistCursor()
-	f.forward(domain.ExecChunk{Stream: stream, Text: record.Text})
+	f.queued = append(f.queued, domain.ExecChunk{Stream: stream, Text: record.Text})
 }
 
 func (f *detachFollower) persistCursor() {
@@ -405,6 +450,19 @@ func (f *detachFollower) result(execErr error, attachCtx context.Context) detach
 		stopReason = exit.StopReason
 	}
 	return detachedExecutionResult{Result: mapped, StopReason: stopReason, Err: exitErr}
+}
+
+// remainingTimeout returns the time left before ctx's deadline, or 0 when ctx
+// has none.
+func remainingTimeout(ctx context.Context) time.Duration {
+	deadline, ok := ctx.Deadline()
+	if !ok {
+		return 0
+	}
+	if remaining := time.Until(deadline); remaining > 0 {
+		return remaining
+	}
+	return time.Millisecond
 }
 
 // truncateUTF8 returns at most limit bytes of s without splitting a rune.

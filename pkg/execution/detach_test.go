@@ -3,6 +3,7 @@ package execution
 import (
 	"strings"
 	"testing"
+	"time"
 
 	appconfig "github.com/chaitin/agent-compose/pkg/config"
 )
@@ -106,7 +107,7 @@ func TestBuildDetachSpecs(t *testing.T) {
 	appconfig.ApplyDefaultGuestPaths(config)
 
 	t.Run("start carries execution id marker and task args", func(t *testing.T) {
-		spec := BuildDetachStartSpec(config, "exec-1", []string{"exec", "--request-file", "/x"})
+		spec := BuildDetachStartSpec(config, "exec-1", 0, []string{"exec", "--request-file", "/x"})
 		if spec.Marker != "exec-1" {
 			t.Fatalf("marker got %q want exec-1", spec.Marker)
 		}
@@ -118,6 +119,27 @@ func TestBuildDetachSpecs(t *testing.T) {
 			if !strings.Contains(joined, want) {
 				t.Fatalf("args %q missing %q", joined, want)
 			}
+		}
+	})
+
+	t.Run("start hands a positive timeout to the supervisor before the task args", func(t *testing.T) {
+		spec := BuildDetachStartSpec(config, "exec-1", 90*time.Second, []string{"exec"})
+		joined := strings.Join(spec.Args, " ")
+		timeoutAt := strings.Index(joined, "'--task-timeout-ms' '90000'")
+		separatorAt := strings.Index(joined, "'--' 'exec'")
+		if timeoutAt < 0 || separatorAt < 0 || timeoutAt > separatorAt {
+			t.Fatalf("args %q want --task-timeout-ms 90000 before the task separator", joined)
+		}
+		if noTimeout := strings.Join(BuildDetachStartSpec(config, "exec-1", 0, []string{"exec"}).Args, " "); strings.Contains(noTimeout, "--task-timeout-ms") {
+			t.Fatalf("args %q must omit --task-timeout-ms without a timeout", noTimeout)
+		}
+	})
+
+	t.Run("cleanup targets the execution", func(t *testing.T) {
+		spec := BuildDetachCleanupSpec(config, "exec-1")
+		joined := strings.Join(spec.Args, " ")
+		if !strings.HasPrefix(joined, "cleanup --execution-id exec-1") {
+			t.Fatalf("args %q", joined)
 		}
 	})
 

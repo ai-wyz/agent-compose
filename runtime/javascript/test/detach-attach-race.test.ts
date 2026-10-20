@@ -6,11 +6,11 @@ import { JournalWriter } from "../src/detach/journal.js";
 import { withTempSession } from "./helpers.js";
 
 // These cases pin the interleavings between attach's journal read, its exit
-// check and its supervisor liveness check, so readExit/processAlive are
+// check and its supervisor liveness check, so readExit/supervisorAlive are
 // replaced with hooks that run the supervisor's side at the racy moment.
 const hooks = vi.hoisted(() => ({
   readExit: null as null | ((stateRoot: string, executionId: string) => Promise<ExitRecord | null>),
-  processAlive: null as null | ((pid: number) => boolean),
+  supervisorAlive: null as null | (() => Promise<boolean>),
 }));
 
 vi.mock("../src/detach/execution-state.js", async (importOriginal) => {
@@ -19,7 +19,8 @@ vi.mock("../src/detach/execution-state.js", async (importOriginal) => {
     ...actual,
     readExit: (stateRoot: string, executionId: string) =>
       hooks.readExit ? hooks.readExit(stateRoot, executionId) : actual.readExit(stateRoot, executionId),
-    processAlive: (pid: number) => (hooks.processAlive ? hooks.processAlive(pid) : actual.processAlive(pid)),
+    supervisorAlive: (...args: Parameters<typeof actual.supervisorAlive>) =>
+      hooks.supervisorAlive ? hooks.supervisorAlive() : actual.supervisorAlive(...args),
   };
 });
 
@@ -43,7 +44,7 @@ function captureWritable(): { sink: Writable; records: AttachRecord[] } {
 
 afterEach(() => {
   hooks.readExit = null;
-  hooks.processAlive = null;
+  hooks.supervisorAlive = null;
 });
 
 describe("attachExecution races with the supervisor", () => {
@@ -87,7 +88,7 @@ describe("attachExecution races with the supervisor", () => {
         calls += 1;
         return calls === 1 ? null : { code: 3, reason: "completed" };
       };
-      hooks.processAlive = () => false;
+      hooks.supervisorAlive = async () => false;
 
       const { sink, records } = captureWritable();
       const exitCode = await attachExecution({ stateRoot, executionId, from: 0, stdout: sink, pollMs: 10 });
@@ -103,7 +104,7 @@ describe("attachExecution races with the supervisor", () => {
       const executionId = "race-abnormal";
       await writeReady(stateRoot, executionId, { pid: 999999, nonce: "n", taskPid: 1 });
       hooks.readExit = async () => null;
-      hooks.processAlive = () => false;
+      hooks.supervisorAlive = async () => false;
 
       const { sink, records } = captureWritable();
       const exitCode = await attachExecution({ stateRoot, executionId, from: 0, stdout: sink, pollMs: 10 });

@@ -44,7 +44,11 @@ func (c *detachCapabilityCache) set(sandboxID string, value bool) {
 }
 
 // detachSupported probes the guest runtime's `capabilities --json` and caches
-// the answer per sandbox. A probe failure falls back to the legacy path.
+// the answer per sandbox. Only an answer from the guest is cached: a runtime
+// that ran the probe and does not report detach (including one without the
+// subcommand, which exits non-zero) stays on the legacy path for the sandbox's
+// lifetime, while a probe that never got an answer (timeout, transport error)
+// falls back for this run only and is retried next time.
 func (c *Controller) detachSupported(ctx context.Context, runtime Runtime, sandbox *domain.Sandbox, vmState domain.VMState) bool {
 	if c == nil || c.detachCache == nil || sandbox == nil {
 		return false
@@ -63,8 +67,11 @@ func (c *Controller) detachSupported(ctx context.Context, runtime Runtime, sandb
 			stdout.WriteString(chunk.Text)
 		}
 	})
+	if err != nil {
+		return false
+	}
 	caps, ok, _ := execution.ParseDetachCapabilities(stdout.String())
-	supported := err == nil && ok && caps.Detach
+	supported := ok && caps.Detach
 	c.detachCache.set(sandboxID, supported)
 	return supported
 }

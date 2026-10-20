@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
+	"time"
 
 	appconfig "github.com/chaitin/agent-compose/pkg/config"
 	domain "github.com/chaitin/agent-compose/pkg/model"
@@ -148,14 +150,20 @@ func BuildDetachCapabilitiesSpec(config *appconfig.Config) domain.ExecSpec {
 // supervisor re-enters the CLI with those args, so no `agent-compose-runtime`
 // prefix belongs here. The returned spec carries the execution id as its
 // marker so a later TerminateProcessTree can reach the whole detached tree.
-func BuildDetachStartSpec(config *appconfig.Config, executionID string, taskArgs []string) domain.ExecSpec {
+// A positive taskTimeout is handed to the supervisor, which then stops the
+// task with reason "timeout" by itself, so the run timeout holds while no
+// daemon is attached. It is relative because guest and host clocks can differ.
+func BuildDetachStartSpec(config *appconfig.Config, executionID string, taskTimeout time.Duration, taskArgs []string) domain.ExecSpec {
 	appconfig.ApplyDefaultGuestPaths(config)
 	startArgs := []string{
 		detachCLI, "start", "--detach",
 		"--execution-id", executionID,
 		"--state-root", config.GuestStateRoot,
-		"--",
 	}
+	if ms := taskTimeout.Milliseconds(); ms > 0 {
+		startArgs = append(startArgs, "--task-timeout-ms", strconv.FormatInt(ms, 10))
+	}
+	startArgs = append(startArgs, "--")
 	startArgs = append(startArgs, taskArgs...)
 	command := strings.Join([]string{
 		"set -e",
@@ -199,6 +207,22 @@ func BuildDetachStopSpec(config *appconfig.Config, executionID, reason string) d
 			"stop",
 			"--execution-id", executionID,
 			"--reason", reason,
+			"--state-root", config.GuestStateRoot,
+		},
+		Cwd: config.GuestWorkspacePath,
+	}
+}
+
+// BuildDetachCleanupSpec builds the `cleanup` exec that removes a finished
+// execution's guest state (journal, ready/exit/stop records). The guest
+// refuses while the task is still running.
+func BuildDetachCleanupSpec(config *appconfig.Config, executionID string) domain.ExecSpec {
+	appconfig.ApplyDefaultGuestPaths(config)
+	return domain.ExecSpec{
+		Command: detachCLI,
+		Args: []string{
+			"cleanup",
+			"--execution-id", executionID,
 			"--state-root", config.GuestStateRoot,
 		},
 		Cwd: config.GuestWorkspacePath,

@@ -7,7 +7,7 @@ import { pathToFileURL } from "node:url";
 import { runExecCommand } from "./command.js";
 import { COMMAND_RESULT_PREFIX, RESULT_PREFIX, WORKFLOW_RESULT_PREFIX } from "./constants.js";
 import { formatError } from "./errors.js";
-import { attachExecution, capabilities, resolveCliPath, startDetached, stopExecution } from "./detach/command.js";
+import { attachExecution, capabilities, cleanupDetached, resolveCliPath, startDetached, stopExecution } from "./detach/command.js";
 import { runSupervisor } from "./detach/supervisor.js";
 import { GUEST_ABI_MANIFEST_PATH, readGuestAbiReport, type GuestAbiReport } from "./guest-abi.js";
 import { runPromptCommand } from "./prompt.js";
@@ -158,13 +158,15 @@ export function createProgram(options: { exitOverride?: boolean } = {}): Command
     .requiredOption("--detach", "run the task detached from this exec")
     .requiredOption("--execution-id <id>", "detached execution id")
     .option("--state-root <path>", "agent-compose runtime state root")
+    .option("--task-timeout-ms <ms>", "stop the task with reason timeout after this long", parseNumberOption)
     .allowExcessArguments(true)
-    .action(async function start(this: Command, options: { executionId: string; stateRoot?: string }) {
+    .action(async function start(this: Command, options: { executionId: string; stateRoot?: string; taskTimeoutMs?: number }) {
       await startDetached({
         stateRoot: options.stateRoot ?? defaultStateRoot(),
         executionId: options.executionId,
         taskArgs: this.args ?? [],
         cliPath: resolveCliPath(),
+        taskTimeoutMs: options.taskTimeoutMs,
       });
     });
 
@@ -198,20 +200,34 @@ export function createProgram(options: { exitOverride?: boolean } = {}): Command
       });
     });
 
+  program
+    .command("cleanup")
+    .description("remove a finished detached execution's state")
+    .requiredOption("--execution-id <id>", "detached execution id")
+    .option("--state-root <path>", "agent-compose runtime state root")
+    .action(async (options: { executionId: string; stateRoot?: string }) => {
+      await cleanupDetached({
+        stateRoot: options.stateRoot ?? defaultStateRoot(),
+        executionId: options.executionId,
+      });
+    });
+
   // Internal: launched detached by `start`; owns the task across the exec.
   program
     .command("supervisor")
     .requiredOption("--execution-id <id>", "detached execution id")
     .requiredOption("--state-root <path>", "agent-compose runtime state root")
     .requiredOption("--nonce <nonce>", "per-execution nonce")
+    .option("--task-timeout-ms <ms>", "stop the task with reason timeout after this long", parseNumberOption)
     .allowExcessArguments(true)
-    .action(async function supervisor(this: Command, options: { executionId: string; stateRoot: string; nonce: string }) {
+    .action(async function supervisor(this: Command, options: { executionId: string; stateRoot: string; nonce: string; taskTimeoutMs?: number }) {
       const taskArgs = this.args ?? [];
       const taskCommand = process.execPath;
       await runSupervisor({
         stateRoot: options.stateRoot,
         executionId: options.executionId,
         nonce: options.nonce,
+        taskTimeoutMs: options.taskTimeoutMs,
         taskCommand,
         taskArgs: [resolveCliPath(), ...taskArgs],
       });

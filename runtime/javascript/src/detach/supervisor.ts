@@ -3,7 +3,7 @@ import type { ChildProcess } from "node:child_process";
 import { StringDecoder } from "node:string_decoder";
 import type { ExitRecord, StopReason, StopRecord } from "./contract.js";
 import { journalMaxBytes, stopGraceMs } from "./contract.js";
-import { writeExit, writeReady, readStop } from "./execution-state.js";
+import { processIdentity, writeExit, writeReady, writeStop, readStop } from "./execution-state.js";
 import { JournalWriter } from "./journal.js";
 import { journalPath } from "./execution-state.js";
 
@@ -21,6 +21,14 @@ export interface SupervisorOptions {
   pollMs?: number;
   /** Environment additions for the task. */
   extraEnv?: Record<string, string>;
+  /**
+   * Run timeout, measured from supervisor start on the guest clock. When it
+   * passes the supervisor stops the task itself with reason "timeout", so the
+   * timeout holds while no daemon is attached.
+   */
+  taskTimeoutMs?: number;
+  /** Overrides /proc for tests. */
+  procRoot?: string;
 }
 
 interface CloseOutcome {
@@ -41,6 +49,7 @@ export async function runSupervisor(options: SupervisorOptions): Promise<void> {
   const maxBytes = options.maxBytes ?? journalMaxBytes();
   const graceMs = options.graceMs ?? stopGraceMs();
   const pollMs = options.pollMs ?? 50;
+  const deadline = options.taskTimeoutMs && options.taskTimeoutMs > 0 ? Date.now() + options.taskTimeoutMs : undefined;
 
   const task = spawn(options.taskCommand, options.taskArgs, {
     detached: true,
@@ -61,7 +70,8 @@ export async function runSupervisor(options: SupervisorOptions): Promise<void> {
     void journal.append("stderr", stderrDecoder.write(chunk));
   });
 
-  await writeReady(stateRoot, executionId, { pid: process.pid, nonce, taskPid: task.pid ?? 0 });
+  const identity = await processIdentity(process.pid, options.procRoot);
+  await writeReady(stateRoot, executionId, { pid: process.pid, nonce, taskPid: task.pid ?? 0, ...identity });
 
   let stopRecord: StopRecord | null = null;
   let outcome: CloseOutcome | null = null;
@@ -75,6 +85,10 @@ export async function runSupervisor(options: SupervisorOptions): Promise<void> {
       break;
     }
     stopRecord = await readStop(stateRoot, executionId);
+    if (stopRecord === null && deadline !== undefined && Date.now() >= deadline) {
+      stopRecord = { reason: "timeout" };
+      await writeStop(stateRoot, executionId, stopRecord);
+    }
   }
 
   if (stopRecord !== null) {
