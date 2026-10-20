@@ -6,6 +6,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/chaitin/agent-compose/pkg/config"
 	domain "github.com/chaitin/agent-compose/pkg/model"
@@ -135,6 +136,11 @@ type detachStopFakeRuntime struct {
 	terminatedMarker string
 	stopErr          error
 	terminateErr     error
+	// stopBlocks makes the stop request hang until its context expires, as
+	// when the guest or supervisor does not respond.
+	stopBlocks bool
+	// terminateCtxErr is the state of the context TerminateProcessTree got.
+	terminateCtxErr error
 }
 
 func (r *detachStopFakeRuntime) ExecStream(ctx context.Context, _ *domain.Sandbox, _ domain.VMState, spec domain.ExecSpec, _ domain.ExecStreamWriter) (domain.ExecResult, error) {
@@ -142,6 +148,10 @@ func (r *detachStopFakeRuntime) ExecStream(ctx context.Context, _ *domain.Sandbo
 		r.mu.Lock()
 		r.stopCalls++
 		r.mu.Unlock()
+		if r.stopBlocks {
+			<-ctx.Done()
+			return domain.ExecResult{}, ctx.Err()
+		}
 		return domain.ExecResult{}, r.stopErr
 	}
 	if len(spec.Args) > 0 && spec.Args[0] == "attach" {
@@ -151,8 +161,9 @@ func (r *detachStopFakeRuntime) ExecStream(ctx context.Context, _ *domain.Sandbo
 	return domain.ExecResult{}, nil
 }
 
-func (r *detachStopFakeRuntime) TerminateProcessTree(_ context.Context, _ *domain.Sandbox, _ domain.VMState, marker string) error {
+func (r *detachStopFakeRuntime) TerminateProcessTree(ctx context.Context, _ *domain.Sandbox, _ domain.VMState, marker string) error {
 	r.mu.Lock()
+	r.terminateCtxErr = ctx.Err()
 	r.terminated = true
 	r.terminatedMarker = marker
 	r.mu.Unlock()
@@ -262,5 +273,39 @@ func TestTruncateUTF8KeepsRunesWhole(t *testing.T) {
 	}
 	if got := truncateUTF8("abc", 10); got != "abc" {
 		t.Fatalf("truncateUTF8 = %q, want %q", got, "abc")
+	}
+}
+
+func TestFollowDetachedCommandTerminatesTreeWithFreshContextAfterStopTimeout(t *testing.T) {
+	previous := detachStopTimeout
+	detachStopTimeout = 50 * time.Millisecond
+	t.Cleanup(func() { detachStopTimeout = previous })
+
+	rt := &detachStopFakeRuntime{stopBlocks: true}
+	ctx, cancel := context.WithCancel(context.Background())
+	opts := detachedExecutionOptions{
+		Config:      &config.Config{},
+		Runtime:     rt,
+		Sandbox:     &domain.Sandbox{},
+		VMState:     domain.VMState{},
+		ExecutionID: "exec-1",
+	}
+
+	done := make(chan detachedExecutionResult, 1)
+	go func() { done <- followDetachedCommand(ctx, opts) }()
+	cancel() // user stop; the stop request then times out
+
+	result := <-done
+	if result.Err == nil || !strings.Contains(result.Err.Error(), "stop request failed") {
+		t.Fatalf("err = %v, want stop-failed error", result.Err)
+	}
+	rt.mu.Lock()
+	terminated, ctxErr := rt.terminated, rt.terminateCtxErr
+	rt.mu.Unlock()
+	if !terminated {
+		t.Fatal("TerminateProcessTree was not called after the stop request timed out")
+	}
+	if ctxErr != nil {
+		t.Fatalf("TerminateProcessTree got an expired context: %v", ctxErr)
 	}
 }

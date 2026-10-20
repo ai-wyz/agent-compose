@@ -19,8 +19,10 @@ import (
 var ErrRunDisconnected = errors.New("run disconnected: task still running in guest")
 
 // detachStopTimeout bounds how long the daemon waits for the `stop` request to
-// reach the supervisor when terminating a detached task.
-const detachStopTimeout = 30 * time.Second
+// reach the supervisor when terminating a detached task, and separately how
+// long the marker-based fallback termination may take. A var so tests can
+// shorten it.
+var detachStopTimeout = 30 * time.Second
 
 // detachedExecutionOptions bundles the inputs for a detached command run.
 type detachedExecutionOptions struct {
@@ -119,7 +121,12 @@ func followDetachedCommand(ctx context.Context, opts detachedExecutionOptions) d
 			// task's process tree directly by marker so it cannot outlive the
 			// run, then drop the follower with the combined failure.
 			stopErr = fmt.Errorf("detached execution stop request failed: %w", stopErr)
-			if terminateErr := terminateDetachedProcessTree(stopCtx, opts); terminateErr != nil {
+			// The stop request may have failed because stopCtx timed out, so the
+			// fallback gets its own budget instead of an already-expired context.
+			terminateCtx, cancelTerminate := context.WithTimeout(context.WithoutCancel(ctx), detachStopTimeout)
+			terminateErr := terminateDetachedProcessTree(terminateCtx, opts)
+			cancelTerminate()
+			if terminateErr != nil {
 				stopErr = errors.Join(stopErr, terminateErr)
 			}
 			cancelAttach(stopErr)
@@ -376,7 +383,9 @@ func (f *detachFollower) result(execErr error, attachCtx context.Context) detach
 			}
 			// Surface a specific cancellation cause (e.g. a failed stop request)
 			// rather than masking it behind the attach exec's context.Canceled.
-			if cause != nil && !errors.Is(cause, context.Canceled) && !errors.Is(cause, context.DeadlineExceeded) {
+			// Only the bare context errors are skipped: a stop request that
+			// timed out wraps context.DeadlineExceeded but is still specific.
+			if cause != nil && !isBareContextError(cause) {
 				return detachedExecutionResult{Result: result, Err: cause}
 			}
 			return detachedExecutionResult{Result: result, Err: execErr}
@@ -407,4 +416,10 @@ func truncateUTF8(s string, limit int) string {
 		limit--
 	}
 	return s[:limit]
+}
+
+// isBareContextError reports whether err is context.Canceled or
+// context.DeadlineExceeded itself, not an error that merely wraps one.
+func isBareContextError(err error) bool {
+	return err == context.Canceled || err == context.DeadlineExceeded //nolint:errorlint // identity is the point: wrapped causes carry detail.
 }
