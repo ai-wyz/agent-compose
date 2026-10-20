@@ -12,6 +12,7 @@ import (
 	"github.com/chaitin/agent-compose/pkg/agentcompose/adapters"
 	"github.com/chaitin/agent-compose/pkg/capproxy"
 	"github.com/chaitin/agent-compose/pkg/events"
+	"github.com/chaitin/agent-compose/pkg/llms/runtimefacade"
 	domain "github.com/chaitin/agent-compose/pkg/model"
 	"github.com/chaitin/agent-compose/pkg/runs"
 	"github.com/chaitin/agent-compose/pkg/storage/configstore"
@@ -204,6 +205,13 @@ func reconcilePersistedProjectRunsWithStatus(ctx context.Context, reconcile proj
 				message := fmt.Sprintf("%s: re-attach failed: %v", staleProjectRunError, err)
 				if stageErr := reconcile.Completions.StageInterrupted(context.WithoutCancel(reconcile.RootCtx), run, message); stageErr != nil {
 					slog.Warn("failed to stage project run completion after re-attach failure", "run_id", run.RunID, "error", stageErr)
+				}
+				// The run is finalized as interrupted, so the per-run facade
+				// tokens kept for the re-attach are no longer needed.
+				if run.DetachKind == domain.DetachKindAgent || run.DetachKind == domain.DetachKindInteractivePrompt {
+					if delErr := reconcile.ConfigDB.DeleteLLMFacadeTokensForRun(context.WithoutCancel(reconcile.RootCtx), run.RunID, runtimefacade.TokenSourceAgent); delErr != nil {
+						slog.Warn("failed to delete retained facade tokens after re-attach failure", "run_id", run.RunID, "error", delErr)
+					}
 				}
 			})
 			continue

@@ -141,6 +141,7 @@ func readInteractiveCommandText(artifactsDir string) string {
 // task exits.
 func (c *Controller) reattachInteractiveRun(transitionCtx, runCtx context.Context, run domain.ProjectRunRecord, sandbox *domain.Sandbox) (domain.ProjectRunRecord, error) {
 	fail := func(err error) (domain.ProjectRunRecord, error) {
+		c.deleteRetainedFacadeTokens(transitionCtx, run)
 		transition := TransitionRequest{RunID: run.RunID, SandboxID: run.SandboxID, ExitCode: 1, LogsPath: run.LogsPath, Error: fmt.Sprintf("re-attach interactive run: %v", err)}
 		return c.completeProjectRunError(transitionCtx, runCtx, transition, err)
 	}

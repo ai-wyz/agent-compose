@@ -61,7 +61,10 @@ type DetachedTask struct {
 
 // detachedExecutionResult is the reconstructed outcome of a detached run.
 type detachedExecutionResult struct {
-	Result     domain.ExecResult
+	Result domain.ExecResult
+	// Abnormal reports that the attach found the supervisor gone without an
+	// exit record, so the task's process tree may still be running unmanaged.
+	Abnormal   bool
 	StopReason string
 	Err        error
 }
@@ -175,10 +178,27 @@ func followDetachedJournal(ctx context.Context, opts DetachedTask) detachedExecu
 		}
 		result := <-outcome
 		result.StopReason = reason
-		return result
+		return terminateAbnormalDetachedTask(ctx, opts, result)
 	case result := <-outcome:
+		return terminateAbnormalDetachedTask(ctx, opts, result)
+	}
+}
+
+// terminateAbnormalDetachedTask ends the task's process tree by marker when the
+// attach reported that the supervisor died without an exit record. The
+// supervisor then cannot forward a stop request, so this is the only way to
+// reach an orphaned task. It runs before the caller cleans the execution state
+// up and gets its own budget: the run context may already be cancelled.
+func terminateAbnormalDetachedTask(ctx context.Context, opts DetachedTask, result detachedExecutionResult) detachedExecutionResult {
+	if !result.Abnormal {
 		return result
 	}
+	terminateCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), detachStopTimeout)
+	defer cancel()
+	if err := terminateDetachedProcessTree(terminateCtx, opts); err != nil {
+		result.Err = errors.Join(result.Err, fmt.Errorf("terminate orphaned detached task: %w", err))
+	}
+	return result
 }
 
 // detachAttachShutdownWatcher cancels attachCtx when the daemon shutdown signal
@@ -478,7 +498,12 @@ func (f *detachFollower) result(execErr error, attachCtx context.Context) detach
 	if exit.Reason == execution.DetachExitStopped {
 		stopReason = exit.StopReason
 	}
-	return detachedExecutionResult{Result: mapped, StopReason: stopReason, Err: exitErr}
+	return detachedExecutionResult{
+		Result:     mapped,
+		Abnormal:   exit.Reason == execution.DetachExitAbnormal,
+		StopReason: stopReason,
+		Err:        exitErr,
+	}
 }
 
 // remainingTimeout returns the time left before ctx's deadline, or 0 when ctx

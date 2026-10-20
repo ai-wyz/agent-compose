@@ -45,7 +45,7 @@ func TestReattachDetachedRunMarksFailedWhenSandboxNotRunning(t *testing.T) {
 		t.Fatalf("CreateSandbox returned error: %v", err)
 	}
 	configDB := &fakeControllerStore{runs: map[string]domain.ProjectRunRecord{}}
-	run := domain.ProjectRunRecord{RunID: "run-1", ProjectID: "project-1", SandboxID: sandbox.Summary.ID, Detach: true, ExecutionID: "exec-1", Status: domain.ProjectRunStatusRunning, CleanupPolicy: domain.ProjectRunCleanupKeepRunning}
+	run := domain.ProjectRunRecord{RunID: "run-1", ProjectID: "project-1", SandboxID: sandbox.Summary.ID, Detach: true, DetachKind: domain.DetachKindAgent, ExecutionID: "exec-1", Status: domain.ProjectRunStatusRunning, CleanupPolicy: domain.ProjectRunCleanupKeepRunning}
 	if _, err := configDB.CreateProjectRun(ctx, run); err != nil {
 		t.Fatalf("CreateProjectRun returned error: %v", err)
 	}
@@ -63,6 +63,9 @@ func TestReattachDetachedRunMarksFailedWhenSandboxNotRunning(t *testing.T) {
 	}
 	if got.Status != domain.ProjectRunStatusFailed {
 		t.Fatalf("run status = %q, want failed", got.Status)
+	}
+	if len(configDB.deletedFacadeTokens) != 1 || configDB.deletedFacadeTokens[0] != "run-1|agent" {
+		t.Fatalf("deleted facade tokens = %v, want the retained agent tokens of the failed run", configDB.deletedFacadeTokens)
 	}
 }
 
@@ -222,5 +225,24 @@ func TestReattachDetachedRunFallsBackToResultFileWhenCursorPassedPayload(t *test
 	}
 	if got.Status != domain.ProjectRunStatusSucceeded || got.Output != "done\n" {
 		t.Fatalf("run status = %q output = %q, want succeeded from command-result.json", got.Status, got.Output)
+	}
+}
+
+// A re-attach that cannot resume the agent run (no executor support here) is an
+// abandoned re-attach: the run is finalized as failed and the facade tokens kept
+// for it must be retired, or they accumulate across upgrades.
+func TestReattachDetachedAgentRunDeletesRetainedTokensWhenResumeUnsupported(t *testing.T) {
+	controller, run := newReattachTestController(t, nil)
+	run.DetachKind = domain.DetachKindAgent
+	got, err := controller.ReattachDetachedRun(context.Background(), run)
+	if err != nil {
+		t.Fatalf("ReattachDetachedRun returned error: %v", err)
+	}
+	if got.Status != domain.ProjectRunStatusFailed {
+		t.Fatalf("run status = %q, want failed", got.Status)
+	}
+	store := controller.configDB.(*fakeControllerStore)
+	if len(store.deletedFacadeTokens) != 1 || store.deletedFacadeTokens[0] != "run-1|agent" {
+		t.Fatalf("deleted facade tokens = %v, want the retained agent tokens", store.deletedFacadeTokens)
 	}
 }

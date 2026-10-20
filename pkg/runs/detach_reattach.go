@@ -30,6 +30,7 @@ func (c *Controller) ReattachDetachedRun(ctx context.Context, run domain.Project
 		return run, err
 	}
 	if sandbox.Summary.VMStatus != domain.VMStatusRunning {
+		c.deleteRetainedFacadeTokens(transitionCtx, run)
 		transition := TransitionRequest{
 			RunID:        run.RunID,
 			SandboxID:    run.SandboxID,
@@ -144,6 +145,7 @@ type agentResumer interface {
 // fresh run would be.
 func (c *Controller) reattachDetachedAgentRun(transitionCtx, runCtx context.Context, run domain.ProjectRunRecord, sandbox *domain.Sandbox) (domain.ProjectRunRecord, error) {
 	fail := func(reason string) (domain.ProjectRunRecord, error) {
+		c.deleteRetainedFacadeTokens(transitionCtx, run)
 		transition := TransitionRequest{RunID: run.RunID, SandboxID: run.SandboxID, ExitCode: 1, Output: run.Output, LogsPath: run.LogsPath, Error: reason}
 		return c.completeProjectRunError(transitionCtx, runCtx, transition, errors.New(reason))
 	}
@@ -172,6 +174,17 @@ func (c *Controller) reattachDetachedAgentRun(transitionCtx, runCtx context.Cont
 	return c.finishProjectRunAgent(transitionCtx, runCtx, agentRunOutcome{
 		Run: run, Sandbox: sandbox, Cell: cell, Assistant: assistantEvent, ExecErr: execErr,
 	})
+}
+
+// deleteRetainedFacadeTokens retires the per-run facade tokens a detached agent
+// or prompt run kept across a daemon restart when the re-attach is abandoned
+// and the run is finalized as failed instead. Command runs issue no per-run
+// tokens, so this is a no-op for them.
+func (c *Controller) deleteRetainedFacadeTokens(ctx context.Context, run domain.ProjectRunRecord) {
+	switch run.DetachKind {
+	case domain.DetachKindAgent, domain.DetachKindInteractivePrompt:
+		c.deleteRunFacadeTokens(context.WithoutCancel(ctx), run.RunID)
+	}
 }
 
 // agentCellIDFromLogsPath recovers the agent cell id from the run's log path,

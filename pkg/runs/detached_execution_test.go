@@ -139,11 +139,14 @@ type detachStopFakeRuntime struct {
 	// stopBlocks makes the stop request hang until its context expires, as
 	// when the guest or supervisor does not respond.
 	stopBlocks bool
+	// attachRecords, when non-nil, is emitted by the attach exec, which then
+	// ends normally instead of waiting for cancellation.
+	attachRecords []string
 	// terminateCtxErr is the state of the context TerminateProcessTree got.
 	terminateCtxErr error
 }
 
-func (r *detachStopFakeRuntime) ExecStream(ctx context.Context, _ *domain.Sandbox, _ domain.VMState, spec domain.ExecSpec, _ domain.ExecStreamWriter) (domain.ExecResult, error) {
+func (r *detachStopFakeRuntime) ExecStream(ctx context.Context, _ *domain.Sandbox, _ domain.VMState, spec domain.ExecSpec, writer domain.ExecStreamWriter) (domain.ExecResult, error) {
 	if len(spec.Args) > 0 && spec.Args[0] == "stop" {
 		r.mu.Lock()
 		r.stopCalls++
@@ -155,6 +158,14 @@ func (r *detachStopFakeRuntime) ExecStream(ctx context.Context, _ *domain.Sandbo
 		return domain.ExecResult{}, r.stopErr
 	}
 	if len(spec.Args) > 0 && spec.Args[0] == "attach" {
+		if r.attachRecords != nil {
+			for _, record := range r.attachRecords {
+				if writer != nil {
+					writer(domain.ExecChunk{Stream: domain.StdioStdout, Text: record + "\n"})
+				}
+			}
+			return domain.ExecResult{}, nil
+		}
 		<-ctx.Done()
 		return domain.ExecResult{}, ctx.Err()
 	}
@@ -208,6 +219,41 @@ func TestFollowDetachedCommandDoesNotStopOnShutdown(t *testing.T) {
 	}
 	if n := rt.stopCount(); n != 0 {
 		t.Fatalf("stop was sent %d times on shutdown, want 0", n)
+	}
+}
+
+func TestFollowDetachedCommandTerminatesTreeAfterAbnormalExit(t *testing.T) {
+	previous := detachStopTimeout
+	detachStopTimeout = 50 * time.Millisecond
+	t.Cleanup(func() { detachStopTimeout = previous })
+
+	// The supervisor died without writing an exit record; attach reports the
+	// task as abnormally ended and the process tree may still be running.
+	rt := &detachStopFakeRuntime{attachRecords: []string{`{"t":"out","s":"stdout","text":"partial\n"}`, `{"t":"exit","code":-1,"reason":"abnormal"}`}}
+	opts := DetachedTask{
+		Config:      &config.Config{},
+		Runtime:     rt,
+		Sandbox:     &domain.Sandbox{},
+		VMState:     domain.VMState{},
+		ExecutionID: "exec-1",
+	}
+
+	result := followDetachedCommand(context.Background(), opts)
+	if !result.Abnormal {
+		t.Fatalf("result = %+v, want an abnormal exit", result)
+	}
+	if result.Err == nil {
+		t.Fatal("abnormal exit reported no error")
+	}
+	terminated, marker := rt.termination()
+	if !terminated {
+		t.Fatal("TerminateProcessTree was not called after the supervisor died")
+	}
+	if marker != "exec-1" {
+		t.Fatalf("terminated marker = %q, want exec-1", marker)
+	}
+	if rt.terminateCtxErr != nil {
+		t.Fatalf("termination context was already done: %v", rt.terminateCtxErr)
 	}
 }
 
