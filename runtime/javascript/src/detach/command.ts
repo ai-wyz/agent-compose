@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import type { Writable } from "node:stream";
-import { DETACH_POLL_INTERVAL_MS, DEFAULT_READY_TIMEOUT_MS, type AttachRecord, type Capabilities, type JournalRecord, type StopReason } from "./contract.js";
+import { DETACH_POLL_INTERVAL_MS, DEFAULT_READY_TIMEOUT_MS, type AttachRecord, type Capabilities, type ExitRecord, type JournalRecord, type StopReason } from "./contract.js";
 import { journalMaxBytes, stopGraceMs } from "./contract.js";
 import {
   executionDir,
@@ -92,16 +92,26 @@ export async function attachExecution(options: AttachExecutionOptions): Promise<
   const pollMs = options.pollMs ?? DETACH_POLL_INTERVAL_MS;
 
   let cursor = options.from;
-  for (;;) {
+  const drainJournal = async (): Promise<void> => {
     const records = await readJournalFrom(options.stateRoot, options.executionId, cursor);
     for (const record of records) {
       emit(stdout, journalToAttach(record));
       cursor = journalRecordEnd(record);
     }
+  };
+  // The supervisor flushes the journal before it writes the exit record, so
+  // once the exit record is seen one more journal read is complete. Without
+  // it, output flushed between the journal read and the exit check is lost.
+  const finish = async (exit: ExitRecord): Promise<number> => {
+    await drainJournal();
+    emit(stdout, exitRecord(exit));
+    return processExitCode(exit.code);
+  };
+  for (;;) {
+    await drainJournal();
     const exit = await readExit(options.stateRoot, options.executionId);
     if (exit) {
-      emit(stdout, exitRecord(exit));
-      return processExitCode(exit.code);
+      return finish(exit);
     }
     // No exit record yet: the task is only alive if the supervisor that owns
     // it is. A dead supervisor with no exit record means the task died
@@ -109,6 +119,13 @@ export async function attachExecution(options: AttachExecutionOptions): Promise<
     // of hanging forever.
     const ready = await readReady(options.stateRoot, options.executionId);
     if (!ready || !processAlive(ready.pid)) {
+      // The supervisor may have written the exit record and exited right
+      // after the check above; re-check before calling it abnormal.
+      const lateExit = await readExit(options.stateRoot, options.executionId);
+      if (lateExit) {
+        return finish(lateExit);
+      }
+      await drainJournal();
       emit(stdout, { t: "exit", code: -1, reason: "abnormal" });
       return 1;
     }
