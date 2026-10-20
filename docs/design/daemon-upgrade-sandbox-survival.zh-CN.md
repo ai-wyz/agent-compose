@@ -124,8 +124,10 @@ guest
 **guest runtime（`runtime/javascript`）新增的子命令：**
 
 - `capabilities --json`：输出支持的能力，例如 `{"detach": true}`，供 daemon 探测。
-- `start --detach --execution-id <id> -- <prompt|exec ...>`：拉起一个 supervisor 进程（`setsid`，stdio 不继承 exec 的管道），由它运行现有的 `prompt` / `exec` 逻辑。supervisor 写好 readiness 文件后，这次 exec 立即返回。readiness 记录 pid 和每次执行唯一的 nonce（写进 supervisor 的环境变量），判断任务存活时两者都要对上，避免 pid 复用。
-- `attach --execution-id <id> --from <offset>`：从 offset 开始回放 journal，追上后持续跟随，读到 `exit` 文件就带着退出码结束；遇到缺口记录原样下发。pid 和 nonce 对不上、又没有 `exit` 文件时，报告任务异常死亡，不挂起。交互式任务的 stdin 由 attach 转发到 supervisor 持有的 guest 内 socket。
+- `start --detach --execution-id <id> [--task-timeout-ms <ms>] [--stdin] [--raw-command] -- <prompt|exec|stream ...>`：拉起一个 supervisor 进程（`setsid`，stdio 不继承 exec 的管道），由它运行现有的 `prompt` / `exec` / `stream` 逻辑；`--raw-command` 时任务参数是一条命令行（交互式 command run 用）。supervisor 写好 readiness 文件后，这次 exec 立即返回；任务在 ready 之前就结束时立即报错，不等超时。readiness 记录 supervisor 的 pid、进程启动时间（`/proc/<pid>/stat` 第 22 字段）和 guest 的 boot id，判断 supervisor 存活时三者都要对上：VM 用同一块盘冷启动后 state root 还在，单看 pid 会被复用的 pid 骗过。没有 `/proc` 时退化为只看 pid。
+- `attach --execution-id <id> --from <offset> [--stdin]`：从 offset 开始回放 journal，追上后持续跟随，读到 `exit` 文件就带着退出码结束；遇到缺口记录原样下发。supervisor 已不在、又没有 `exit` 文件时，报告任务异常死亡，不挂起。journal 没变化（inode、大小、mtime 都没变）时不重读。
+- **交互式任务的 stdin**：`start --stdin` 时 supervisor 在 `executions/<id>/stdin.sock` 上监听，把收到的输入写给任务；`attach --stdin` 把自己的 stdin 原样转发过去。输入按帧传输（1 字节类型 + 4 字节长度 + 内容）：`D` 数据、`E` 输入结束、`S` 信号。输入结束必须是显式的帧：daemon 死掉时 attach 也死，连接随之断开，这种情况下任务的 stdin 要保持打开，留给下一个 daemon。同一时间只服务一个连接，新连接顶替旧的。socket 起不来时 supervisor 杀掉任务并记异常退出，不留无人管的任务。
+- `cleanup --execution-id <id>`：删除已结束执行的状态目录；任务还在跑时拒绝。
 - `stop --execution-id <id> --reason <user|timeout>`：把停止请求交给 supervisor。
 
 **supervisor 的职责：**
@@ -141,14 +143,19 @@ guest
   - `execution_id`：daemon 生成（UUID），在执行 `start --detach` **之前**写入。
   - `detach`：这个 run 是否走 detach 模式，启动时由能力探测决定，shutdown 时据此决定断开还是终止。
   - `deadline`：run 超时的绝对截止时间（或剩余超时）。启动时持久化，重启后对账 attach 时据此重新挂上超时，否则超时计时器随重启丢失、detach 的 run 永远到不了超时终态。
-  - 已确认的 offset 不单独建字段，以 run 日志最后一条记录的 offset 为准。
-- **兜底清理**：supervisor 自己异常退出时，任务可能没人管。所以 `start --detach` 那次 exec 用 `execution_id` 作为 marker，任务的整棵进程树都带着它；下面两处触发按 marker 清理进程树：停止时 supervisor 没在宽限期内结束任务；attach 报任务异常死亡（pid 和 nonce 对不上、且没有 `exit` 文件）——supervisor 已退出、停止请求送不到，只能靠 marker 直接清理。这需要 driver 新增两点（PR #789 的 marker 是 driver 在 exec 内部生成的，调用方传不进去，也只在取消那次 exec 时才清理）：
+  - `detach_kind`：detach 的是哪类任务（`command`、`agent`、`interactive_prompt`、`interactive_command`），重启后据此选收尾方式。
+  - 已确认的 offset 记在 run 产物目录旁的 `journal-cursor` 文件里（agent run 记在它的 cell 目录），不进数据库：每条输出都写一次库代价太大。每个 attach 输出块写一次，先写 cursor 再转发输出，所以 daemon 被硬杀时最多丢一个块，不会重复。
+- **兜底清理**：supervisor 自己异常退出时，任务可能没人管。所以 `start --detach` 那次 exec 用 `execution_id` 作为 marker，任务的整棵进程树都带着它；下面两处触发按 marker 清理进程树：停止时 supervisor 没在宽限期内结束任务；attach 报任务异常死亡（supervisor 已不在、且没有 `exit` 文件）——supervisor 已退出、停止请求送不到，只能靠 marker 直接清理。这需要 driver 新增两点（PR #789 的 marker 是 driver 在 exec 内部生成的，调用方传不进去，也只在取消那次 exec 时才清理）：
   - `ExecSpec` 允许调用方指定 marker；
   - 一个不依赖任何 exec、单独"按 marker 清理进程树"的方法。
 - **能力探测**：daemon 对任意镜像没有启动握手，也不会因为声明缺失而拒绝（`docs/pages/guest-image-abi.md` 第 1 节），所以不读镜像里的 ABI 声明，而是在沙箱里执行一次 `agent-compose-runtime capabilities --json`，结果按沙箱缓存。输出里有 `detach: true` 就支持；命令不存在或解析失败就走现有路径。不用"`start --detach` 失败就回退"：那样分不清是旧 runtime 不认识这个命令，还是任务启动本身出错，后者回退会把任务再跑一遍。
 - **去重**：daemon 写 run 日志时记录每条输出的 offset，重连时从最后一条的 offset 续读，收到不大于它的直接丢弃。所以 run 日志里的输出不重复，即使 daemon 被硬杀。客户端在 daemon 重启后是新连接，续读游标统一用 journal offset，不再沿用 `InteractiveSession` 的进程内事件序号：事件序号随 daemon 重启丢失，而 offset 是 guest 磁盘上唯一跨重启自洽的坐标，统一到 offset 也免去了两套坐标之间的映射。`InteractiveSession` 的回放数据改从 journal 来，不再自己维护一份；`resumable-interactive-session.md` 中「daemon 重启后 session not found、事件序号是进程内状态」的限制随之更新（见该文档）。
 - **对账**：对 running 且 `detach` 为真的 run，**先用 `IsSandboxAlive` 确认沙箱活着，再执行任何 exec**（BoxLite 的 exec 会自动拉起已停止的 box，见第 2 节结论 5）。活着就 `attach --execution-id <id> --from <offset>` 接回来，并按持久化的 `deadline` 重新挂上 run 超时；沙箱不在或接不上，走中断收尾。
-- **调度器 run 的行为变更**：`RecoverInterruptedRuns` 现在把重启前没跑完的调度器 run 一律判失败，改为与 project run 一致，先尝试 attach。要单独验收。
+- **超时**：剩余的 run 超时随 `start` 交给 supervisor（相对时长，避免 guest 与 host 时钟不一致），没有 daemon 在时 supervisor 自己以 `timeout` 原因停掉任务；daemon 侧仍按持久化的 `deadline` 重新挂上超时，两边谁先到都一样收尾。
+- **覆盖的 run**：
+  - command run 和 agent run：daemon 关闭时只断开；agent run 的 cell 保持 running，这个 run 的 facade token 保留。重启后 agent run 从 run 的日志路径（`cells/<cell-id>/output.txt`）找回 cell，从 journal 开头回放：cursor 之前的输出不再转发，只用来解析结果，这样 daemon 停在结果行和退出之间时也拿得到结果；run 结束后按 run id 删掉保留的 token。
+  - 交互式 run：只有本来就不跟随客户端的（断开策略为 detach，如 `run -i -d`）才走 detach；跟随客户端连接的仍随客户端结束。TTY 会话不走 detach，supervisor 没有终端可给。重启后重建 run 的交互会话，客户端可以按 run_id 重新 attach。
+  - 调度器 run **接不回来**：编排脚本在 daemon 进程内的 QuickJS 里执行，脚本执行到哪一步、在等哪个 promise 只在 daemon 内存里，guest 侧 detach 保不住。调度器 run 里发起的 project run 本身是 project run，能活过重启；调度器 run 自己仍按现在的方式判失败。要接回需要把调度器步骤持久化并可重放，不在本设计范围。
 
 **终态映射**：退出码由 `attach` 读到的 `exit` 文件提供，结果仍经由现有的 run 状态机和 `CompletionManager` 写回。
 
@@ -159,16 +166,18 @@ guest
 | supervisor 因超时终止 | failed（超时） | 与现有超时行为一致 |
 | supervisor 因用户停止终止 | canceled | 与现有取消行为一致 |
 | 被别的信号杀死 | failed，错误信息带上信号 | 128 + 信号值 |
-| 任务异常死亡（pid 和 nonce 对不上，且没有 `exit`） | failed，标明 guest 任务异常终止；同时按 marker 清理进程树（见兜底清理） | ExitCode -1 |
+| 任务异常死亡（supervisor 已不在，且没有 `exit`） | failed，标明 guest 任务异常终止；同时按 marker 清理进程树（见兜底清理） | ExitCode -1 |
 | 沙箱已不在 | 走现有的中断收尾 | — |
 
 **不改 guest ABI。** 按 `docs/pages/guest-image-abi.md`，runtime CLI 属于 release boundary，不归 `guestAbi` 管，新增子命令是 boundary 之内的正常演进。版本不匹配的旧镜像本来就不保证兼容，`capabilities` 探测只是让它优雅降级：不支持 detach 的 guest 走现有路径，daemon 收到 SIGTERM 时仍然终止任务。
 
-**清理**：run 进入终态、daemon 确认读完后，删除 `executions/<id>` 目录。沙箱停止或删除时一并清理。
+**清理**：run 进入终态、daemon 确认读完后，执行 `cleanup` 删除 `executions/<id>` 目录；断开时不删，留给下一个 daemon。daemon 没回来收尾的执行，由 guest 在下次 `start` 时清掉结束超过 7 天的。沙箱停止或删除时一并清理。
+
+**能力探测的缓存**：只缓存 guest 给出的答案（包括旧 runtime 没有这个子命令时的非 0 退出）；探测超时或 exec 本身出错不缓存，下一个 run 重新探测。VM 沙箱寿命长，一次偶发超时不该让它之后的 run 全走旧路径。
 
 ### 3.4 sandbox-host（VM 保活）
 
-**接口**：在 `driver.SandboxRuntime`（`pkg/driver/types.go`）这一层切开：EnsureSandbox、StopSandbox、RemoveSandbox、Exec、ExecStream；可选接口 Stats、IsSandboxAlive、SignalGuestRuntime、InteractionCapabilities + OpenInteraction；以及残留资源和运行时缓存的列出与清理。Exec、ExecStream、OpenInteraction 是流式透传，其余一问一答。调度、凭据签发、策略判断都留在 daemon。
+**接口**：在 `driver.SandboxRuntime`（`pkg/driver/types.go`）这一层切开：EnsureSandbox、StopSandbox、RemoveSandbox、Exec、ExecStream；可选接口 Stats、IsSandboxAlive、SignalGuestRuntime、InteractionCapabilities + OpenInteraction、ProcessTreeTerminator（按 marker 清理进程树，detach 的兜底终止靠它）；以及残留资源和运行时缓存的列出与清理。`ExecSpec` 的 `Marker`、`KillOnlyOnCancel` 也要原样经过 RPC。Exec、ExecStream、OpenInteraction 是流式透传，其余一问一答。调度、凭据签发、策略判断都留在 daemon。
 
 **协议版本**：单调递增的整数，host 在握手时报告。daemon 支持当前版本和前一个版本（N 和 N-1），测试矩阵覆盖这两种组合。遇到不兼容的 host，daemon 拒绝使用 VM driver 并报错。daemon 不能自己重启 host，那会中断所有 VM。
 
@@ -225,7 +234,8 @@ services:
 
 - Docker driver 下 run 运行中重启 daemon，任务不中断，退出码和终态正确。
 - run 日志里的输出无重复（daemon 被硬杀后重连也一样）；有缺口时显式标出。
-- 调度器 run 在 daemon 重启后能被接回。
+- agent run、不跟随客户端的交互式 run 在 daemon 重启后能被接回；交互式 run 接回后客户端能按 run_id 重新 attach。
+- 调度器 run 发起的 project run 能活过重启；调度器 run 本身仍判失败（见 3.3「覆盖的 run」）。
 - 对账时沙箱已死（含 BoxLite），run 走中断收尾，VM 不会被 exec 重新拉起。
 - supervisor 异常退出后，run 判失败，且 guest 里按 marker 清掉孤儿进程树。
 - run 超时跨越 daemon 重启仍按持久化的 `deadline` 进入超时终态。
