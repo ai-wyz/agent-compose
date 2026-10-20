@@ -1092,7 +1092,7 @@ on spans and events, so metrics never become a per-run identity store.
 Daemon instrumentation records operation status only: the daemon never synthesizes
 spans from agent-compose's event stream, and never exports prompt, tool, or error
 text. Pi 1.3.0 ships no integrated OTLP exporter. Its
-[environment-variable reference](https://github.com/earendil-works/pi/blob/main/docs/environment-variables.md)
+[environment-variable reference](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/environment-variables.md)
 documents `PI_TELEMETRY` as installation and update statistics, not an OTLP
 switch.
 

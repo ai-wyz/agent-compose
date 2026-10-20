@@ -1061,7 +1061,7 @@ run 状态）；run、project、agent 标识只保留在 span 与事件中，因
 
 daemon 插桩只记录操作状态：daemon 不把 agent-compose 事件流转换为 spans，也不导出
 prompt、工具或错误文本。Pi 1.3.0 没有已集成的 OTLP exporter；其
-[环境变量参考](https://github.com/earendil-works/pi/blob/main/docs/environment-variables.md)
+[环境变量参考](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/environment-variables.md)
 说明 `PI_TELEMETRY` 控制安装与更新统计，不是 OTLP 开关。
 
 endpoint 为空时关闭 daemon 管理的导出，但不会删除用户在 guest 中自行配置的原生遥测设置。
