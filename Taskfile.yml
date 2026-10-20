@@ -53,7 +53,6 @@ env:
   CLAUDE_CODE_VERSION: '{{default "" .CLAUDE_CODE_VERSION}}'
   OPENCODE_VERSION: '{{default "" .OPENCODE_VERSION}}'
   PI_AGENT_VERSION: '{{default "" .PI_AGENT_VERSION}}'
-  PI_MCP_ADAPTER_VERSION: '{{default "" .PI_MCP_ADAPTER_VERSION}}'
   DSH_VERSION: '{{default "" .DSH_VERSION}}'
   BOXLITE_VERSION: '{{default "" .BOXLITE_VERSION}}'
   MICROSANDBOX_VERSION: '{{default "" .MICROSANDBOX_VERSION}}'
@@ -252,7 +251,7 @@ tasks:
       - ./scripts/tests/test-binary-ci-contract.sh
       - ./scripts/tests/test-image-ci-contract.sh
       - ./scripts/tests/test-provider-lock.sh
-      - ./scripts/tests/test-check-provider-upstreams.sh
+      - ./scripts/tests/test-check-upstreams.sh
       - ./scripts/tests/test-installer-ci-contract.sh
 
 

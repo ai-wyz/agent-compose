@@ -91,9 +91,21 @@ fi
 
 # 6. A recorded retirement must fire exactly when the superseding release is
 #    pinned. "We will drop the adapter when we upgrade pi" has to be enforced by
-#    the upgrade itself, otherwise the stale companion is carried forever.
+#    the upgrade itself, otherwise the stale companion is carried forever. The
+#    fixture injects a companion because the real lock no longer carries one.
 retired_lock="$TEST_ROOT/providers-retired.lock.json"
-jq '.packages.pi.version = "1.0.0"' "$LOCK_FILE" >"$retired_lock"
+jq '.packages["pi-mcp-adapter"] = {
+      "npm": "pi-mcp-adapter",
+      "version": "2.11.0",
+      "buildArg": "PI_MCP_ADAPTER_VERSION",
+      "companionOf": "pi",
+      "retiredBy": {
+        "package": "pi",
+        "version": "0.99.0",
+        "reason": "test fixture records a released retirement"
+      }
+    }
+    | .packages.pi.version = "1.0.0"' "$LOCK_FILE" >"$retired_lock"
 if PROVIDER_LOCK_FILE="$retired_lock" "$PROVIDER_LOCK" check >"$TEST_ROOT/retired.err" 2>&1; then
   fail 'provider-lock check accepted pi-mcp-adapter next to a pi release that supersedes it'
 elif ! grep -q 'pi-mcp-adapter' "$TEST_ROOT/retired.err"; then
@@ -104,7 +116,7 @@ fi
 #    The check still fails on the Dockerfile drift a temp lock always has; the
 #    assertion is that the retirement itself is no longer reported.
 retired_fixed_lock="$TEST_ROOT/providers-retired-fixed.lock.json"
-jq 'del(.packages["pi-mcp-adapter"]) | .packages.pi.version = "1.0.0"' "$LOCK_FILE" >"$retired_fixed_lock"
+jq 'del(.packages["pi-mcp-adapter"])' "$retired_lock" >"$retired_fixed_lock"
 PROVIDER_LOCK_FILE="$retired_fixed_lock" "$PROVIDER_LOCK" check >"$TEST_ROOT/retired-fixed.err" 2>&1 || true
 if grep -q 'retired by' "$TEST_ROOT/retired-fixed.err"; then
   fail 'provider-lock still reported a retirement after the package was removed from the lock'
@@ -112,7 +124,7 @@ fi
 
 # A prerelease of the superseding version must not trigger the retirement gate.
 retired_prerelease_lock="$TEST_ROOT/providers-retired-prerelease.lock.json"
-jq '.packages.pi.version = "0.99.0-rc.1"' "$LOCK_FILE" >"$retired_prerelease_lock"
+jq '.packages.pi.version = "0.99.0-rc.1"' "$retired_lock" >"$retired_prerelease_lock"
 PROVIDER_LOCK_FILE="$retired_prerelease_lock" "$PROVIDER_LOCK" check >"$TEST_ROOT/retired-prerelease.err" 2>&1 || true
 if grep -q 'retired by' "$TEST_ROOT/retired-prerelease.err"; then
   fail 'provider-lock reported a retirement for a prerelease of the superseding version'

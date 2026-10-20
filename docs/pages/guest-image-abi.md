@@ -78,7 +78,7 @@ everything else from that lock:
 
 `guest-images/guest-abi.json` is generated from the lock and committed. Only
 packages that expose an agent executable appear under `providers`; a companion
-package such as `pi-mcp-adapter` is a build input, so it is deliberately absent.
+package is a build input, so it is deliberately absent.
 The daemon requires the manifest to describe every provider it knows (`codex`,
 `claude`, `opencode`, `pi`, `dsh`); a manifest that omits one is rejected in
 favor of the compiled declaration (`DeclaredProvidersFromManifest` in
@@ -436,7 +436,7 @@ guest Dockerfile unless a combination has been independently tested.
 | Codex | `@openai/codex-sdk` in the runtime package plus an executable selected by `CODEX_BIN`, `AGENT_COMPOSE_CODEX_BIN`, `/usr/bin/codex`, `/usr/local/bin/codex`, or `codex` in `PATH` |
 | Claude | `@anthropic-ai/claude-agent-sdk` plus Claude Code; use `CLAUDE_CODE_EXECUTABLE`/`CLAUDE_CODE_PATH`, `/usr/bin/claude`, or the SDK-supported default |
 | OpenCode | An `opencode` executable in `PATH` |
-| Pi | A `pi` executable in `PATH`; projects using MCP also require the pinned `pi-mcp-adapter` extension at `/usr/local/share/agent-compose/pi-mcp-adapter/index.ts` |
+| Pi | A `pi` executable in `PATH`; Pi 1.x includes built-in MCP support, so no adapter extension is required |
 | DSH | A `dsh` executable in `PATH` (the published guest installs `@deepseek-ai/dsh` globally); `dsh --profile agent-compose` also requires the profile assets under `/root/.dsh/profiles/agent-compose` |
 
 Provider credentials and endpoint variables are injected at execution time.
@@ -583,7 +583,7 @@ The remaining build controls are:
 | `GO_VERSION`, `GRPCURL_VERSION`, `NODE_MAJOR` | Default guest toolchain inputs; `NODE_MAJOR` applies only to the Debian guest |
 | `ARCHLINUX_TAG` | Arch Linux guest base-image tag |
 | `GUEST_ABI` | Guest ABI contract version declared by the label and baked manifest; defaults to the lock's `guestAbi` |
-| `CODEX_VERSION`, `CLAUDE_CODE_VERSION`, `OPENCODE_VERSION`, `PI_AGENT_VERSION`, `PI_MCP_ADAPTER_VERSION`, `DSH_VERSION` | Guest provider package versions; each defaults to the matching pin in `guest-images/providers.lock.json` |
+| `CODEX_VERSION`, `CLAUDE_CODE_VERSION`, `OPENCODE_VERSION`, `PI_AGENT_VERSION`, `DSH_VERSION` | Guest provider package versions; each defaults to the matching pin in `guest-images/providers.lock.json` |
 
 `guest-images/providers.lock.json` is the single authoring point for provider
 versions. `scripts/build-agent-compose-guest.sh` reads the lock for every
@@ -889,7 +889,7 @@ rule (`VerifyCompatible` in `pkg/guestabi/compat.go`).
 
 A companion package can record that a later release of its provider makes it
 redundant, so "drop this when we upgrade" is enforced by the upgrade instead of
-remembered by a person. `pi-mcp-adapter` carries:
+remembered by a person. `pi-mcp-adapter` carried:
 
 ```json
 "retiredBy": {
@@ -902,9 +902,9 @@ remembered by a person. `pi-mcp-adapter` carries:
 `scripts/provider-lock.sh check` then fails while a retired package is still
 pinned next to a version at or above `retiredBy.version`, and the message names
 the package and the reason. The fix is part of the upgrade: remove the package
-from the lock, both guest Dockerfiles, and the build script. Because the current
-pin is `pi` 0.82.1, the adapter is still required today; the gate fires on the
-release that makes it unnecessary.
+from the lock, both guest Dockerfiles, and the build script. The gate fired when
+`pi` moved to 1.3.0, which is how the adapter was removed; the lock no longer
+pins a companion today, and the mechanism remains for the next one.
 
 [`.github/workflows/guest-image-release.yml`](https://github.com/chaitin/agent-compose/blob/main/.github/workflows/guest-image-release.yml)
 is the independent release path. On manual `workflow_dispatch` it verifies the
@@ -935,39 +935,55 @@ non-zero on any disagreement. Run it against a digest or an immutable tag, not
 against a moving alias, and use the checkout that built the image because the
 provider versions are compared against that checkout's lock.
 
-### 11.3 Daily Upstream Provider Check
+### 11.3 Daily Upstream Dependency Check
 
-[`.github/workflows/provider-upstream-check.yml`](https://github.com/chaitin/agent-compose/blob/main/.github/workflows/provider-upstream-check.yml)
-runs `scripts/check-provider-upstreams.sh` daily at `17 1 * * *` UTC and on
-manual `workflow_dispatch`. It compares every package pinned in
-`guest-images/providers.lock.json` with the version npm currently publishes and
-reports the result where a team already looks:
+[`.github/workflows/upstream-check.yml`](https://github.com/chaitin/agent-compose/blob/main/.github/workflows/upstream-check.yml)
+runs `scripts/check-upstreams.sh` daily at `17 1 * * *` UTC and on manual
+`workflow_dispatch`. It compares two kinds of pinned dependency and reports the
+result where a team already looks:
 
-- when the `DINGTALK_DEV_TARGETS_JSON` secret is configured, the summary is
+- every package pinned in `guest-images/providers.lock.json` is compared with the
+  version npm currently publishes; and
+- every native runtime driver pinned in `drivers.lock.json` is compared with the
+  latest stable GitHub release of its repository. The lock currently covers
+  BoxLite and Microsandbox. Docker and Kubernetes are deliberately not tracked:
+  they are host-provided deployment dependencies rather than artifacts this
+  repository builds against a pinned SDK, so there is no version here to chase.
+
+The scan refuses to run when a driver lock entry disagrees with the `Dockerfile`
+ARG that actually builds it, or with the Go SDK module it must move in lockstep
+with. The committed contract test also checks the committed pins, so a change
+that moves one without the other fails CI.
+
+- when the `DINGTALK_DEV_TARGETS_JSON` secret is configured, one summary is
   pushed to the development DingTalk group through `scripts/notify-dingtalk.sh`.
   It is written for that group, so it is Simplified Chinese and lists only what
-  needs attention: which pinned providers have a newer release with their pinned
-  and latest versions, one line for each package retired by another provider's
-  release, and a line when an npm query failed. This is a channel of its own:
-  release announcements use the separate `DINGTALK_TARGETS_JSON` secret consumed
-  by the release workflow. That webhook is the notification path: there is no
-  tracking issue to watch. If the secret is unset, the run still succeeds but
-  emits a warning and says so in the job summary, because a silent run and an
-  up-to-date run would otherwise look identical; and
+  needs attention: which pinned providers or drivers have a newer release with
+  their pinned and latest versions, one line for each package retired by another
+  provider's release, and a line when an npm or GitHub release query failed. This
+  is a channel of its own: release announcements use the separate
+  `DINGTALK_TARGETS_JSON` secret consumed by the release workflow. That webhook is
+  the notification path: there is no tracking issue to watch. If the secret is
+  unset, the run still succeeds but emits a warning and says so in the job
+  summary, because a silent run and an up-to-date run would otherwise look
+  identical; and
 - the same summary is written to the job summary, and is the body of the draft
   bump pull request.
 
-The workflow never edits a pin on its own. A package whose lock entry records a
-`retiredBy` release is reported together with that plan, and is left out of the
-bump list: the intended action is to delete it in the upgrade that retires it, not
-to follow its own releases. A `workflow_dispatch` input `bump` additionally opens
-a draft pull request that applies `provider-lock.sh bump` to the outdated pins and
-then runs `scripts/provider-lock.sh check`. The draft is deliberate: the bump is
-mechanical, while deciding whether a provider release is safe is not. A failing
-check does not block the draft — it is recorded in the pull request body, and CI
-enforces it once the draft is marked ready. Two optional repository variables
-refine the scan: `PROVIDER_UPGRADE_MENTIONS` is appended to the pushed summary for
-@-mentions, and `NPM_CONFIG_REGISTRY` is used for the npm queries.
+The workflow never edits a provider or driver pin on its own. A package whose
+lock entry records a `retiredBy` release is reported together with that plan, and
+is left out of the bump list: the intended action is to delete it in the upgrade
+that retires it, not to follow its own releases. A `workflow_dispatch` input
+`bump` additionally opens a draft pull request that applies `provider-lock.sh
+bump` to the outdated provider pins and then runs `scripts/provider-lock.sh
+check`. Driver pins are only reported: their Dockerfile artifacts, lock entry, and
+Go SDK module must move together, so a person upgrades them by hand. The draft is
+deliberate: the provider bump is mechanical, while deciding whether a provider
+release is safe is not. A failing check does not block the draft — it is recorded
+in the pull request body, and CI enforces it once the draft is marked ready. Two
+optional repository variables refine the scan: `PROVIDER_UPGRADE_MENTIONS` is
+appended to the pushed summary for @-mentions, and `NPM_CONFIG_REGISTRY` is used
+for the npm queries.
 
 GitHub's scheduler is best-effort, so treat the job summary as the durable record
 and the DingTalk push as the notification:
@@ -980,5 +996,5 @@ and the DingTalk push as the notification:
 Run the same scan on demand with:
 
 ```bash
-scripts/check-provider-upstreams.sh
+scripts/check-upstreams.sh
 ```

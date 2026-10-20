@@ -304,6 +304,7 @@ owned by `ProjectService` alongside project reconciliation:
   - `GetRun`
   - `ListRuns`
   - `StopRun`
+  - `AbandonRunCompletion`
 - `ExecService`
   - `Exec`
   - `StreamExec`
@@ -440,10 +441,21 @@ scheduler trigger, or future API clients.
    terminal status event while cleanup is pending.
 10. Stop the runtime by default, fully remove a newly created sandbox for
     `REMOVE_ON_COMPLETION`, or skip cleanup for `KEEP_RUNNING`. Cleanup failures
-    are retried with bounded backoff and recovered after daemon restart.
+    are retried with bounded backoff and recovered after daemon restart; once the
+    attempts are exhausted the run is finalized in the terminal state its first
+    completion writer selected, with the cleanup failure preserved.
 11. After cleanup succeeds, atomically commit the terminal run fields and its
-    unique status event and remove the completion journal. `StopRun` is a
-    cancellation request and can therefore return before this terminal commit.
+    unique status event and remove the completion journal. `StopRun` asks the
+    run to end and can therefore return before this terminal commit. For a
+    prompt interactive session the engine derives the disposition from its own
+    turn state: an idle session is closed normally with the wrapper's `eof`
+    frame and commits `succeeded`; an in-flight turn is interrupted by cancelling its
+    execution context and commits `canceled`; an execution error remains `failed`. The request
+    `reason` is audit data only and never selects the status. Command and
+    non-interactive runs retain their existing cancellation behavior.
+    `AbandonRunCompletion` is the operator counterpart for a cleanup that will
+    not converge: it performs the same terminal commit while recording that the
+    sandbox runtime may still exist, because it does not remove it.
 
 State queries primarily use project/run relationships in SQLite. Sandbox tags
 are used for compatibility queries, `down` stopping project sandboxes, and

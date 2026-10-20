@@ -111,7 +111,8 @@ vi.mock("node:child_process", async (importOriginal) => {
             JSON.stringify({ type: "turn_start" }) + "\n",
             JSON.stringify({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "pi final answer", contentIndex: 0 } }) + "\n",
             JSON.stringify({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "pi final answer" }], stopReason: "stop" } }) + "\n",
-            JSON.stringify({ type: "agent_end", stopReason: "stop" }) + "\n",
+            JSON.stringify({ type: "agent_end", messages: [], willRetry: false }) + "\n",
+            JSON.stringify({ type: "agent_settled", aborted: false }) + "\n",
           ]
         : [
             JSON.stringify({ type: "result", result: "opencode final", sessionId: "e2e-opencode-session" }) + "\n",
@@ -468,10 +469,15 @@ describe("runtime JavaScript E2E", () => {
       // --session-id would be treated as a resume miss.
       expect(call?.args).not.toContain("--session-id");
       expect(call?.args).toContain("--offline");
-      expect(call?.args).toContain("--extension");
-      expect(call?.args).toContain("--mcp-config");
+      expect(call?.args).toEqual(expect.arrayContaining([
+        "--extension", "builtin:mcp",
+        "--extension", "builtin:codemode",
+      ]));
+      expect(call?.args).not.toContain("--mcp-config");
       expect(call?.args.at(-1)).toBe("pi prompt");
-      expect((call?.options.env as Record<string, string>).PI_OFFLINE).toBe("1");
+      const env = call?.options.env as Record<string, string>;
+      expect(env.PI_OFFLINE).toBe("1");
+      expect(env.PI_CODING_AGENT_DIR).toContain(path.join("agents", "providers", "pi", "tmp"));
     });
   });
 });

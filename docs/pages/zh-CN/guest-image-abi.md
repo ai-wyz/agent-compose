@@ -38,7 +38,7 @@ daemon 仍然负责选择镜像、挂载 sandbox state、通过 runtime driver �
 - `check` 在 lock、两个 guest Dockerfile 的 `ARG` 默认值、构建脚本的转发或生成的 manifest 任意一处不一致时失败；
 - `bump K=V [K=V ...]` 一次性改写 lock、两个 Dockerfile 和 manifest 中的某个 provider 版本，且不校验新版本。
 
-`guest-images/guest-abi.json` 由 lock 生成并提交到仓库。只有提供 agent 可执行文件的包才会出现在 `providers` 下；`pi-mcp-adapter` 这类 companion 包属于构建输入，因此被有意排除。daemon 要求 manifest 描述它认识的每个 provider（`codex`、`claude`、`opencode`、`pi`、`dsh`）；缺少其中任何一个时，daemon 会放弃该 manifest 并改用编译期声明（`pkg/capmatrix/provider_matrix.go` 中的 `DeclaredProvidersFromManifest`）：
+`guest-images/guest-abi.json` 由 lock 生成并提交到仓库。只有提供 agent 可执行文件的包才会出现在 `providers` 下；companion 包属于构建输入，因此被有意排除。daemon 要求 manifest 描述它认识的每个 provider（`codex`、`claude`、`opencode`、`pi`、`dsh`）；缺少其中任何一个时，daemon 会放弃该 manifest 并改用编译期声明（`pkg/capmatrix/provider_matrix.go` 中的 `DeclaredProvidersFromManifest`）：
 
 ```json
 {
@@ -283,7 +283,7 @@ daemon 托管 agent 的 LLM 连接时，会把这些 facade 变量发布到 sand
 | Codex | Runtime package 中的 `@openai/codex-sdk`，以及通过 `CODEX_BIN`、`AGENT_COMPOSE_CODEX_BIN`、`/usr/bin/codex`、`/usr/local/bin/codex` 或 `PATH` 中 `codex` 选择的可执行文件 |
 | Claude | `@anthropic-ai/claude-agent-sdk` 和 Claude Code；通过 `CLAUDE_CODE_EXECUTABLE`/`CLAUDE_CODE_PATH`、`/usr/bin/claude` 或 SDK 支持的默认位置选择 |
 | OpenCode | `PATH` 中的 `opencode` 可执行文件 |
-| Pi | `PATH` 中的 `pi` 可执行文件；使用 MCP 的 project 还需要 `/usr/local/share/agent-compose/pi-mcp-adapter/index.ts` 中固定版本的 `pi-mcp-adapter` extension |
+| Pi | `PATH` 中的 `pi` 可执行文件；Pi 1.x 内置 MCP 支持，不再需要 adapter extension |
 | DSH | `PATH` 中的 `dsh` 可执行文件（官方 guest 会全局安装 `@deepseek-ai/dsh`）；`dsh --profile agent-compose` 还需要 `/root/.dsh/profiles/agent-compose` 下的 profile 资源 |
 
 Provider credential 和 endpoint variable 会在执行时注入，**不得**写入镜像。
@@ -377,7 +377,7 @@ task image:agent-compose-guest-archlinux
 | `GO_VERSION`、`GRPCURL_VERSION`、`NODE_MAJOR` | 默认 guest 工具链参数；`NODE_MAJOR` 仅适用于 Debian guest |
 | `ARCHLINUX_TAG` | Arch Linux guest 基础镜像 tag |
 | `GUEST_ABI` | 由 label 和烘焙 manifest 声明的 guest ABI 契约版本；默认取 lock 中的 `guestAbi` |
-| `CODEX_VERSION`、`CLAUDE_CODE_VERSION`、`OPENCODE_VERSION`、`PI_AGENT_VERSION`、`PI_MCP_ADAPTER_VERSION`、`DSH_VERSION` | guest provider 包版本；各自默认取 `guest-images/providers.lock.json` 中对应的固定版本 |
+| `CODEX_VERSION`、`CLAUDE_CODE_VERSION`、`OPENCODE_VERSION`、`PI_AGENT_VERSION`、`DSH_VERSION` | guest provider 包版本；各自默认取 `guest-images/providers.lock.json` 中对应的固定版本 |
 
 `guest-images/providers.lock.json` 是 provider 版本的唯一编写点。`scripts/build-agent-compose-guest.sh` 会从 lock 读取每个 provider 版本和 `GUEST_ABI`，因此即使不设置这些变量，构建仍然是固定且可复现的；显式设置环境变量可为一次性本地构建覆盖 lock。当 lock、两个 guest Dockerfile 的 `ARG` 默认值、构建脚本的转发或生成的 `guest-images/guest-abi.json` 任意一处不一致时，`scripts/provider-lock.sh check` 会失败。
 
@@ -602,7 +602,7 @@ daemon release 与 guest 镜像构建现在是两条独立的轨道。`guestAbi`
 
 任何会提高 `guestAbi` 的改动都不是纯 guest 改动。提高它意味着 daemon/guest 契约发生变化，因此必须先发布带有匹配 `CurrentGuestAbi` 的 daemon，新取值的镜像才能被采用。除此之外没有更宽的版本矩阵：当 manifest 的 `guestAbi` 等于 daemon 的 `CurrentGuestAbi` 时即为兼容，比较逻辑就是这一条（`pkg/guestabi/compat.go` 中的 `VerifyCompatible`）。
 
-伴生包可以记录「某个 provider 的后续版本会让它变得多余」，从而让「升级时记得摘掉它」由升级动作本身强制，而不是靠人记。`pi-mcp-adapter` 带有：
+伴生包可以记录「某个 provider 的后续版本会让它变得多余」，从而让「升级时记得摘掉它」由升级动作本身强制，而不是靠人记。`pi-mcp-adapter` 曾带有：
 
 ```json
 "retiredBy": {
@@ -612,7 +612,7 @@ daemon release 与 guest 镜像构建现在是两条独立的轨道。`guestAbi`
 }
 ```
 
-当被退役的包仍与不低于 `retiredBy.version` 的版本一起固定时，`scripts/provider-lock.sh check` 会失败，并在消息中点名该包与原因。修复属于这次升级的一部分：从 lock、两个 guest Dockerfile 和构建脚本中移除该包。当前固定的是 `pi` 0.82.1，所以今天仍然需要这个 adapter；门禁会在不再需要它的那个版本上触发。
+当被退役的包仍与不低于 `retiredBy.version` 的版本一起固定时，`scripts/provider-lock.sh check` 会失败，并在消息中点名该包与原因。修复属于这次升级的一部分：从 lock、两个 guest Dockerfile 和构建脚本中移除该包。`pi` 升级到 1.3.0 时该门禁触发，adapter 因此被移除；当前 lock 已不再固定伴生包，该机制保留给下一个伴生包。
 
 [`.github/workflows/guest-image-release.yml`](https://github.com/chaitin/agent-compose/blob/main/.github/workflows/guest-image-release.yml) 是独立的发布路径。手动 `workflow_dispatch` 时，它会校验 lock、构建可加载的 `linux/amd64` 镜像、运行 `scripts/verify-guest-image-abi.sh`、探测 baseline guest ABI、打印镜像内 `agent-compose-runtime abi --json` 报告，然后才可选地发布多架构镜像。它的 tag 规则为：
 
@@ -630,14 +630,19 @@ scripts/verify-guest-image-abi.sh \
 
 该脚本会把镜像的 `io.agent-compose.guest-abi` label、镜像内烘焙的 manifest 以及每个 agent provider 版本与本 checkout 的 `guest-images/providers.lock.json` 逐一比对，打印发现的 provider，并在任何一处不一致时以非零状态退出。请针对 digest 或不可变 tag 执行，不要针对移动别名；provider 版本是与执行该脚本的 checkout 的 lock 比较的，因此要使用构建该镜像的 checkout。
 
-### 11.3 每日上游 provider 检查
+### 11.3 每日上游依赖检查
 
-[`.github/workflows/provider-upstream-check.yml`](https://github.com/chaitin/agent-compose/blob/main/.github/workflows/provider-upstream-check.yml) 每天 UTC `17 1 * * *` 运行 `scripts/check-provider-upstreams.sh`，并支持手动 `workflow_dispatch`。它会将 `guest-images/providers.lock.json` 中固定的每个包与 npm 当前发布的版本比较，并把结果汇报到团队已经关注的位置：
+[`.github/workflows/upstream-check.yml`](https://github.com/chaitin/agent-compose/blob/main/.github/workflows/upstream-check.yml) 每天 UTC `17 1 * * *` 运行 `scripts/check-upstreams.sh`，并支持手动 `workflow_dispatch`。它会比较两类固定的上游依赖，并把结果汇报到团队已经关注的位置：
 
-- 配置了 `DINGTALK_DEV_TARGETS_JSON` secret 时，通过 `scripts/notify-dingtalk.sh` 把简报推送到研发钉钉群。这份简报就是为群消息写的：使用中文，且只列出需要关注的内容——有哪些固定版本落后于上游（含当前版本与最新版本）、哪些包已被其他 provider 的版本取代、以及有多少个包查询 npm 失败。这是独立于发版通知的渠道：发版公告由 release workflow 读取的 `DINGTALK_TARGETS_JSON` secret 发送。该 webhook 就是通知渠道：没有需要盯的 tracking issue。若未配置该 secret，运行仍然成功，但会输出 warning 并在 job summary 中说明——否则「静默无通知」和「全部是最新」看起来完全一样；
+- 将 `guest-images/providers.lock.json` 中固定的每个包与 npm 当前发布的版本比较；
+- 将 `drivers.lock.json` 中固定的每个 native runtime driver 与其仓库最新的稳定 GitHub Release 比较。该 lock 目前覆盖 BoxLite 与 Microsandbox。Docker 与 Kubernetes 刻意不在扫描范围内：它们是宿主机提供的部署依赖，而不是本仓库按固定 SDK 构建的产物，因此这里没有需要跟随的版本。
+
+当 driver lock 条目与实际构建它的 `Dockerfile` ARG 不一致，或与必须保持同步的 Go SDK module 不一致时，扫描会拒绝运行。提交的契约测试也会检查现有固定版本，因此只改其中一处的变更会在 CI 失败。
+
+- 配置了 `DINGTALK_DEV_TARGETS_JSON` secret 时，通过 `scripts/notify-dingtalk.sh` 把一份简报推送到研发钉钉群。这份简报就是为群消息写的：使用中文，且只列出需要关注的内容——有哪些固定的 provider 或 driver 版本落后于上游（含当前版本与最新版本）、哪些包已被其他 provider 的版本取代、以及有多少个 npm 或 GitHub Release 查询失败。这是独立于发版通知的渠道：发版公告由 release workflow 读取的 `DINGTALK_TARGETS_JSON` secret 发送。该 webhook 就是通知渠道：没有需要盯的 tracking issue。若未配置该 secret，运行仍然成功，但会输出 warning 并在 job summary 中说明——否则「静默无通知」和「全部是最新」看起来完全一样；
 - 同一份简报写入 job summary，并作为 draft bump pull request 的正文。
 
-该 workflow 不会自行修改任何固定版本。若某个包的 lock 条目记录了 `retiredBy` 版本，简报会同时给出该计划，且不会把它放进 bump 列表：预期动作是在使其退役的那次升级里删除它，而不是跟随它自己的版本。`workflow_dispatch` 输入 `bump` 会额外打开一个 draft pull request，其中对过期版本执行 `provider-lock.sh bump`，再运行 `scripts/provider-lock.sh check`。之所以是 draft：版本提升本身是机械操作，而判断某个 provider release 是否安全不是。check 失败不会阻止该 draft —— 失败内容会写进 PR 正文，等 draft 标记为 ready 后由 CI 强制。两个可选 repository variable 可以细化扫描：`PROVIDER_UPGRADE_MENTIONS` 会追加到推送简报用于 @ 提醒，`NPM_CONFIG_REGISTRY` 用于 npm 查询。
+该 workflow 不会自行修改任何 provider 或 driver 固定版本。若某个包的 lock 条目记录了 `retiredBy` 版本，简报会同时给出该计划，且不会把它放进 bump 列表：预期动作是在使其退役的那次升级里删除它，而不是跟随它自己的版本。`workflow_dispatch` 输入 `bump` 会额外打开一个 draft pull request，其中只对过期的 provider 版本执行 `provider-lock.sh bump`，再运行 `scripts/provider-lock.sh check`。driver 固定版本只报告、不自动提升：它们的 Dockerfile 产物、lock 条目和 Go SDK module 必须一起移动，因此由人工升级。之所以是 draft：provider 版本提升本身是机械操作，而判断某个 release 是否安全不是。check 失败不会阻止该 draft —— 失败内容会写进 PR 正文，等 draft 标记为 ready 后由 CI 强制。两个可选 repository variable 可以细化扫描：`PROVIDER_UPGRADE_MENTIONS` 会追加到推送简报用于 @ 提醒，`NPM_CONFIG_REGISTRY` 用于 npm 查询。
 
 GitHub 的 scheduler 是尽力而为的，因此应把 job summary 视为持久记录，把钉钉推送视为通知渠道：
 
@@ -648,5 +653,5 @@ GitHub 的 scheduler 是尽力而为的，因此应把 job summary 视为持久�
 也可以随时手动执行同一扫描：
 
 ```bash
-scripts/check-provider-upstreams.sh
+scripts/check-upstreams.sh
 ```

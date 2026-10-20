@@ -48,7 +48,6 @@ append_build_arg CODEX_VERSION "${CODEX_VERSION:-$(locked_version CODEX_VERSION)
 append_build_arg CLAUDE_CODE_VERSION "${CLAUDE_CODE_VERSION:-$(locked_version CLAUDE_CODE_VERSION)}"
 append_build_arg OPENCODE_VERSION "${OPENCODE_VERSION:-$(locked_version OPENCODE_VERSION)}"
 append_build_arg PI_AGENT_VERSION "${PI_AGENT_VERSION:-$(locked_version PI_AGENT_VERSION)}"
-append_build_arg PI_MCP_ADAPTER_VERSION "${PI_MCP_ADAPTER_VERSION:-$(locked_version PI_MCP_ADAPTER_VERSION)}"
 append_build_arg DSH_VERSION "${DSH_VERSION:-$(locked_version DSH_VERSION)}"
 append_build_arg GUEST_ABI "${GUEST_ABI:-$("$ROOT_DIR/scripts/provider-lock.sh" guest-abi-version)}"
 

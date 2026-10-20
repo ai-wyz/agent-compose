@@ -4,7 +4,7 @@
   "packages": {
     "codex": {
       "npm": "@openai/codex",
-      "version": "0.146.0",
+      "version": "0.163.0",
       "buildArg": "CODEX_VERSION",
       "bin": "codex",
       "features": [
@@ -15,7 +15,7 @@
     },
     "claude": {
       "npm": "@anthropic-ai/claude-code",
-      "version": "2.1.220",
+      "version": "2.1.304",
       "buildArg": "CLAUDE_CODE_VERSION",
       "bin": "claude",
       "features": [
@@ -42,7 +42,7 @@
     },
     "pi": {
       "npm": "@earendil-works/pi-coding-agent",
-      "version": "0.82.1",
+      "version": "1.3.0",
       "buildArg": "PI_AGENT_VERSION",
       "bin": "pi",
       "features": [
@@ -50,17 +50,6 @@
         "streaming",
         "skill_injection"
       ]
-    },
-    "pi-mcp-adapter": {
-      "npm": "pi-mcp-adapter",
-      "version": "2.11.0",
-      "buildArg": "PI_MCP_ADAPTER_VERSION",
-      "companionOf": "pi",
-      "retiredBy": {
-        "package": "pi",
-        "version": "0.99.0",
-        "reason": "Pi 0.99 and later ship a built-in MCP extension, so the adapter only exists to add MCP to older Pi releases"
-      }
     },
     "dsh": {
       "npm": "@deepseek-ai/dsh",

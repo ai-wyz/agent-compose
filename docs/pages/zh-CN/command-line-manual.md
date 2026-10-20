@@ -394,8 +394,40 @@ agent-compose run reviewer --jupyter --jupyter-expose --prompt "Inspect the note
 - detached run 可通过输出的 `agent-compose logs --run <run-id> --follow` 命令观察输出，也可继续使用 `stop`/`logs` 操作该 run。
 - `run -i --prompt` 仅支持可复用 provider conversation 的 Codex、Claude、OpenCode、Pi 和 DSH（`dsh`、`deepseek`、`deepseek-harness`、`deepseek_harness`）。
 - run 通常只有在 completion cleanup 成功后才进入终态。默认策略停止 sandbox；remove-on-completion 会完整删除由本 run 新建的 sandbox，但复用的 sandbox 只会停止；keep-running 是不执行清理的显式例外。
-- cleanup 失败时 run 保持 `running` 并写入 `cleanup_error`，daemon 会立即重试并采用有上限的退避，重启后也会继续。重试有上限：达到次数上限后，run 会以首个 completion 写入者选定的终态落终态（成功执行为 `succeeded`，停止请求为 `canceled`）并保留 `cleanup_error`，未完成的 completion 被放弃而不再无限重试。前台与流式调用在自身的完成等待 deadline 到达后停止等待并返回错误，错误中给出 run 停留的状态；run 本身仍由这些后台重试收敛。detached start 仍立即返回。
-- `StopRun` 只请求取消，因此可能返回 `stop_requested=true` 而 run 仍为 `running`。执行路径先记录取消结果并完成配置的 cleanup，再提交 `canceled`；daemon 重启后遗留的 running/pending run 也通过同一路径在清理后变为 `failed`，错误为 `daemon interrupted`。
+- cleanup 失败时 run 保持 `running` 并写入 `cleanup_error`，daemon 会立即重试并采用有上限的退避，重启后也会继续。重试有上限：达到次数上限后，run 会以首个 completion 写入者选定的终态落终态（成功执行或正常关闭 prompt 会话为 `succeeded`，中断执行中的 turn 为 `canceled`）并保留 `cleanup_error`，未完成的 completion 被放弃而不再无限重试。前台与流式调用在自身的完成等待 deadline 到达后停止等待并返回错误，错误中给出 run 停留的状态；run 本身仍由这些后台重试收敛。detached start 仍立即返回。
+- `StopRun` 可能返回 `stop_requested=true` 而 run 仍为 `running`。对于 prompt interactive session，Engine 根据自身 turn 状态决定终态：turn 已完成后的空闲会话正常关闭并提交 `succeeded`；执行中的 turn 被中断并提交 `canceled`；执行自身报错则提交 `failed`。请求中的 reason 只用于审计，不参与状态选择。command 与非交互 run 保持原有取消语义。配置的 cleanup 完成后才提交终态；daemon 重启后遗留的 running/pending run 也通过同一路径在清理后变为 `failed`，错误为 `daemon interrupted`。
+- 卡住的 cleanup 也可以显式放弃，见 `abandon-completion`。
+
+## `abandon-completion`：结束 cleanup 无法收敛的 run
+
+结束一条已进入 cleanup 阶段但无法成功的 run，例如集群或 runtime 已永久不可达。当后台 cleanup 重试有上限仍无法完成时，这是操作者的退出路径。
+
+```bash
+agent-compose abandon-completion <run>
+agent-compose abandon-completion <run> --reason "kubeconfig points at a deleted cluster"
+```
+
+| 参数 | 说明 |
+| --- | --- |
+| `--reason <text>` | 随被放弃的 cleanup 一起记录的说明。 |
+
+规则：
+
+- run 会以首个 completion 写入者选定的终态落终态（`succeeded`、`failed` 或 `canceled`），不再停在 `running`，同时释放未完成的 completion。
+- 记录的 `cleanup_error` 会说明 cleanup 被操作者放弃、sandbox runtime 可能仍然存在；其中也会保留重试循环最后记录的 cleanup 错误，因为被释放的 completion 不再持有它。
+- 该命令不会停止或删除 sandbox runtime。请另行清理，例如 `sandbox stop`、`sandbox rm` 或 driver 自带工具。
+- 如果该 run 已有一次 cleanup 尝试在进行中，命令会等它返回后再落终态；也就是说响应时间由这次尝试决定，而不是由重试计划决定。
+- 仍在执行的 run 请使用 `stop`，该路径仍会清理 runtime；对这类 run 执行放弃会返回 `failed_precondition`。
+- run 已是终态时命令退出码为 0，并输出 `already terminal; nothing was abandoned`，因此在响应丢失后重试是安全的。
+- 放弃是操作者的决定，而不是修复：runtime 保持原状，run 记录是「它可能仍然存在」的唯一说明。
+
+示例：
+
+```bash
+agent-compose abandon-completion run_123
+agent-compose abandon-completion run_123 --reason "cluster deleted during incident"
+agent-compose abandon-completion run_123 --json
+```
 
 ## `scheduler`：调用、查看和操作 project scheduler
 
@@ -492,7 +524,7 @@ agent-compose sandbox prune --include-orphans
 
 | 参数 | 说明 |
 | --- | --- |
-| `--status <status>[,<status>...]` | 覆盖默认的 `stopped,failed` 状态过滤。`running` 和 `pending` 会被拒绝；running sandbox 请使用 `sandbox rm --force <sandbox>`。 |
+| `--status <status>[,<status>...]` | 覆盖默认的 `stopped,failed` 状态过滤。`deleting` 也被接受，用于清理删除过程被中断后停在该中间态的记录；`running` 和 `pending` 会被拒绝，running sandbox 请使用 `sandbox rm --force <sandbox>`。 |
 | `--agent <agent>` | 只匹配指定 agent name 的 sandbox。 |
 | `--driver <docker|boxlite|microsandbox>` | 只匹配指定 runtime driver 的 sandbox。 |
 | `--older-than <duration>` | 匹配 `updated_at` 早于指定时长的 sandbox；缺少 `updated_at` 时回退使用 `created_at`。时长示例：`7d`、`168h`。 |
@@ -505,7 +537,7 @@ agent-compose sandbox prune --include-orphans
 - 带 `--include-orphans` 时，`--driver`、`--older-than` 同时过滤记录和残留；`--status`、`--agent` 只过滤记录。任何仍关联已知 sandbox 记录的 runtime 资源都不会成为 orphan。
 - ownership 不完整、manifest 损坏、路径越界、仍 active 或 schema 未知的残留会显示为不可删除；即使 `--force` 也只会 skipped。
 - `sandbox prune` 调用 daemon 的 `SandboxService.PruneSandboxes` use case，删除 sandbox 自有 runtime/data，不删除共享 cache artifact；cache inventory 仍由 `cache prune` 或 `cache rm` 管理。
-- forced prune 中某个 sandbox 删除失败时，命令会继续处理后续匹配项，输出 skipped 项，并以非零退出码结束。
+- forced prune 中某个 sandbox 删除失败时，命令会继续处理后续匹配项，输出 skipped 项，并以非零退出码结束。失败的记录会回滚到删除尝试之前的状态，从而保持可见、可重试，而不是停在 `deleting`；skipped 原因里带有 runtime 报错，因为运行时对象可能仍然存在。
 
 `sandbox stop` 会应用 sandbox 创建时快照的 stopped-runtime 策略：`retain` 保留可恢复的 driver state；`remove` 先确认最近一次启动已经停止，再释放私有 runtime，同时保留 sandbox 的持久数据。为保持兼容，默认行为是立即 force stop。使用 `--graceful` 时，daemon 会拒绝新的 execution，向每个 active `agent-compose-runtime` 进程发送 `SIGTERM`，等待 JS runtime 取消 provider、执行已有的 `finally` 清理、持久化部分输出并退出。默认 grace period 为 10 秒，可通过 `SANDBOX_GRACEFUL_STOP_TIMEOUT` 修改；单次请求可用 `--grace-period` 覆盖，最大 5 分钟。等待超时或发送信号失败时，daemon 会先强制终止已跟踪 execution，再停止 sandbox。文本与 JSON 输出会给出 `graceful`、`forced-after-grace-timeout` 或 `forced-after-grace-error`。只要 sandbox 最终成功停止，升级为 force 仍属于成功的停止操作，因此 API 和 CLI 都返回成功，并保留 outcome 用于观测；只有 sandbox 本身无法停止时才返回错误。
 
@@ -1002,11 +1034,11 @@ collector 还必须从 **daemon 主机**可达。系统不会自动部署 collec
 
 | 默认 guest 中的 provider | 受管理的原生导出 |
 | --- | --- |
-| Codex 0.146.0 | logs、traces、metrics；通过每次调用的 SDK 配置覆盖启用 |
-| Claude Code 2.1.220 | metrics、logs/events；不启用 beta traces |
+| Codex 0.163.0 | logs、traces、metrics；通过每次调用的 SDK 配置覆盖启用 |
+| Claude Code 2.1.304 | metrics、logs/events；不启用 beta traces |
 | OpenCode 1.18.9 | 基础运行 logs 和 traces；LLM spans 需要显式开启内容采集 |
 | DeepSeek Harness | 仅在开启内容采集且实际 backend 导出 `SessionTelemetryMode.FULL` 时导出 FULL 会话 logs |
-| Pi 0.82.1 | 尚无已集成的官方原生 exporter；runtime 提示后继续执行，不向 Pi 传递 collector 凭证 |
+| Pi 1.3.0 | 尚无已集成的官方原生 exporter；runtime 提示后继续执行，不向 Pi 传递 collector 凭证 |
 
 此初版同时启用表中 provider 支持的信号，没有单独的信号选择器。同一地址还使 daemon 导出
 自身的 OTLP/HTTP traces 与 metrics：每个 daemon RPC 一个 server span，每次执行（流式与
@@ -1028,10 +1060,9 @@ run 状态）；run、project、agent 标识只保留在 span 与事件中，因
 身份存储。
 
 daemon 插桩只记录操作状态：daemon 不把 agent-compose 事件流转换为 spans，也不导出
-prompt、工具或错误文本。Pi 的
-[官方 observability 设计](https://github.com/badlogic/pi-mono/blob/v0.82.1/packages/agent/docs/observability.md)
-描述了外部监听器及可能的未来 OTel 包，并非已发布的 exporter；其 `PI_TELEMETRY` 开关
-控制安装统计，不是 OTLP。
+prompt、工具或错误文本。Pi 1.3.0 没有已集成的 OTLP exporter；其
+[环境变量参考](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/environment-variables.md)
+说明 `PI_TELEMETRY` 控制安装与更新统计，不是 OTLP 开关。
 
 endpoint 为空时关闭 daemon 管理的导出，但不会删除用户在 guest 中自行配置的原生遥测设置。
 启用时，受支持 provider 继承的 `OTEL_*` 地址、headers 和 beta tracing 地址会被替换，

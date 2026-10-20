@@ -68,8 +68,9 @@ describe("PiRunner", () => {
         JSON.stringify({ type: "tool_execution_start", toolName: "secret-tool" }),
         JSON.stringify({ type: "tool_execution_update", result: "ignored partial" }),
         JSON.stringify({ type: "tool_execution_end", result: { content: [{ type: "text", text: "secret tool output" }] } }),
-        JSON.stringify({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "final answer" }] } }),
-        JSON.stringify({ type: "agent_end", stopReason: "end_turn" }),
+        JSON.stringify({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "final answer" }], stopReason: "stop" } }),
+        JSON.stringify({ type: "agent_end", messages: [], willRetry: false }),
+        JSON.stringify({ type: "agent_settled", aborted: false }),
       ];
       const stdio = captureStdio();
       try {
@@ -83,7 +84,7 @@ describe("PiRunner", () => {
         expect(result).toMatchObject({
           provider: "pi",
           threadId: "pi-session",
-          stopReason: "end_turn",
+          stopReason: "completed",
           finalText: "final answer",
           finalTextSource: "provider_message",
         });
@@ -103,6 +104,7 @@ describe("PiRunner", () => {
         "--no-extensions", "--no-skills", "--no-context-files", "--no-approve", "--offline",
         "--skill", path.join(skillDir, "SKILL.md"), "user prompt",
       ]));
+      expect(call.args).not.toContain("builtin:mcp");
       expect(call.args).not.toContain("--session-id");
       expect(call.options).toMatchObject({ cwd: path.join(root, "workspace") });
       expect(call.options.env).toMatchObject({
@@ -125,7 +127,7 @@ describe("PiRunner", () => {
     await withTempSession(async (root) => {
       processState.lines = [
         JSON.stringify({ type: "session", id: "pi-session" }),
-        JSON.stringify({ type: "agent_end", stopReason: "end_turn" }),
+        JSON.stringify({ type: "agent_end", messages: [], willRetry: false }),
       ];
       // The daemon resolved "openrouter/anthropic/claude-3.5-sonnet" down to
       // this reference. Stripping the first segment here would address
@@ -145,7 +147,7 @@ describe("PiRunner", () => {
       processState.lines = [
         JSON.stringify({ type: "session", id: "pi-session" }),
         JSON.stringify({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "partial output" } }),
-        JSON.stringify({ type: "agent_end", stopReason: "completed" }),
+        JSON.stringify({ type: "agent_end", messages: [], willRetry: false }),
       ];
       const result = await new PiRunner(runnerOptions(root, "", "pi")).runPrompt("prompt");
       expect(result.finalText).toBe("partial output");
@@ -175,12 +177,13 @@ describe("PiRunner", () => {
     });
   });
 
-  it("loads the managed MCP adapter with an invocation-scoped config", async () => {
+  it("loads Pi's built-in MCP support with an invocation-scoped agent dir", async () => {
     const { PiRunner } = await import("../src/runners/pi.js");
     await withTempSession(async (root) => {
       processState.lines = [
         JSON.stringify({ type: "session", id: "pi-session" }),
-        JSON.stringify({ type: "agent_end", stopReason: "completed" }),
+        JSON.stringify({ type: "agent_end", messages: [], willRetry: false }),
+        JSON.stringify({ type: "agent_settled", aborted: false }),
       ];
       await new PiRunner({
         ...runnerOptions(root, "", "pi"),
@@ -189,14 +192,19 @@ describe("PiRunner", () => {
           remote: { type: "remote", transport: "http", url: "https://mcp.example", headers: { Authorization: { value: "Bearer secret", secret: true } } },
         },
       }).runPrompt("prompt");
-      const args = processState.calls[0].args;
-      expect(args).toEqual(expect.arrayContaining([
+      const call = processState.calls[0];
+      expect(call.args).toEqual(expect.arrayContaining([
         "--no-extensions",
-        "--extension", "/usr/local/share/agent-compose/pi-mcp-adapter/index.ts",
-        "--mcp-config",
+        "--extension", "builtin:mcp",
+        "--extension", "builtin:codemode",
       ]));
-      const configPath = args[args.indexOf("--mcp-config") + 1];
-      await expect(fs.access(configPath)).rejects.toThrow();
+      expect(call.args).not.toContain("--mcp-config");
+      const agentDir = (call.options.env as Record<string, string>).PI_CODING_AGENT_DIR;
+      expect(agentDir).toContain(path.join("agents", "providers", "pi", "tmp"));
+      // The invocation's isolated agent dir is removed with its temp root.
+      await expect(fs.access(path.join(agentDir, "mcp.json"))).rejects.toThrow();
+      // The persistent managed catalog never gains an mcp.json.
+      await expect(fs.access(path.join(root, "home", ".pi", "agent", "mcp.json"))).rejects.toThrow();
     });
   });
 
@@ -227,7 +235,7 @@ describe("PiRunner", () => {
       processState.lines = [
         JSON.stringify({ type: "session", id: "pi-session" }),
         JSON.stringify({ type: "message_end", message: { role: "assistant", content: [], stopReason: "error", errorMessage: "OpenAI API error (401): Unauthorized" } }),
-        JSON.stringify({ type: "agent_end", stopReason: "completed" }),
+        JSON.stringify({ type: "agent_end", messages: [], willRetry: false }),
       ];
       await expect(new PiRunner(runnerOptions(root, "", "pi")).runPrompt("prompt"))
         .rejects.toThrow("pi model request failed: OpenAI API error (401): Unauthorized");
@@ -246,7 +254,7 @@ describe("PiRunner", () => {
           stop_reason: "error",
           error_message: "flattened failure",
         }),
-        JSON.stringify({ type: "agent_end", stopReason: "completed" }),
+        JSON.stringify({ type: "agent_end", messages: [], willRetry: false }),
       ];
       await expect(new PiRunner(runnerOptions(root, "", "pi")).runPrompt("prompt"))
         .rejects.toThrow("pi model request failed: flattened failure");
@@ -283,10 +291,40 @@ describe("PiRunner", () => {
         JSON.stringify({ type: "session", id: "pi-session" }),
         JSON.stringify({ type: "message_end", message: { role: "assistant", content: [], stopReason: "error", errorMessage: "temporary" } }),
         JSON.stringify({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "recovered" }], stopReason: "stop" } }),
-        JSON.stringify({ type: "agent_end", stopReason: "completed" }),
+        JSON.stringify({ type: "agent_end", messages: [], willRetry: false }),
       ];
       const result = await new PiRunner(runnerOptions(root, "", "pi")).runPrompt("prompt");
       expect(result.finalText).toBe("recovered");
+    });
+  });
+
+  it("does not fail an intermediate agent_end that will retry", async () => {
+    const { PiRunner } = await import("../src/runners/pi.js");
+    await withTempSession(async (root) => {
+      processState.lines = [
+        JSON.stringify({ type: "session", id: "pi-session" }),
+        JSON.stringify({ type: "message_end", message: { role: "assistant", content: [], stopReason: "error", errorMessage: "temporary" } }),
+        JSON.stringify({ type: "agent_end", messages: [], willRetry: true }),
+        JSON.stringify({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "recovered" }], stopReason: "stop" } }),
+        JSON.stringify({ type: "agent_end", messages: [], willRetry: false }),
+        JSON.stringify({ type: "agent_settled", aborted: false }),
+      ];
+      const result = await new PiRunner(runnerOptions(root, "", "pi")).runPrompt("prompt");
+      expect(result.finalText).toBe("recovered");
+      expect(result.stopReason).toBe("completed");
+    });
+  });
+
+  it("reports a settled aborted run as cancelled", async () => {
+    const { PiRunner } = await import("../src/runners/pi.js");
+    await withTempSession(async (root) => {
+      processState.lines = [
+        JSON.stringify({ type: "session", id: "pi-session" }),
+        JSON.stringify({ type: "agent_end", messages: [], willRetry: false }),
+        JSON.stringify({ type: "agent_settled", aborted: true }),
+      ];
+      const result = await new PiRunner(runnerOptions(root, "", "pi")).runPrompt("prompt");
+      expect(result.stopReason).toBe("cancelled");
     });
   });
 

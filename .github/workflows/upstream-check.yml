@@ -1,9 +1,14 @@
-name: Provider upstream check
+name: Upstream dependency check
 
-# Answers "is a provider we pin newer upstream?" once a day and pushes the short
-# Chinese summary to the development DingTalk group. Nothing is published and no
-# issue is filed: a person reads the summary and decides what to upgrade, which
-# is why the safe path after decoupling is a small provider-only branch.
+# Answers "is a provider or native runtime driver we pin newer upstream?" once a
+# day and pushes the short Chinese summary to the development DingTalk group.
+# Nothing is published and no issue is filed: a person reads the summary and
+# decides what to upgrade, which is why the safe path after decoupling is a small
+# provider-only branch.
+#
+# Docker and Kubernetes are deliberately not scanned: they are host-provided
+# deployment dependencies rather than artifacts this repository builds against a
+# pinned SDK, so there is no version here to chase.
 #
 # GitHub's scheduler is best-effort: a cron entry can be delayed, and scheduled
 # workflows are disabled after 60 days of repository inactivity. workflow_dispatch
@@ -14,7 +19,7 @@ on:
   workflow_dispatch:
     inputs:
       bump:
-        description: Also open a draft pull request that bumps the outdated pins
+        description: Also open a draft pull request that bumps the outdated provider pins
         required: false
         type: boolean
         default: false
@@ -24,12 +29,12 @@ permissions:
   pull-requests: write
 
 concurrency:
-  group: provider-upstream-check
+  group: upstream-check
   cancel-in-progress: false
 
 jobs:
   check-upstreams:
-    name: Scan pinned providers against npm
+    name: Scan pinned providers and drivers against upstream
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -38,70 +43,92 @@ jobs:
       # that fails silently is worse than one that fails loudly. Validate its
       # contract here, where the script is actually used, before relying on it.
       - name: Validate the scan contract
-        run: ./scripts/tests/test-check-provider-upstreams.sh
+        run: ./scripts/tests/test-check-upstreams.sh
 
       - name: Scan upstream releases
         id: scan
         env:
-          PROVIDER_UPSTREAM_OUTPUT_DIR: ${{ runner.temp }}
+          UPSTREAM_OUTPUT_DIR: ${{ runner.temp }}
           PROVIDER_UPGRADE_MENTIONS: ${{ vars.PROVIDER_UPGRADE_MENTIONS }}
           NPM_CONFIG_REGISTRY: ${{ vars.NPM_CONFIG_REGISTRY }}
-        run: ./scripts/check-provider-upstreams.sh
+          # Authenticated GitHub release queries avoid the anonymous API rate
+          # limit on shared runner addresses. The script only sends this token to
+          # api.github.com.
+          GITHUB_TOKEN: ${{ github.token }}
+        run: ./scripts/check-upstreams.sh
 
       # The scan's summary is the durable record: it is what both the job summary
       # and the DingTalk push carry.
       - name: Summarize the scan
-        run: cat "${{ runner.temp }}/provider-upstream-notify.md" >>"$GITHUB_STEP_SUMMARY"
+        run: cat "${{ runner.temp }}/upstream-notify.md" >>"$GITHUB_STEP_SUMMARY"
 
       # The webhook is the whole notification path, so a missing secret must be
       # visible: a green run that reports nothing looks identical to "up to date".
       #
-      # The provider summary goes to the development group, not to the release
+      # The upstream summary goes to the development group, not to the release
       # group the release workflow notifies. The two channels are deliberately
       # separate secrets: sharing DINGTALK_TARGETS_JSON here would move the
       # release announcements to whichever group this job is pointed at. The
       # script's own variable name is fixed, so only the secret it is fed changes.
-      - name: Notify about outdated providers
+      - name: Notify about outdated upstreams
         if: steps.scan.outputs.outdated == 'true'
         env:
           DINGTALK_TARGETS_JSON: ${{ secrets.DINGTALK_DEV_TARGETS_JSON }}
-          NOTIFY: ${{ runner.temp }}/provider-upstream-notify.md
+          NOTIFY: ${{ runner.temp }}/upstream-notify.md
         run: |
           set -euo pipefail
           if [[ -z ${DINGTALK_TARGETS_JSON:-} ]]; then
-            echo '::warning::upstream providers are outdated but DINGTALK_DEV_TARGETS_JSON is not configured, so nobody was notified'
+            echo '::warning::upstream dependencies are outdated but DINGTALK_DEV_TARGETS_JSON is not configured, so nobody was notified'
             {
               echo
               echo '> **Warning:** `DINGTALK_DEV_TARGETS_JSON` is not configured, so this report reached nobody.'
             } >>"$GITHUB_STEP_SUMMARY"
             exit 0
           fi
-          ./scripts/notify-dingtalk.sh 'agent-compose：上游 provider 有新版本' <"$NOTIFY"
+          ./scripts/notify-dingtalk.sh 'agent-compose：上游 provider / driver 有新版本' <"$NOTIFY"
 
-      - name: Open a draft bump pull request
-        if: steps.scan.outputs.outdated == 'true' && inputs.bump
+      # Drivers and retired providers are reported but never auto-bumped, so a
+      # bump request with no ordinary provider upgrade cannot open a pull request.
+      # Say so instead of leaving the operator to wonder why the input did nothing.
+      - name: Note that no automatic provider bump was possible
+        if: steps.scan.outputs.outdated == 'true' && steps.scan.outputs.bump != 'true' && inputs.bump
+        run: |
+          {
+            echo
+            echo '> No provider pins were bumped automatically, so no bump pull request was opened.'
+            echo '> Retired providers must be removed by hand, and driver pins are upgraded by hand because their build artifacts and SDK module must move together.'
+          } >>"$GITHUB_STEP_SUMMARY"
+
+      - name: Open a draft provider bump pull request
+        if: steps.scan.outputs.bump == 'true' && inputs.bump
         env:
           GH_TOKEN: ${{ github.token }}
-          SUMMARY: ${{ runner.temp }}/provider-upstream-notify.md
-          BUMP_FILE: ${{ runner.temp }}/provider-upstream-bump.txt
-          PR_BODY: ${{ runner.temp }}/provider-upstream-pr-body.md
+          SUMMARY: ${{ runner.temp }}/upstream-notify.md
+          BUMP_FILE: ${{ runner.temp }}/upstream-bump.txt
+          PR_BODY: ${{ runner.temp }}/upstream-pr-body.md
         run: |
           set -euo pipefail
           bump_args=$(cat "$BUMP_FILE")
           if [[ -z $bump_args ]]; then
-            echo '::error::the scan reported outdated pins but produced no bump arguments'
+            echo '::error::the scan reported provider bumps but produced no bump arguments'
             exit 1
           fi
           ./scripts/provider-lock.sh bump $bump_args
 
           # A failing check does not block the draft: a bump can legitimately need
-          # a second edit (for example the lock records that a newer pi release
-          # retires pi-mcp-adapter). The failure is reported in the pull request
-          # body instead, and CI enforces it once the draft is marked ready.
+          # a second edit (for example the lock records that a provider release
+          # retires a companion package). The failure is reported in the pull
+          # request body instead, and CI enforces it once the draft is ready.
           check_output=$(./scripts/provider-lock.sh check 2>&1) || true
 
           body="$PR_BODY"
           cp "$SUMMARY" "$body"
+          if grep -qF '**Driver**' "$body"; then
+            {
+              printf '\n### Driver pins\n\n'
+              printf 'This draft bumps provider pins only. The driver versions above are upgraded by hand because their build artifacts and SDK module must move together.\n'
+            } >>"$body"
+          fi
           if [[ -n $check_output ]]; then
             {
               printf '\n### Provider lock check output\n\n'

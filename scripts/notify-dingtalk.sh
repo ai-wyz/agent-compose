@@ -2,9 +2,9 @@
 #
 # Send one Markdown message to every DingTalk target in DINGTALK_TARGETS_JSON.
 #
-# The release workflow and the scheduled provider-upstream check need the same
-# signing, masking, and multi-target retry behaviour, so it lives here instead of
-# being duplicated in two workflow files.
+# The release workflow and the scheduled upstream check need the same signing,
+# masking, and multi-target retry behaviour, so it lives here instead of being
+# duplicated in two workflow files.
 #
 # Usage: notify-dingtalk.sh <title>   (message body on stdin)
 #

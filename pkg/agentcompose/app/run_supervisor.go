@@ -16,9 +16,10 @@ import (
 )
 
 type RunSupervisor struct {
-	root       context.Context
-	controller runSupervisorController
-	store      *configstore.ConfigStore
+	root        context.Context
+	controller  runSupervisorController
+	store       *configstore.ConfigStore
+	completions *runs.CompletionManager
 
 	mu     sync.Mutex
 	active map[string]*activeRun
@@ -29,6 +30,7 @@ type runSupervisorController interface {
 	StartProjectRun(context.Context, runs.RunAgentRequest) (runs.StartedProjectRun, error)
 	RunProjectCommandAttachRegistered(context.Context, context.Context, runs.RunAttachReceiver, runs.RunAttachSender, func(string, <-chan struct{})) error
 	ReattachDetachedRun(context.Context, domain.ProjectRunRecord) (domain.ProjectRunRecord, error)
+	StopInteractiveRun(context.Context, string, string) (bool, error)
 }
 
 type activeRun struct {
@@ -41,10 +43,11 @@ type activeRun struct {
 
 func NewRunSupervisor(di do.Injector) (*RunSupervisor, error) {
 	return &RunSupervisor{
-		root:       do.MustInvoke[context.Context](di),
-		controller: do.MustInvoke[*runs.Controller](di),
-		store:      do.MustInvoke[*configstore.ConfigStore](di),
-		active:     map[string]*activeRun{},
+		root:        do.MustInvoke[context.Context](di),
+		controller:  do.MustInvoke[*runs.Controller](di),
+		store:       do.MustInvoke[*configstore.ConfigStore](di),
+		completions: do.MustInvoke[*runs.CompletionManager](di),
+		active:      map[string]*activeRun{},
 	}, nil
 }
 
@@ -222,6 +225,9 @@ func (s *RunSupervisor) Shutdown(ctx context.Context) error {
 	}
 }
 
+// StopActiveRun lets the controller close a prompt session according to its
+// own turn state before falling back to context cancellation for command and
+// non-interactive runs.
 func (s *RunSupervisor) StopActiveRun(ctx context.Context, runID, reason string) (bool, error) {
 	runID = strings.TrimSpace(runID)
 	if runID == "" {
@@ -241,10 +247,35 @@ func (s *RunSupervisor) StopActiveRun(ctx context.Context, runID, reason string)
 		if reason == "" {
 			reason = "stop requested"
 		}
+		if s.controller != nil {
+			handled, err := s.controller.StopInteractiveRun(ctx, runID, reason)
+			if handled {
+				active.stopped = true
+				return
+			}
+			if err != nil {
+				active.cancel(errors.New(reason))
+				active.stopped = true
+				active.stopErr = err
+				return
+			}
+		}
 		active.cancel(errors.New(reason))
 		active.stopped = true
 	})
 	return active.stopped, active.stopErr
+}
+
+// AbandonRunCompletion ends a run whose staged sandbox cleanup will not
+// converge, so an operator has a way out of a run that the retry loop cannot
+// finish. It reports abandoned=false when the run was already terminal; a run
+// that is still executing is refused by the completion manager, because that run
+// has to be stopped rather than abandoned.
+func (s *RunSupervisor) AbandonRunCompletion(ctx context.Context, runID, reason string) (domain.ProjectRunRecord, bool, error) {
+	if s.completions == nil {
+		return domain.ProjectRunRecord{}, false, domain.ClassifyError(domain.ErrFailedPrecondition, "run completion manager is unavailable in this daemon", nil)
+	}
+	return s.completions.AbandonCompletion(ctx, runID, reason)
 }
 
 func (s *RunSupervisor) register(runID string, cancel context.CancelCauseFunc) {

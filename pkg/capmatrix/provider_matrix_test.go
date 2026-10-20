@@ -108,7 +108,7 @@ func manifestWithRequiredProviders() guestabi.Manifest {
 			"codex":    {Version: "0.146.0", Features: []string{"structured_output", "session_resume", "streaming"}},
 			"claude":   {Version: "2.1.220", Features: []string{"structured_output", "session_resume", "streaming", "skill_injection"}},
 			"opencode": {Version: "1.18.9", Features: []string{"session_resume", "streaming", "skill_injection"}},
-			"pi":       {Version: "0.82.1", Features: []string{"session_resume", "streaming", "skill_injection"}},
+			"pi":       {Version: "1.3.0", Features: []string{"session_resume", "streaming", "skill_injection"}},
 			"dsh":      {Version: "0.2.0-rc.1", Features: []string{"session_resume", "streaming", "skill_injection"}},
 		},
 	}
@@ -121,7 +121,7 @@ func TestDeclaredProvidersFromManifest(t *testing.T) {
 	manifest := manifestWithRequiredProviders()
 	// pi advertises one feature this daemon understands plus one it does not;
 	// dsh advertises none it understands.
-	manifest.Providers["pi"] = guestabi.Provider{Version: "0.82.1", Features: []string{"session_resume", "telepathy"}}
+	manifest.Providers["pi"] = guestabi.Provider{Version: "1.3.0", Features: []string{"session_resume", "telepathy"}}
 	manifest.Providers["dsh"] = guestabi.Provider{Version: "0.2.0-rc.1"}
 
 	providers, err := DeclaredProvidersFromManifest(manifest)

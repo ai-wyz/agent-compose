@@ -57,12 +57,12 @@ jobs:
           fi
       - name: Run lint
         run: task lint
-      # The daily provider scan is the only thing that reports an upstream
-      # release, and no pull-request workflow exercises it. Its contract is
-      # hermetic (a stubbed npm, no network), so validate it here rather than
-      # waiting for the next scheduled run to notice a silent scan.
-      - name: Validate the provider upstream scan contract
-        run: ./scripts/tests/test-check-provider-upstreams.sh
+      # The daily upstream scan is the only thing that reports a provider or
+      # driver release, and no pull-request workflow exercises it. Its contract
+      # is hermetic (stubbed npm and curl, no network), so validate it here rather
+      # than waiting for the next scheduled run to notice a silent scan.
+      - name: Validate the upstream scan contract
+        run: ./scripts/tests/test-check-upstreams.sh
 
   proto-version:
     name: Published proto version
