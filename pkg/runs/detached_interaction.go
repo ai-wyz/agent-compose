@@ -8,6 +8,7 @@ import (
 	"io"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	driverpkg "github.com/chaitin/agent-compose/pkg/driver"
@@ -125,10 +126,11 @@ type detachedInteraction struct {
 	sendMu sync.Mutex
 	closed bool
 
-	// Recv state; Recv is called from one goroutine.
+	// Recv state; Recv is called from one goroutine. ended is also read by
+	// CloseSend from the input side.
 	pending []driverpkg.RuntimeOutputFrame
 	result  *driverpkg.RuntimeResult
-	ended   bool
+	ended   atomic.Bool
 }
 
 // watch turns run-context cancellation into either a disconnect (daemon
@@ -201,7 +203,7 @@ func (d *detachedInteraction) CloseSend() error {
 		return nil
 	}
 	d.closed = true
-	if !d.disconnected() && !detachIsShutdown(d.runCtx) && !d.ended {
+	if !d.disconnected() && !detachIsShutdown(d.runCtx) && !d.ended.Load() {
 		_ = d.underlying.Send(driverpkg.RuntimeInputFrame{Type: driverpkg.RuntimeInputStdin, Data: encodeDetachStdinFrame(detachStdinEOF, nil)})
 	}
 	return d.underlying.CloseSend()
@@ -214,7 +216,7 @@ func (d *detachedInteraction) Recv() (driverpkg.RuntimeOutputFrame, error) {
 			d.pending = d.pending[1:]
 			return frame, nil
 		}
-		if d.ended {
+		if d.ended.Load() {
 			return driverpkg.RuntimeOutputFrame{}, io.EOF
 		}
 		frame, err := d.underlying.Recv()
@@ -264,7 +266,7 @@ func (d *detachedInteraction) consumeAttachOutput(data []byte) {
 			result.Error = exitErr.Error()
 		}
 		d.result = &result
-		d.ended = true
+		d.ended.Store(true)
 		d.pending = append(d.pending, driverpkg.RuntimeOutputFrame{Type: driverpkg.RuntimeOutputResult, Result: &result})
 		d.finish(true)
 	}
@@ -272,7 +274,7 @@ func (d *detachedInteraction) consumeAttachOutput(data []byte) {
 
 // endWithoutExit reports an attach that ended before the exit record.
 func (d *detachedInteraction) endWithoutExit(err error) error {
-	d.ended = true
+	d.ended.Store(true)
 	if d.disconnected() || detachIsShutdown(d.runCtx) {
 		d.finish(false)
 		return ErrRunDisconnected
