@@ -7,8 +7,7 @@ ARG ARCHLINUX_MIRROR
 ARG CODEX_VERSION=0.146.0
 ARG CLAUDE_CODE_VERSION=2.1.220
 ARG OPENCODE_VERSION=1.18.9
-ARG PI_AGENT_VERSION=0.82.1
-ARG PI_MCP_ADAPTER_VERSION=2.11.0
+ARG PI_AGENT_VERSION=1.3.0
 ARG QWEN_CODE_VERSION=0.19.8
 
 RUN ln -sfv /usr/share/zoneinfo/Asia/Shanghai /etc/localtime
@@ -42,9 +41,6 @@ RUN npm config set prefix /usr/local/ &&\
     npm install -g @anthropic-ai/claude-code-linux-x64@${CLAUDE_CODE_VERSION} &&\
     npm install -g opencode-ai@${OPENCODE_VERSION} &&\
     npm install -g @earendil-works/pi-coding-agent@${PI_AGENT_VERSION} &&\
-    npm install -g pi-mcp-adapter@${PI_MCP_ADAPTER_VERSION} &&\
-    mkdir -p /usr/local/share/agent-compose/pi-mcp-adapter &&\
-    ln -sf /usr/local/lib/node_modules/pi-mcp-adapter/index.ts /usr/local/share/agent-compose/pi-mcp-adapter/index.ts &&\
     npm install -g @qwen-code/qwen-code@${QWEN_CODE_VERSION} &&\
     npm install -g @bufbuild/protobuf @bufbuild/protoc-gen-es &&\
     npm install -g typescript-language-server typescript &&\

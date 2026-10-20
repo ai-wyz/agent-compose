@@ -9,8 +9,7 @@ ARG NODE_MAJOR=22
 ARG CODEX_VERSION=0.146.0
 ARG CLAUDE_CODE_VERSION=2.1.220
 ARG OPENCODE_VERSION=1.18.9
-ARG PI_AGENT_VERSION=0.82.1
-ARG PI_MCP_ADAPTER_VERSION=2.11.0
+ARG PI_AGENT_VERSION=1.3.0
 # @deepseek-ai/dsh-root's engines is ^22.19.0 || >=24.0.0 — keep NODE_MAJOR at
 # or above that when bumping DSH_VERSION. The agent-compose profile's runner
 # uses the DSH persona-prefix API (0.1.5+) and the build-time profile smoke
@@ -47,7 +46,6 @@ ARG CODEX_VERSION
 ARG CLAUDE_CODE_VERSION
 ARG OPENCODE_VERSION
 ARG PI_AGENT_VERSION
-ARG PI_MCP_ADAPTER_VERSION
 ARG DSH_VERSION
 ARG TARGETARCH
 # The guest ABI is the daemon/guest contract version defined by
@@ -96,7 +94,6 @@ RUN set -e; \
       "${CLAUDE_CODE_PLATFORM_PACKAGE}@${CLAUDE_CODE_VERSION}" \
       "opencode-ai@${OPENCODE_VERSION}" \
       "@earendil-works/pi-coding-agent@${PI_AGENT_VERSION}" \
-      "pi-mcp-adapter@${PI_MCP_ADAPTER_VERSION}" \
       "@deepseek-ai/dsh@${DSH_VERSION}" && \
     npm cache clean --force && \
     rm -rf /root/.npm
@@ -149,11 +146,8 @@ RUN cd /tmp/agent-compose-runtime && \
     ln -sf ../lib/node_modules/@openai/codex/bin/codex.js /usr/bin/codex && \
     ln -sf ../lib/node_modules/@anthropic-ai/claude-code/bin/claude.exe /usr/bin/claude && \
     ln -sf ../lib/node_modules/opencode-ai/bin/opencode.exe /usr/bin/opencode && \
-    ln -sf ../lib/node_modules/@earendil-works/pi-coding-agent/dist/cli.js /usr/bin/pi && \
+    ln -sf ../lib/node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js /usr/bin/pi && \
     ln -sf ../lib/node_modules/@deepseek-ai/dsh/lib/bin.js /usr/bin/dsh && \
-    mkdir -p /usr/local/share/agent-compose/pi-mcp-adapter && \
-    ln -sf /usr/lib/node_modules/pi-mcp-adapter/index.ts /usr/local/share/agent-compose/pi-mcp-adapter/index.ts && \
-    test -f /usr/local/share/agent-compose/pi-mcp-adapter/index.ts && \
     cd / && \
     pi --version && \
     dsh --version && \

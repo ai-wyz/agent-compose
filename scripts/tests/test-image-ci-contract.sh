@@ -155,7 +155,7 @@ guest_builder_source=$(<"$GUEST_BUILDER")
 for common_guest_arg in \
   REGISTRY_MIRROR GOPROXY GO_VERSION GRPCURL_VERSION PIP_INDEX_URL PIP_TRUSTED_HOST \
   NPM_CONFIG_REGISTRY CODEX_VERSION CLAUDE_CODE_VERSION \
-  OPENCODE_VERSION PI_AGENT_VERSION PI_MCP_ADAPTER_VERSION DSH_VERSION; do
+  OPENCODE_VERSION PI_AGENT_VERSION DSH_VERSION; do
   default_value() { # $1=Dockerfile $2=ARG name
     sed -n "s/^ARG[[:space:]]\+$2=\{0,1\}\(.*\)$/\1/p" "$1" | head -n 1
   }
@@ -173,6 +173,10 @@ build_contract_sources="$(<"$TASKFILE")"$'\n'"$(<"$DAEMON_BUILDER")"$'\n'"$guest
 forbid_regex "$build_contract_sources" \
   'BUILD_(HTTP_PROXY|HTTPS_PROXY|ALL_PROXY|NO_PROXY|REGISTRY_MIRROR|GOPROXY|PLATFORM)|PYPI_(INDEX_URL|TRUSTED_HOST)' \
   'non-standard alias in the build variable contract'
+# Pi 1.x ships MCP, so the old adapter must not return to any image or build path.
+forbid_regex "$build_contract_sources" \
+  'pi-mcp-adapter|PI_MCP_ADAPTER_VERSION' \
+  'retired Pi MCP adapter in the guest build contract'
 
 job_block() { # $1=job-id
   awk -v job="$1" '
@@ -694,16 +698,14 @@ if [[ -f $ARCHLINUX_GUEST_DOCKERFILE ]]; then
     'pinned Pi coding agent version in Arch Linux guest image'
   require_regex "$archlinux_guest_source" '"@earendil-works/pi-coding-agent@\$\{PI_AGENT_VERSION\}"' \
     'versioned Pi coding agent install in Arch Linux guest image'
-  require_regex "$archlinux_guest_source" '"pi-mcp-adapter@\$\{PI_MCP_ADAPTER_VERSION\}"' \
-    'versioned Pi MCP adapter install in Arch Linux guest image'
+  forbid_regex "$archlinux_guest_source" 'pi-mcp-adapter|PI_MCP_ADAPTER_VERSION' \
+    'retired Pi MCP adapter in Arch Linux guest image'
   require_regex "$archlinux_guest_source" 'ARG[[:space:]]+DSH_VERSION=[0-9]+\.[0-9]+\.[0-9]+(-rc\.[0-9]+)?' \
     'pinned DSH version in Arch Linux guest image'
   require_regex "$archlinux_guest_source" '"@deepseek-ai/dsh@\$\{DSH_VERSION\}"' \
     'versioned DSH install in Arch Linux guest image'
   require_regex "$archlinux_guest_source" '/usr/bin/pi' \
     'stable Pi executable path in Arch Linux guest image'
-  require_regex "$archlinux_guest_source" '/usr/local/share/agent-compose/pi-mcp-adapter/index\.ts' \
-    'stable Pi MCP adapter path in Arch Linux guest image'
   require_regex "$archlinux_guest_source" '/usr/bin/dsh' \
     'stable DSH executable path in Arch Linux guest image'
   require_regex "$archlinux_guest_source" 'COPY[[:space:]]+\./assets/\.dsh/[[:space:]]+/root/\.dsh/' \
@@ -817,7 +819,7 @@ run_guest_builder() { # remaining arguments are environment overrides
     REGISTRY_MIRROR= GOPROXY= GO_VERSION= GRPCURL_VERSION= NODE_MAJOR= NPM_CONFIG_REGISTRY= \
     PIP_INDEX_URL= PIP_TRUSTED_HOST= ARCHLINUX_TAG= ARCHLINUX_MIRROR= \
     CODEX_VERSION= CLAUDE_CODE_VERSION= OPENCODE_VERSION= \
-    PI_AGENT_VERSION= PI_MCP_ADAPTER_VERSION= \
+    PI_AGENT_VERSION= \
     "$@" \
     "$GUEST_BUILDER" >/dev/null
 }
@@ -925,8 +927,7 @@ if ! run_guest_builder \
   CODEX_VERSION=9.1.0 \
   CLAUDE_CODE_VERSION=9.2.0 \
   OPENCODE_VERSION=9.4.0 \
-  PI_AGENT_VERSION=9.5.0 \
-  PI_MCP_ADAPTER_VERSION=9.6.0; then
+  PI_AGENT_VERSION=9.5.0; then
   fail 'guest image helper override build invocation'
 else
   guest_log=$(<"$FAKE_DOCKER_LOG")
@@ -946,8 +947,7 @@ else
     'CODEX_VERSION=9.1.0' \
     'CLAUDE_CODE_VERSION=9.2.0' \
     'OPENCODE_VERSION=9.4.0' \
-    'PI_AGENT_VERSION=9.5.0' \
-    'PI_MCP_ADAPTER_VERSION=9.6.0'; do
+    'PI_AGENT_VERSION=9.5.0'; do
     require_regex "$guest_log" "^$forwarded$" "guest $forwarded build argument"
   done
 fi

@@ -22,7 +22,7 @@ const guestABIManifestWithCodexWithoutStructuredOutput = `{
 		"codex":    {"version": "0.146.0", "features": ["session_resume", "streaming"]},
 		"claude":   {"version": "2.1.220", "features": ["structured_output", "session_resume", "streaming", "skill_injection"]},
 		"opencode": {"version": "1.18.9", "features": ["session_resume", "streaming", "skill_injection"]},
-		"pi":       {"version": "0.82.1", "features": ["session_resume", "streaming", "skill_injection"]},
+		"pi":       {"version": "1.3.0", "features": ["session_resume", "streaming", "skill_injection"]},
 		"dsh":      {"version": "0.2.0-rc.1", "features": ["session_resume", "streaming", "skill_injection"]}
 	}
 }`

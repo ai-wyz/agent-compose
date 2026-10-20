@@ -95,9 +95,9 @@ jobs:
           ./scripts/provider-lock.sh bump $bump_args
 
           # A failing check does not block the draft: a bump can legitimately need
-          # a second edit (for example the lock records that a newer pi release
-          # retires pi-mcp-adapter). The failure is reported in the pull request
-          # body instead, and CI enforces it once the draft is marked ready.
+          # a second edit (for example the lock records that a provider release
+          # retires a companion package). The failure is reported in the pull
+          # request body instead, and CI enforces it once the draft is ready.
           check_output=$(./scripts/provider-lock.sh check 2>&1) || true
 
           body="$PR_BODY"
