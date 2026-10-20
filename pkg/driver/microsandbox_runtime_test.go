@@ -627,6 +627,8 @@ func TestMicrosandboxPrepareEnvironmentInstallsRuntimeIntoHome(t *testing.T) {
 	runtime := &microsandboxRuntime{config: config}
 	installFakeMicrosandboxDiskTools(t, filepath.Dir(config.MicrosandboxMSBPath))
 	sourceLib := filepath.Join(filepath.Dir(config.MicrosandboxLibPath), "libkrunfw.so.5.2.1")
+	t.Setenv("MSB_PATH", filepath.Join(t.TempDir(), "stale-msb"))
+	t.Setenv("MSB_LIBKRUNFW_PATH", filepath.Join(t.TempDir(), "stale-libkrunfw.so"))
 
 	runtimeConfig, err := runtime.prepareEnvironment()
 	if err != nil {
@@ -642,9 +644,15 @@ func TestMicrosandboxPrepareEnvironmentInstallsRuntimeIntoHome(t *testing.T) {
 	if info.Mode().Perm()&0o111 == 0 {
 		t.Fatalf("installed msb mode = %v, want an executable", info.Mode().Perm())
 	}
+	if got := os.Getenv("MSB_PATH"); got != installedMSB {
+		t.Fatalf("MSB_PATH = %q, want the installed msb %q", got, installedMSB)
+	}
 
 	installedLib := filepath.Join(config.MicrosandboxHome, "lib", filepath.Base(sourceLib))
 	assertMicrosandboxFileContent(t, installedLib, sourceLib)
+	if got := os.Getenv("MSB_LIBKRUNFW_PATH"); got != installedLib {
+		t.Fatalf("MSB_LIBKRUNFW_PATH = %q, want the installed libkrunfw %q", got, installedLib)
+	}
 	for link, target := range map[string]string{
 		"libkrunfw.so.5": filepath.Base(sourceLib),
 		"libkrunfw.so":   "libkrunfw.so.5",
@@ -668,6 +676,9 @@ func TestMicrosandboxPrepareEnvironmentInstallsRuntimeIntoHome(t *testing.T) {
 	}
 
 	payload := readMicrosandboxConfig(t, filepath.Join(config.MicrosandboxHome, "config.json"))
+	if payload.Home != config.MicrosandboxHome {
+		t.Fatalf("config home = %q, want %q", payload.Home, config.MicrosandboxHome)
+	}
 	if payload.Paths["msb"] != installedMSB {
 		t.Fatalf("config paths.msb = %q, want %q", payload.Paths["msb"], installedMSB)
 	}
@@ -676,6 +687,30 @@ func TestMicrosandboxPrepareEnvironmentInstallsRuntimeIntoHome(t *testing.T) {
 	}
 	if runtimeConfig != (microsandbox.RuntimeConfig{Home: config.MicrosandboxHome}) {
 		t.Fatalf("resolve config = %+v, want only the microsandbox home", runtimeConfig)
+	}
+}
+
+// A runtime mount that only carries the soname link has no released filename
+// for the SDK's home resolver, so prepareEnvironment must fail before it
+// publishes a broken home instead of copying the link onto itself.
+func TestMicrosandboxPrepareEnvironmentRejectsSonameOnlyLibkrunfw(t *testing.T) {
+	config := testMicrosandboxConfig(t)
+	runtime := &microsandboxRuntime{config: config}
+	installFakeMicrosandboxDiskTools(t, filepath.Dir(config.MicrosandboxMSBPath))
+	libDir := filepath.Dir(config.MicrosandboxLibPath)
+	if err := os.Remove(filepath.Join(libDir, "libkrunfw.so.5.2.1")); err != nil {
+		t.Fatalf("remove versioned libkrunfw fixture: %v", err)
+	}
+	soname := filepath.Join(libDir, "libkrunfw.so.5")
+	if err := os.WriteFile(soname, []byte("krun"), 0o644); err != nil {
+		t.Fatalf("write soname-only libkrunfw: %v", err)
+	}
+
+	if _, err := runtime.prepareEnvironment(); err == nil {
+		t.Fatal("prepareEnvironment accepted a soname-only libkrunfw")
+	}
+	if _, err := os.Lstat(filepath.Join(config.MicrosandboxHome, "lib", "libkrunfw.so.5")); !os.IsNotExist(err) {
+		t.Fatalf("prepareEnvironment published a self-referential home link: %v", err)
 	}
 }
 
