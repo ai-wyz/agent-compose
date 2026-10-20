@@ -171,6 +171,12 @@ func (c *Controller) reattachDetachedAgentRun(transitionCtx, runCtx context.Cont
 		// Shut down again while following; leave the run running.
 		return run, nil
 	}
+	if execErr != nil && !errors.Is(execErr, domain.ErrExecTerminationUnconfirmed) {
+		// The re-attach failed before ResumeAgentRun could retire the tokens,
+		// and the run is finalized as failed below. An unconfirmed termination
+		// may still leave the task running, so its tokens stay.
+		c.deleteRetainedFacadeTokens(transitionCtx, run)
+	}
 	return c.finishProjectRunAgent(transitionCtx, runCtx, agentRunOutcome{
 		Run: run, Sandbox: sandbox, Cell: cell, Assistant: assistantEvent, ExecErr: execErr,
 	})

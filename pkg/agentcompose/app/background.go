@@ -204,11 +204,13 @@ func reconcilePersistedProjectRunsWithStatus(ctx context.Context, reconcile proj
 				slog.Warn("failed to re-attach detached project run", "run_id", run.RunID, "error", err)
 				message := fmt.Sprintf("%s: re-attach failed: %v", staleProjectRunError, err)
 				if stageErr := reconcile.Completions.StageInterrupted(context.WithoutCancel(reconcile.RootCtx), run, message); stageErr != nil {
+					// The run is still running with no follower; a later
+					// re-attach or reconciliation finalizes it. Its credentials
+					// must survive until then.
 					slog.Warn("failed to stage project run completion after re-attach failure", "run_id", run.RunID, "error", stageErr)
-				}
-				// The run is finalized as interrupted, so the per-run facade
-				// tokens kept for the re-attach are no longer needed.
-				if run.DetachKind == domain.DetachKindAgent || run.DetachKind == domain.DetachKindInteractivePrompt {
+				} else if run.DetachKind == domain.DetachKindAgent || run.DetachKind == domain.DetachKindInteractivePrompt {
+					// The run is finalized as interrupted, so the per-run facade
+					// tokens kept for the re-attach are no longer needed.
 					if delErr := reconcile.ConfigDB.DeleteLLMFacadeTokensForRun(context.WithoutCancel(reconcile.RootCtx), run.RunID, runtimefacade.TokenSourceAgent); delErr != nil {
 						slog.Warn("failed to delete retained facade tokens after re-attach failure", "run_id", run.RunID, "error", delErr)
 					}

@@ -63,6 +63,32 @@ func TestReattachDetachedAgentRunFailsWithTheCell(t *testing.T) {
 	if got.Status != domain.ProjectRunStatusFailed {
 		t.Fatalf("status = %q, want failed", got.Status)
 	}
+	// The re-attach is over and the run is finalized, so the tokens kept for
+	// it must be retired.
+	store := controller.configDB.(*fakeControllerStore)
+	if len(store.deletedFacadeTokens) != 1 || store.deletedFacadeTokens[0] != "run-1|agent" {
+		t.Fatalf("deleted facade tokens = %v, want the retained agent tokens", store.deletedFacadeTokens)
+	}
+}
+
+// ResumeAgentRequest can fail before the runner starts following the journal
+// (VM state, runtime, locating the cell). The run is still finalized as failed,
+// so its retained tokens must be retired here too.
+func TestReattachDetachedAgentRunDeletesTokensWhenResumeFailsEarly(t *testing.T) {
+	resumer := &fakeAgentResumer{err: errors.New("agent cell cell-9 not found")}
+	controller, run := newAgentReattachTestController(t, resumer)
+
+	got, err := controller.ReattachDetachedRun(context.Background(), run)
+	if err != nil {
+		t.Fatalf("ReattachDetachedRun: %v", err)
+	}
+	if got.Status != domain.ProjectRunStatusFailed {
+		t.Fatalf("status = %q, want failed", got.Status)
+	}
+	store := controller.configDB.(*fakeControllerStore)
+	if len(store.deletedFacadeTokens) != 1 || store.deletedFacadeTokens[0] != "run-1|agent" {
+		t.Fatalf("deleted facade tokens = %v, want the retained agent tokens", store.deletedFacadeTokens)
+	}
 }
 
 func TestReattachDetachedAgentRunStaysRunningOnDisconnect(t *testing.T) {
@@ -75,6 +101,23 @@ func TestReattachDetachedAgentRunStaysRunningOnDisconnect(t *testing.T) {
 	}
 	if got.Status != domain.ProjectRunStatusRunning {
 		t.Fatalf("status = %q, want running", got.Status)
+	}
+	if store := controller.configDB.(*fakeControllerStore); len(store.deletedFacadeTokens) != 0 {
+		t.Fatalf("deleted facade tokens = %v; a run that is still running keeps them", store.deletedFacadeTokens)
+	}
+}
+
+// An unconfirmed termination may mean the task is still running in the guest,
+// so the tokens it uses stay.
+func TestReattachDetachedAgentRunKeepsTokensWhenTerminationIsUnconfirmed(t *testing.T) {
+	resumer := &fakeAgentResumer{err: domain.ErrExecTerminationUnconfirmed}
+	controller, run := newAgentReattachTestController(t, resumer)
+
+	if _, err := controller.ReattachDetachedRun(context.Background(), run); err != nil {
+		t.Fatalf("ReattachDetachedRun: %v", err)
+	}
+	if store := controller.configDB.(*fakeControllerStore); len(store.deletedFacadeTokens) != 0 {
+		t.Fatalf("deleted facade tokens = %v; an unconfirmed termination may still be running", store.deletedFacadeTokens)
 	}
 }
 
