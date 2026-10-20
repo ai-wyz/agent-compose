@@ -252,7 +252,7 @@ tasks:
       - ./scripts/tests/test-binary-ci-contract.sh
       - ./scripts/tests/test-image-ci-contract.sh
       - ./scripts/tests/test-provider-lock.sh
-      - ./scripts/tests/test-check-provider-upstreams.sh
+      - ./scripts/tests/test-check-upstreams.sh
       - ./scripts/tests/test-installer-ci-contract.sh
 
 
