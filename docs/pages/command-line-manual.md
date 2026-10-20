@@ -1060,8 +1060,8 @@ automatically deployed.
 
 | Provider in the default guest | Managed native export |
 | --- | --- |
-| Codex 0.146.0 | Logs, traces and metrics; per-invocation SDK configuration overrides |
-| Claude Code 2.1.220 | Metrics and logs/events; beta traces are not enabled |
+| Codex 0.163.0 | Logs, traces and metrics; per-invocation SDK configuration overrides |
+| Claude Code 2.1.304 | Metrics and logs/events; beta traces are not enabled |
 | OpenCode 1.18.9 | Infrastructure logs and traces; LLM spans require content opt-in |
 | DeepSeek Harness | FULL session logs only with content opt-in and a backend that actually exports `SessionTelemetryMode.FULL` |
 | Pi 0.82.1 | No integrated official native exporter; a runtime warning is emitted and collector credentials are not passed to Pi |

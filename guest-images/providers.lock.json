@@ -4,7 +4,7 @@
   "packages": {
     "codex": {
       "npm": "@openai/codex",
-      "version": "0.146.0",
+      "version": "0.163.0",
       "buildArg": "CODEX_VERSION",
       "bin": "codex",
       "features": [
@@ -15,7 +15,7 @@
     },
     "claude": {
       "npm": "@anthropic-ai/claude-code",
-      "version": "2.1.220",
+      "version": "2.1.304",
       "buildArg": "CLAUDE_CODE_VERSION",
       "bin": "claude",
       "features": [
