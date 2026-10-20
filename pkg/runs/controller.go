@@ -378,6 +378,37 @@ func (c *Controller) RunProjectCommandAttachRegistered(ctx, inputCtx context.Con
 	return nil
 }
 
+// StopInteractiveRun gracefully closes an idle prompt session. It returns
+// handled=false while a turn is running or for a command session, leaving the
+// supervisor's execution-context cancellation as the interrupt path. The
+// request reason is audit data only and never selects the disposition.
+func (c *Controller) StopInteractiveRun(ctx context.Context, runID, _ string) (bool, error) {
+	if c == nil || c.interactiveSessions == nil {
+		return false, nil
+	}
+	session, err := c.interactiveSessions.Get(strings.TrimSpace(runID))
+	if err != nil {
+		if errors.Is(err, ErrInteractiveSessionNotFound) {
+			return false, nil
+		}
+		return false, err
+	}
+	prompt, running := session.promptTurnRunning()
+	if !prompt {
+		return false, nil
+	}
+	if running {
+		return false, nil
+	}
+	if err := session.Send(ctx, RunAttachInput{Kind: RunAttachInputStdinEOF}); err != nil {
+		if errors.Is(err, ErrInteractiveSessionClosed) {
+			return false, nil
+		}
+		return false, err
+	}
+	return true, nil
+}
+
 func (c *Controller) attachExistingInteractiveSession(ctx context.Context, runID string, receive RunAttachReceiver, send RunAttachSender) error {
 	runID = strings.TrimSpace(runID)
 	if c.configDB == nil {
