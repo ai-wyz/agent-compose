@@ -183,6 +183,11 @@ func TestDetachedInteractionOnlyDisconnectsOnShutdown(t *testing.T) {
 	if _, err := interaction.Recv(); !errors.Is(err, ErrRunDisconnected) {
 		t.Fatalf("Recv err = %v, want ErrRunDisconnected", err)
 	}
+	// An input pump ending the session while the run is torn down must not
+	// reach the task.
+	if err := interaction.Send(driverpkg.RuntimeInputFrame{Type: driverpkg.RuntimeInputStdin, Data: []byte(`{"type":"eof"}`)}); !errors.Is(err, ErrRunDisconnected) {
+		t.Fatalf("Send after shutdown err = %v, want ErrRunDisconnected", err)
+	}
 	_ = interaction.CloseSend()
 	if got := strings.Join(rt.attach().stdinFrames(t), "|"); got != "D:hi\n" {
 		t.Fatalf("stdin frames = %q; a shutdown must not end the task's input", got)

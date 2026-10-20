@@ -191,6 +191,12 @@ func (d *detachedInteraction) Send(frame driverpkg.RuntimeInputFrame) error {
 	if d.closed {
 		return io.ErrClosedPipe
 	}
+	// Once the daemon is going away nothing more reaches the task: input
+	// sent while the run is torn down (an input pump ending the session as it
+	// closes) would otherwise end a task that must keep running.
+	if d.disconnected() || detachIsShutdown(d.runCtx) {
+		return ErrRunDisconnected
+	}
 	return d.underlying.Send(driverpkg.RuntimeInputFrame{Type: driverpkg.RuntimeInputStdin, Data: encoded})
 }
 
