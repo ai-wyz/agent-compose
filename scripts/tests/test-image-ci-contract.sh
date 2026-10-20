@@ -169,7 +169,7 @@ for common_guest_arg in \
     "guest builder forwarding for $common_guest_arg"
 done
 
-build_contract_sources="$(<"$TASKFILE")"$'\n'"$(<"$DAEMON_BUILDER")"$'\n'"$guest_builder_source"$'\n'"$(<"$DAEMON_DOCKERFILE")"$'\n'"$(<"$LOCAL_DAEMON_DOCKERFILE")"$'\n'"$(<"$GUEST_DOCKERFILE")"$'\n'"$(<"$ARCHLINUX_GUEST_DOCKERFILE")"
+build_contract_sources="$(<"$TASKFILE")"$'\n'"$(<"$DAEMON_BUILDER")"$'\n'"$guest_builder_source"$'\n'"$(<"$DAEMON_DOCKERFILE")"$'\n'"$(<"$LOCAL_DAEMON_DOCKERFILE")"$'\n'"$(<"$GUEST_DOCKERFILE")"$'\n'"$(<"$ARCHLINUX_GUEST_DOCKERFILE")"$'\n'"$(<"$DEVBOX_DOCKERFILE")"
 forbid_regex "$build_contract_sources" \
   'BUILD_(HTTP_PROXY|HTTPS_PROXY|ALL_PROXY|NO_PROXY|REGISTRY_MIRROR|GOPROXY|PLATFORM)|PYPI_(INDEX_URL|TRUSTED_HOST)' \
   'non-standard alias in the build variable contract'
