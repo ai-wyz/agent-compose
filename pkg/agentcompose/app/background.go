@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"strings"
 	"time"
@@ -40,7 +41,14 @@ type backgroundManagersDeps struct {
 	CapProxy    *capproxy.Server
 	CapTokens   *adapters.CapabilitySandboxResolver
 	Completions *runs.CompletionManager
-	Controller  *runs.Controller
+	Reattacher  detachedRunReattacher
+}
+
+// detachedRunReattacher follows a detached run left running by an earlier
+// daemon. RunSupervisor implements it so a re-attached run can be stopped and
+// is waited for on shutdown, like any run this daemon started.
+type detachedRunReattacher interface {
+	ReattachRun(run domain.ProjectRunRecord, onFailure func(error))
 }
 
 func startBackgroundManagers(ctx context.Context, deps backgroundManagersDeps) error {
@@ -64,7 +72,7 @@ func startBackgroundManagers(ctx context.Context, deps backgroundManagersDeps) e
 	if err := reconcilePersistedProjectRuns(reconcileCtx, projectRunReconcileContext{
 		ConfigDB:    deps.ConfigDB,
 		Completions: deps.Completions,
-		Controller:  deps.Controller,
+		Reattacher:  deps.Reattacher,
 		RootCtx:     ctx,
 		StartedAt:   startedAt,
 	}); err != nil {
@@ -136,7 +144,7 @@ func reconcilePendingSandboxState(ctx context.Context, store *sandboxstore.Store
 type projectRunReconcileContext struct {
 	ConfigDB    *configstore.ConfigStore
 	Completions *runs.CompletionManager
-	Controller  *runs.Controller
+	Reattacher  detachedRunReattacher
 	RootCtx     context.Context
 	StartedAt   time.Time
 }
@@ -177,18 +185,19 @@ func reconcilePersistedProjectRunsWithStatus(ctx context.Context, reconcile proj
 		offset += len(result.Runs)
 	}
 	for _, run := range staleRuns {
-		if run.Detach && reconcile.Controller != nil {
+		if run.Detach && reconcile.Reattacher != nil {
 			// A detached run survives the daemon that started it: re-attach to
 			// its guest journal and complete it when the task exits instead of
-			// declaring it interrupted. The follower may outlive this startup
-			// reconciliation, so it runs on the daemon root context.
+			// declaring it interrupted. The follower outlives this startup
+			// reconciliation, so a failure is finalized on the root context.
 			run := run
-			go func() {
-				reattachCtx := runs.WithDaemonShutdown(reconcile.RootCtx, reconcile.RootCtx.Done())
-				if _, err := reconcile.Controller.ReattachDetachedRun(reattachCtx, run); err != nil {
-					slog.Warn("failed to re-attach detached project run", "run_id", run.RunID, "error", err)
+			reconcile.Reattacher.ReattachRun(run, func(err error) {
+				slog.Warn("failed to re-attach detached project run", "run_id", run.RunID, "error", err)
+				message := fmt.Sprintf("%s: re-attach failed: %v", staleProjectRunError, err)
+				if stageErr := reconcile.Completions.StageInterrupted(context.WithoutCancel(reconcile.RootCtx), run, message); stageErr != nil {
+					slog.Warn("failed to stage project run completion after re-attach failure", "run_id", run.RunID, "error", stageErr)
 				}
-			}()
+			})
 			continue
 		}
 		if err := reconcile.Completions.StageInterrupted(ctx, run, staleProjectRunError); err != nil {

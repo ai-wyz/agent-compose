@@ -2,11 +2,14 @@ package runs
 
 import (
 	"context"
+	"encoding/json"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/chaitin/agent-compose/pkg/config"
 	driverpkg "github.com/chaitin/agent-compose/pkg/driver"
+	"github.com/chaitin/agent-compose/pkg/execution"
 	domain "github.com/chaitin/agent-compose/pkg/model"
 	"github.com/chaitin/agent-compose/pkg/storage/sandboxstore"
 )
@@ -77,7 +80,10 @@ func (r *reattachFakeRuntime) ExecStream(ctx context.Context, session *domain.Sa
 	return r.fakeControllerRuntime.ExecStream(ctx, session, vmState, spec, writer)
 }
 
-func TestReattachDetachedRunFollowsJournalAndCompletes(t *testing.T) {
+// newReattachTestController builds a controller whose runtime replays records
+// as the guest `attach` output, plus a detached run to re-attach.
+func newReattachTestController(t *testing.T, records []string) (*Controller, domain.ProjectRunRecord) {
+	t.Helper()
 	ctx := context.Background()
 	root := t.TempDir()
 	cfg := &config.Config{
@@ -109,20 +115,37 @@ func TestReattachDetachedRunFollowsJournalAndCompletes(t *testing.T) {
 	if _, err := configDB.CreateProjectRun(ctx, run); err != nil {
 		t.Fatalf("CreateProjectRun returned error: %v", err)
 	}
-	// Cursor 5 means the daemon already consumed offsets 0..5; the tail resumes
-	// at offset 5 without duplicating earlier output.
 	controller := &Controller{
 		config:   cfg,
 		store:    store,
 		configDB: configDB,
 		runtime: func(*domain.Sandbox) (Runtime, error) {
-			return &reattachFakeRuntime{records: []string{
-				`{"t":"out","s":"stdout","text":"tail\n","offset":5}`,
-				`{"t":"exit","code":0,"reason":"completed"}`,
-			}}, nil
+			return &reattachFakeRuntime{records: records}, nil
 		},
 	}
-	got, err := controller.ReattachDetachedRun(ctx, run)
+	return controller, run
+}
+
+// attachOutRecord encodes text as a journal `out` record at offset.
+func attachOutRecord(t *testing.T, text string, offset uint64) string {
+	t.Helper()
+	data, err := json.Marshal(map[string]any{"t": "out", "s": "stdout", "text": text, "offset": offset})
+	if err != nil {
+		t.Fatalf("marshal out record: %v", err)
+	}
+	return string(data)
+}
+
+func TestReattachDetachedRunFollowsJournalAndCompletes(t *testing.T) {
+	// Cursor 5 means the daemon already consumed offsets 0..5; the tail resumes
+	// at offset 5 without duplicating earlier output.
+	payload := fakeRuntimeCommandPayload(domain.RuntimeCommandResult{Stdout: "tail\n", Output: "tail\n", ExitCode: 0, Success: true})
+	controller, run := newReattachTestController(t, []string{
+		attachOutRecord(t, "tail\n", 5),
+		attachOutRecord(t, payload, 10),
+		`{"t":"exit","code":0,"reason":"completed"}`,
+	})
+	got, err := controller.ReattachDetachedRun(context.Background(), run)
 	if err != nil {
 		t.Fatalf("ReattachDetachedRun returned error: %v", err)
 	}
@@ -133,5 +156,39 @@ func TestReattachDetachedRunFollowsJournalAndCompletes(t *testing.T) {
 	// a fresh output.txt, so pre-restart output stays in the run log.
 	if filepath.Base(got.LogsPath) != "transcript.txt" {
 		t.Fatalf("LogsPath = %q, want transcript.txt", got.LogsPath)
+	}
+	// Output comes from the parsed result payload, like a fresh run, so the
+	// raw payload line never reaches the run record.
+	if got.Output != "tail\n" || strings.Contains(got.Output, execution.CommandResultPrefix) {
+		t.Fatalf("Output = %q, want parsed payload output", got.Output)
+	}
+}
+
+func TestReattachDetachedRunFailsOnNonZeroExit(t *testing.T) {
+	payload := fakeRuntimeCommandPayload(domain.RuntimeCommandResult{Stderr: "boom\n", Output: "boom\n", ExitCode: 2, Success: false})
+	controller, run := newReattachTestController(t, []string{
+		attachOutRecord(t, payload, 0),
+		`{"t":"exit","code":2,"reason":"completed"}`,
+	})
+	got, err := controller.ReattachDetachedRun(context.Background(), run)
+	if err != nil {
+		t.Fatalf("ReattachDetachedRun returned error: %v", err)
+	}
+	if got.Status != domain.ProjectRunStatusFailed || got.ExitCode != 2 {
+		t.Fatalf("run status = %q exit = %d, want failed with exit 2", got.Status, got.ExitCode)
+	}
+}
+
+func TestReattachDetachedRunFailsWithoutResultPayload(t *testing.T) {
+	controller, run := newReattachTestController(t, []string{
+		attachOutRecord(t, "no payload\n", 0),
+		`{"t":"exit","code":0,"reason":"completed"}`,
+	})
+	got, err := controller.ReattachDetachedRun(context.Background(), run)
+	if err != nil {
+		t.Fatalf("ReattachDetachedRun returned error: %v", err)
+	}
+	if got.Status != domain.ProjectRunStatusFailed {
+		t.Fatalf("run status = %q, want failed", got.Status)
 	}
 }

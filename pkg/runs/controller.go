@@ -528,20 +528,24 @@ func (c *Controller) executeStartedProjectRun(ctx context.Context, started start
 	warnings := started.Warnings
 	commandText := strings.TrimSpace(req.Command)
 	transitionCtx := context.WithoutCancel(ctx)
-	prepared, err := c.prepareProjectRun(ctx, run, req.Env)
+	// Only a detached command may outlive the daemon. Sandbox preparation and
+	// agent runs stop on shutdown, as they did before detach existed.
+	prepCtx, cancelPrep := cancelOnDaemonShutdown(ctx)
+	defer cancelPrep()
+	prepared, err := c.prepareProjectRun(prepCtx, run, req.Env)
 	if err != nil {
 		transition := TransitionRequest{
 			RunID: run.RunID,
 			Error: fmt.Sprintf("workspace preparation failed: %v", err),
 		}
-		run, markErr := c.completeProjectRunError(transitionCtx, ctx, transition, err)
+		run, markErr := c.completeProjectRunError(transitionCtx, prepCtx, transition, err)
 		if markErr != nil {
 			return domain.ProjectRunRecord{}, nil, markErr
 		}
 		run = withRunWarnings(run, warnings)
 		return run, err, nil
 	}
-	sandboxResult, err := c.ensureProjectRunSandbox(ctx, run, prepared, req)
+	sandboxResult, err := c.ensureProjectRunSandbox(prepCtx, run, prepared, req)
 	if err != nil {
 		transition := TransitionRequest{
 			RunID: run.RunID,
@@ -550,7 +554,7 @@ func (c *Controller) executeStartedProjectRun(ctx context.Context, started start
 		if sandboxResult.Sandbox != nil {
 			transition.SandboxID = sandboxResult.Sandbox.Summary.ID
 		}
-		run, markErr := c.completeProjectRunError(transitionCtx, ctx, transition, err)
+		run, markErr := c.completeProjectRunError(transitionCtx, prepCtx, transition, err)
 		if markErr != nil {
 			return domain.ProjectRunRecord{}, nil, markErr
 		}
@@ -561,9 +565,9 @@ func (c *Controller) executeStartedProjectRun(ctx context.Context, started start
 	if sandboxResult.Sandbox != nil {
 		span.SetAttributes(telemetry.AttrSandboxID.String(sandboxResult.Sandbox.Summary.ID))
 	}
-	if err := ctx.Err(); err != nil {
+	if err := prepCtx.Err(); err != nil {
 		stopReason := err.Error()
-		if cause := context.Cause(ctx); cause != nil {
+		if cause := context.Cause(prepCtx); cause != nil {
 			stopReason = cause.Error()
 		}
 		run, markErr := c.completeProjectRun(transitionCtx, TransitionRequest{
@@ -600,7 +604,7 @@ func (c *Controller) executeStartedProjectRun(ctx context.Context, started start
 	if commandText != "" {
 		return c.completeProjectRunCommand(ctx, sandboxed, commandText)
 	}
-	return c.completeProjectRunAgent(ctx, sandboxed)
+	return c.completeProjectRunAgent(prepCtx, sandboxed)
 }
 
 // sandboxedProjectRun bundles the run-scoped state shared by the command and

@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -149,6 +150,66 @@ func TestReconcilePersistedProjectRunsMarksInterruptedRunsFailed(t *testing.T) {
 	}
 	if fresh.Status != domain.ProjectRunStatusRunning {
 		t.Fatalf("fresh run status = %#v", fresh)
+	}
+}
+
+// failingReattacher fails every re-attach, as when the sandbox row or runtime
+// can no longer be loaded after a restart.
+type failingReattacher struct{ runIDs []string }
+
+func (r *failingReattacher) ReattachRun(run domain.ProjectRunRecord, onFailure func(error)) {
+	r.runIDs = append(r.runIDs, run.RunID)
+	onFailure(errors.New("sandbox lookup failed"))
+}
+
+func TestReconcilePersistedProjectRunsFinalizesFailedReattach(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	config := &appconfig.Config{
+		DataRoot:    root,
+		SandboxRoot: filepath.Join(root, "sandboxes"),
+		DbAddr:      filepath.Join(root, "data.db"),
+	}
+	di := do.New()
+	do.ProvideValue(di, ctx)
+	do.ProvideValue(di, config)
+	store, err := testutil.OpenConfigStore(t, di)
+	if err != nil {
+		t.Fatalf("NewConfigStore returned error: %v", err)
+	}
+	project, err := store.UpsertProject(ctx, domain.ProjectRecord{ID: "project-1", Name: "project", SourcePath: filepath.Join(root, "agent-compose.yml"), SourceJSON: `{}`})
+	if err != nil {
+		t.Fatalf("UpsertProject returned error: %v", err)
+	}
+	agent, err := store.UpsertProjectAgent(ctx, domain.ProjectAgentRecord{ProjectID: project.ID, AgentName: "worker"})
+	if err != nil {
+		t.Fatalf("UpsertProjectAgent returned error: %v", err)
+	}
+	if _, err := store.CreateProjectRun(ctx, domain.ProjectRunRecord{
+		RunID: "run-detached", ProjectID: project.ID, ProjectName: project.Name, AgentName: "worker", AgentID: agent.ID,
+		Source: domain.ProjectRunSourceManual, Status: domain.ProjectRunStatusRunning, Detach: true, ExecutionID: "exec-1",
+	}); err != nil {
+		t.Fatalf("CreateProjectRun returned error: %v", err)
+	}
+	completions := runs.NewCompletionManager(runs.CompletionManagerDeps{Store: store})
+	reattacher := &failingReattacher{}
+	if err := reconcilePersistedProjectRuns(ctx, projectRunReconcileContext{ConfigDB: store, Completions: completions, Reattacher: reattacher, RootCtx: ctx, StartedAt: time.Now().Add(2 * time.Second)}); err != nil {
+		t.Fatalf("reconcilePersistedProjectRuns returned error: %v", err)
+	}
+	if len(reattacher.runIDs) != 1 || reattacher.runIDs[0] != "run-detached" {
+		t.Fatalf("re-attached runs = %v, want [run-detached]", reattacher.runIDs)
+	}
+	// A failed re-attach is staged as interrupted instead of being left
+	// running with no follower.
+	if _, err := completions.Complete(ctx, runs.TransitionRequest{RunID: "run-detached", Status: domain.ProjectRunStatusFailed}); err != nil {
+		t.Fatalf("complete reconciled run: %v", err)
+	}
+	run, err := store.GetProjectRun(ctx, "run-detached")
+	if err != nil {
+		t.Fatalf("GetProjectRun returned error: %v", err)
+	}
+	if run.Status != domain.ProjectRunStatusFailed || !strings.Contains(run.Error, "re-attach failed: sandbox lookup failed") {
+		t.Fatalf("run after failed re-attach = %#v", run)
 	}
 }
 

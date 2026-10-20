@@ -1,6 +1,9 @@
 package runs
 
-import "context"
+import (
+	"context"
+	"fmt"
+)
 
 // daemonShutdownContextKey carries the daemon's shutdown signal through a run
 // context. The run context itself must survive a daemon shutdown (so a
@@ -42,4 +45,29 @@ func runExecContext(ctx context.Context) (context.Context, context.CancelFunc) {
 		}()
 	}
 	return execCtx, func() { cancel(nil) }
+}
+
+// errDaemonShuttingDown is the cancellation cause for run work that, unlike a
+// detached command, cannot outlive the daemon: sandbox preparation and agent
+// runs. It wraps context.Canceled so the run is finalized as canceled.
+var errDaemonShuttingDown = fmt.Errorf("daemon shutting down: %w", context.Canceled)
+
+// cancelOnDaemonShutdown derives a context that is also cancelled when the
+// shutdown signal carried by ctx fires. The run context deliberately survives
+// shutdown so a detached command keeps running; everything else in the run
+// uses this context to keep the pre-detach behaviour of stopping on shutdown.
+func cancelOnDaemonShutdown(ctx context.Context) (context.Context, context.CancelFunc) {
+	shutdown, ok := DaemonShutdown(ctx)
+	if !ok {
+		return ctx, func() {}
+	}
+	derived, cancel := context.WithCancelCause(ctx)
+	go func() {
+		select {
+		case <-shutdown:
+			cancel(errDaemonShuttingDown)
+		case <-derived.Done():
+		}
+	}()
+	return derived, func() { cancel(nil) }
 }

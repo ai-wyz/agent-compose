@@ -28,6 +28,7 @@ type RunSupervisor struct {
 type runSupervisorController interface {
 	StartProjectRun(context.Context, runs.RunAgentRequest) (runs.StartedProjectRun, error)
 	RunProjectCommandAttachRegistered(context.Context, context.Context, runs.RunAttachReceiver, runs.RunAttachSender, func(string, <-chan struct{})) error
+	ReattachDetachedRun(context.Context, domain.ProjectRunRecord) (domain.ProjectRunRecord, error)
 }
 
 type activeRun struct {
@@ -78,6 +79,25 @@ func (s *RunSupervisor) StartRun(ctx context.Context, req runs.RunAgentRequest) 
 		_, _, _ = started.Execute(execCtx, nil)
 	}()
 	return started.Run, nil
+}
+
+// ReattachRun follows a detached run left running by an earlier daemon until
+// it ends. Like StartRun, the run is registered so StopRun can reach it and is
+// counted in wg so Shutdown waits for the follower to disconnect. onFailure is
+// called when the re-attach returns an error, e.g. the sandbox or runtime
+// could not be loaded, so the caller can still finalize the run.
+func (s *RunSupervisor) ReattachRun(run domain.ProjectRunRecord, onFailure func(error)) {
+	execCtx, cancel := context.WithCancelCause(runs.WithDaemonShutdown(context.WithoutCancel(s.root), s.root.Done()))
+	s.register(run.RunID, cancel)
+	s.wg.Add(1)
+	go func() {
+		defer s.wg.Done()
+		defer s.unregister(run.RunID)
+		defer cancel(nil)
+		if _, err := s.controller.ReattachDetachedRun(execCtx, run); err != nil && onFailure != nil {
+			onFailure(err)
+		}
+	}()
 }
 
 func (s *RunSupervisor) startInteractiveRun(ctx context.Context, req runs.RunAgentRequest) (domain.ProjectRunRecord, error) {

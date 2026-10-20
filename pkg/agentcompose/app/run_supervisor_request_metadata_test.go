@@ -138,6 +138,10 @@ func newRunSupervisorHeaderController() *runSupervisorHeaderController {
 	}
 }
 
+func (*runSupervisorHeaderController) ReattachDetachedRun(context.Context, domain.ProjectRunRecord) (domain.ProjectRunRecord, error) {
+	return domain.ProjectRunRecord{}, errors.New("unexpected ReattachDetachedRun call")
+}
+
 func (*runSupervisorHeaderController) StartProjectRun(context.Context, runs.RunAgentRequest) (runs.StartedProjectRun, error) {
 	return runs.StartedProjectRun{}, errors.New("unexpected StartProjectRun call")
 }

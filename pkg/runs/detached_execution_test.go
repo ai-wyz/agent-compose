@@ -228,3 +228,39 @@ func TestFollowDetachedCommandTerminatesTreeWhenStopFails(t *testing.T) {
 		t.Fatalf("terminated marker = %q, want exec-1", marker)
 	}
 }
+
+func TestDetachFollowerIgnoresAttachStderr(t *testing.T) {
+	f := newDetachFollower(nil, nil)
+	// A stderr chunk landing in the middle of a stdout record must neither
+	// break the record nor be parsed as one.
+	f.consume(domain.ExecChunk{Stream: domain.StdioStdout, Text: `{"t":"out","s":"stdout","text":"hi\n",`})
+	f.consume(domain.ExecChunk{Stream: domain.StdioStderr, Text: "(node:1) ExperimentalWarning: something\n"})
+	f.consume(domain.ExecChunk{Stream: domain.StdioStdout, Text: `"offset":0}` + "\n" + `{"t":"exit","code":0,"reason":"completed"}` + "\n"})
+
+	res := f.result(nil, context.Background())
+	if res.Err != nil {
+		t.Fatalf("unexpected error: %v", res.Err)
+	}
+	if res.Result.Stdout != "hi\n" || res.Result.ExitCode != 0 || !res.Result.Success {
+		t.Fatalf("result = %+v", res.Result)
+	}
+}
+
+func TestDetachFollowerReportsAttachStderrWhenAttachFails(t *testing.T) {
+	f := newDetachFollower(nil, nil)
+	f.consume(domain.ExecChunk{Stream: domain.StdioStderr, Text: "Error: cannot read journal\n"})
+
+	res := f.result(errors.New("exit status 1"), context.Background())
+	if res.Err == nil || !strings.Contains(res.Err.Error(), "cannot read journal") {
+		t.Fatalf("err = %v, want attach stderr in the error", res.Err)
+	}
+}
+
+func TestTruncateUTF8KeepsRunesWhole(t *testing.T) {
+	if got := truncateUTF8("中文", 4); got != "中" {
+		t.Fatalf("truncateUTF8 = %q, want %q", got, "中")
+	}
+	if got := truncateUTF8("abc", 10); got != "abc" {
+		t.Fatalf("truncateUTF8 = %q, want %q", got, "abc")
+	}
+}

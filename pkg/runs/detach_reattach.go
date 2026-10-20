@@ -3,6 +3,7 @@ package runs
 import (
 	"context"
 	"errors"
+	"fmt"
 	"path/filepath"
 
 	"github.com/chaitin/agent-compose/pkg/execution"
@@ -13,11 +14,17 @@ import (
 // daemon shutdown or restart. It re-attaches to the guest journal, appends any
 // output that arrived while the daemon was gone, and completes the run when the
 // task exits. A run whose sandbox is no longer running is marked failed.
+//
+// ctx is the run context, owned by the caller (RunSupervisor): it must not be
+// cancelled by daemon shutdown, only by a user stop, and it must carry the
+// shutdown signal via WithDaemonShutdown so the follower disconnects instead
+// of stopping the task. The persisted deadline is re-applied here.
 func (c *Controller) ReattachDetachedRun(ctx context.Context, run domain.ProjectRunRecord) (domain.ProjectRunRecord, error) {
 	if !run.Detach || run.ExecutionID == "" {
 		return run, nil
 	}
-	sandbox, err := c.store.GetSandbox(ctx, run.SandboxID)
+	transitionCtx := context.WithoutCancel(ctx)
+	sandbox, err := c.store.GetSandbox(transitionCtx, run.SandboxID)
 	if err != nil {
 		return run, err
 	}
@@ -31,7 +38,7 @@ func (c *Controller) ReattachDetachedRun(ctx context.Context, run domain.Project
 			LogsPath:     run.LogsPath,
 			Error:        "detached execution sandbox is no longer running",
 		}
-		return c.completeProjectRunError(ctx, ctx, transition, errors.New(transition.Error))
+		return c.completeProjectRunError(transitionCtx, ctx, transition, errors.New(transition.Error))
 	}
 	vmState, err := c.store.GetVMState(sandbox.Summary.ID)
 	if err != nil {
@@ -42,17 +49,12 @@ func (c *Controller) ReattachDetachedRun(ctx context.Context, run domain.Project
 		return run, err
 	}
 
-	// The re-attach must survive a daemon shutdown so the task keeps running:
-	// derive from WithoutCancel(ctx) and re-apply only the deadline (if any) and
-	// the shutdown signal carried by the parent. The run context's Done then
-	// fires solely for the deadline, never for shutdown.
-	runCtx := context.WithoutCancel(ctx)
+	runCtx := ctx
 	if !run.Deadline.IsZero() {
 		var cancel context.CancelFunc
 		runCtx, cancel = context.WithDeadline(runCtx, run.Deadline)
 		defer cancel()
 	}
-	runCtx = WithDaemonShutdown(runCtx, daemonShutdownFromContext(ctx))
 
 	artifactsDir := projectRunCommandArtifactsDir(run, sandbox)
 	logsPath := run.LogsPath
@@ -100,26 +102,24 @@ func (c *Controller) ReattachDetachedRun(ctx context.Context, run domain.Project
 		// reconciliation.
 		return run, nil
 	}
-	if sendErr != nil {
-		result.Err = errors.Join(result.Err, sendErr)
-	}
-	if pullErr := execution.SyncGuestDirToHost(ctx, filepath.Join(c.config.GuestStateRoot, "runs", run.RunID), artifactsDir, guestDirReaderFor(runtime, sandbox, vmState)); pullErr != nil {
-		result.Err = errors.Join(result.Err, pullErr)
+	execErr := result.Err
+	if pullErr := execution.SyncGuestDirToHost(transitionCtx, filepath.Join(c.config.GuestStateRoot, "runs", run.RunID), artifactsDir, guestDirReaderFor(runtime, sandbox, vmState)); pullErr != nil {
+		execErr = errors.Join(execErr, fmt.Errorf("pull command artifacts: %w", pullErr))
 	}
 
-	transition := transitionFromCommandResult(run, sandbox, commandOutcome{Result: result.Result, Err: result.Err})
-	transition.LogsPath = logsPath
-	if result.Err != nil {
-		return c.completeProjectRunError(ctx, runCtx, transition, result.Err)
+	transition, execErr := finishProjectRunCommand(projectRunCommandOutcome{
+		Run:          run,
+		Sandbox:      sandbox,
+		CommandText:  readProjectRunCommandText(artifactsDir),
+		ArtifactsDir: artifactsDir,
+		LogsPath:     logsPath,
+		Result:       result.Result,
+		ExecErr:      execErr,
+		SendErr:      sendErr,
+	})
+	if execErr != nil || transition.ExitCode != 0 {
+		return c.completeProjectRunError(transitionCtx, runCtx, transition, execErr)
 	}
 	transition.Status = domain.ProjectRunStatusSucceeded
-	return c.completeProjectRun(ctx, transition)
-}
-
-// daemonShutdownFromContext extracts the shutdown signal carried by ctx (if
-// any) so a re-attach can disconnect on the next shutdown without terminating
-// the task.
-func daemonShutdownFromContext(ctx context.Context) <-chan struct{} {
-	shutdown, _ := DaemonShutdown(ctx)
-	return shutdown
+	return c.completeProjectRun(transitionCtx, transition)
 }

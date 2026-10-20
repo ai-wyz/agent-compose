@@ -180,6 +180,10 @@ func newRunSupervisorInteractiveController(callStarted bool) *runSupervisorInter
 	}
 }
 
+func (*runSupervisorInteractiveController) ReattachDetachedRun(context.Context, domain.ProjectRunRecord) (domain.ProjectRunRecord, error) {
+	return domain.ProjectRunRecord{}, errors.New("unexpected ReattachDetachedRun call")
+}
+
 func (*runSupervisorInteractiveController) StartProjectRun(context.Context, runs.RunAgentRequest) (runs.StartedProjectRun, error) {
 	return runs.StartedProjectRun{}, errors.New("unexpected StartProjectRun call")
 }
@@ -222,6 +226,10 @@ func newRunSupervisorAttachController() *runSupervisorAttachController {
 		inputCanceled:   make(chan struct{}),
 		finishExecution: make(chan struct{}),
 	}
+}
+
+func (*runSupervisorAttachController) ReattachDetachedRun(context.Context, domain.ProjectRunRecord) (domain.ProjectRunRecord, error) {
+	return domain.ProjectRunRecord{}, errors.New("unexpected ReattachDetachedRun call")
 }
 
 func (*runSupervisorAttachController) StartProjectRun(context.Context, runs.RunAgentRequest) (runs.StartedProjectRun, error) {
@@ -350,4 +358,110 @@ func newRunSupervisorTestConfigStore(t *testing.T) *configstore.ConfigStore {
 		}
 	})
 	return store
+}
+
+// runSupervisorReattachController blocks a re-attach until its context ends
+// and reports why it ended.
+type runSupervisorReattachController struct {
+	started chan context.Context
+	ended   chan error
+	fail    error
+}
+
+func newRunSupervisorReattachController() *runSupervisorReattachController {
+	return &runSupervisorReattachController{started: make(chan context.Context, 1), ended: make(chan error, 1)}
+}
+
+func (*runSupervisorReattachController) StartProjectRun(context.Context, runs.RunAgentRequest) (runs.StartedProjectRun, error) {
+	return runs.StartedProjectRun{}, errors.New("unexpected StartProjectRun call")
+}
+
+func (*runSupervisorReattachController) RunProjectCommandAttachRegistered(context.Context, context.Context, runs.RunAttachReceiver, runs.RunAttachSender, func(string, <-chan struct{})) error {
+	return errors.New("unexpected RunProjectCommandAttachRegistered call")
+}
+
+func (c *runSupervisorReattachController) ReattachDetachedRun(ctx context.Context, run domain.ProjectRunRecord) (domain.ProjectRunRecord, error) {
+	if c.fail != nil {
+		return run, c.fail
+	}
+	c.started <- ctx
+	<-ctx.Done()
+	c.ended <- context.Cause(ctx)
+	return run, nil
+}
+
+func TestRunSupervisorReattachRunCanBeStopped(t *testing.T) {
+	rootCtx, cancelRoot := context.WithCancel(context.Background())
+	t.Cleanup(cancelRoot)
+	controller := newRunSupervisorReattachController()
+	supervisor := &RunSupervisor{root: rootCtx, controller: controller, active: map[string]*activeRun{}}
+
+	supervisor.ReattachRun(domain.ProjectRunRecord{RunID: "run-1"}, nil)
+	<-controller.started
+	stopped, err := supervisor.StopActiveRun(context.Background(), "run-1", "user stop")
+	if err != nil || !stopped {
+		t.Fatalf("StopActiveRun() = %v, %v; want the re-attached run to be stoppable", stopped, err)
+	}
+	select {
+	case cause := <-controller.ended:
+		if cause == nil || cause.Error() != "user stop" {
+			t.Fatalf("re-attach ended with %v, want the stop reason", cause)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("re-attach was not cancelled by StopActiveRun")
+	}
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := supervisor.Shutdown(shutdownCtx); err != nil {
+		t.Fatalf("Shutdown() error = %v", err)
+	}
+	supervisor.mu.Lock()
+	_, active := supervisor.active["run-1"]
+	supervisor.mu.Unlock()
+	if active {
+		t.Fatal("re-attached run still registered after it ended")
+	}
+}
+
+func TestRunSupervisorReattachRunSurvivesShutdownSignal(t *testing.T) {
+	rootCtx, cancelRoot := context.WithCancel(context.Background())
+	controller := newRunSupervisorReattachController()
+	supervisor := &RunSupervisor{root: rootCtx, controller: controller, active: map[string]*activeRun{}}
+
+	supervisor.ReattachRun(domain.ProjectRunRecord{RunID: "run-1"}, nil)
+	runCtx := <-controller.started
+	cancelRoot()
+	// The run context must not end on shutdown (the follower disconnects via
+	// the carried signal instead), so the guest task is never stopped.
+	shutdown, ok := runs.DaemonShutdown(runCtx)
+	if !ok {
+		t.Fatal("re-attach context does not carry the daemon shutdown signal")
+	}
+	<-shutdown
+	select {
+	case <-runCtx.Done():
+		t.Fatal("re-attach context was cancelled by daemon shutdown")
+	case <-time.After(50 * time.Millisecond):
+	}
+	if _, err := supervisor.StopActiveRun(context.Background(), "run-1", "cleanup"); err != nil {
+		t.Fatalf("StopActiveRun() error = %v", err)
+	}
+	<-controller.ended
+}
+
+func TestRunSupervisorReattachRunReportsFailure(t *testing.T) {
+	controller := newRunSupervisorReattachController()
+	controller.fail = errors.New("sandbox lookup failed")
+	supervisor := &RunSupervisor{root: context.Background(), controller: controller, active: map[string]*activeRun{}}
+
+	failed := make(chan error, 1)
+	supervisor.ReattachRun(domain.ProjectRunRecord{RunID: "run-1"}, func(err error) { failed <- err })
+	select {
+	case err := <-failed:
+		if err == nil || err.Error() != "sandbox lookup failed" {
+			t.Fatalf("onFailure got %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("onFailure was not called")
+	}
 }

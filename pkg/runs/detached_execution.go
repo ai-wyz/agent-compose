@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	appconfig "github.com/chaitin/agent-compose/pkg/config"
 	"github.com/chaitin/agent-compose/pkg/execution"
@@ -254,6 +255,10 @@ type detachFollower struct {
 
 	pending strings.Builder
 	exit    *execution.DetachAttachRecord
+	// attachStderr keeps the head of the attach process's own stderr (Node
+	// warnings, a crash trace). It is not journal data, so it is never parsed;
+	// it only explains an attach that ended without an exit record.
+	attachStderr strings.Builder
 
 	stdout strings.Builder
 	stderr strings.Builder
@@ -265,7 +270,17 @@ func newDetachFollower(writer func(domain.ExecChunk), persist func(uint64) error
 	return &detachFollower{writer: writer, persist: persist}
 }
 
+// detachAttachStderrLimit bounds how much of the attach process's stderr is
+// kept for error messages.
+const detachAttachStderrLimit = 4096
+
 func (f *detachFollower) consume(chunk domain.ExecChunk) {
+	if chunk.Stream == domain.StdioStderr {
+		if room := detachAttachStderrLimit - f.attachStderr.Len(); room > 0 {
+			f.attachStderr.WriteString(truncateUTF8(chunk.Text, room))
+		}
+		return
+	}
 	if f.sendErr != nil || f.exit != nil {
 		return
 	}
@@ -342,6 +357,11 @@ func (f *detachFollower) result(execErr error, attachCtx context.Context) detach
 	if f.sendErr != nil {
 		execErr = errors.Join(execErr, f.sendErr)
 	}
+	if f.exit == nil && execErr != nil {
+		if detail := strings.TrimSpace(f.attachStderr.String()); detail != "" {
+			execErr = fmt.Errorf("%w (attach stderr: %s)", execErr, detail)
+		}
+	}
 	result := domain.ExecResult{
 		Stdout: f.stdout.String(),
 		Stderr: f.stderr.String(),
@@ -376,4 +396,15 @@ func (f *detachFollower) result(execErr error, attachCtx context.Context) detach
 		stopReason = exit.StopReason
 	}
 	return detachedExecutionResult{Result: mapped, StopReason: stopReason, Err: exitErr}
+}
+
+// truncateUTF8 returns at most limit bytes of s without splitting a rune.
+func truncateUTF8(s string, limit int) string {
+	if len(s) <= limit {
+		return s
+	}
+	for limit > 0 && !utf8.RuneStart(s[limit]) {
+		limit--
+	}
+	return s[:limit]
 }
