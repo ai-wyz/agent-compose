@@ -9,7 +9,7 @@ import { TranscriptWriter, type TranscriptTextWriter } from "../transcript.js";
 import type { AgentEvent } from "../agent-event.js";
 import { toolKindForName, toolOutputText } from "../agent-event.js";
 import type { AgentResult, RunnerOptions } from "../types.js";
-import { piMCPAdapterExtension, writePiMCPConfig } from "./pi-mcp.js";
+import { preparePiAgentDir } from "./pi-mcp.js";
 import { cancellationRequested } from "../shutdown.js";
 import { waitForChildExit } from "../child-process.js";
 import { resolveFacadeModel } from "./model-reference.js";
@@ -19,6 +19,7 @@ const maxDiagnosticBytes = 64 * 1024;
 export class PiRunner {
   private reportedError: Error | null = null;
   private latestAssistantError: Error | null = null;
+  private lastAssistantStopReason = "";
   private step = 0;
 
   constructor(
@@ -29,6 +30,7 @@ export class PiRunner {
   async runPrompt(promptText: string): Promise<AgentResult> {
     this.reportedError = null;
     this.latestAssistantError = null;
+    this.lastAssistantStopReason = "";
     if (this.options.outputSchema) {
       throw new Error("structured JSON output is not supported by pi runner");
     }
@@ -52,13 +54,15 @@ export class PiRunner {
       // Let Pi create the first session so its CLI follows the native creation
       // path. Supplying a new --session-id is treated as a resume miss and
       // intentionally produces a warning; only pass IDs Pi already emitted.
-      const args = await this.buildArgs(promptText, stored?.threadId, sessionDir, invocationDir);
+      const managedAgentDir = process.env.PI_CODING_AGENT_DIR || path.join(this.options.home, ".pi", "agent");
+      const agentDir = await preparePiAgentDir(managedAgentDir, invocationDir, this.options.mcpConfig);
+      const args = await this.buildArgs(promptText, stored?.threadId, sessionDir, invocationDir, agentDir !== managedAgentDir);
       const child = spawn("pi", args, {
         cwd: this.options.workspace,
         env: {
           ...providerTelemetryEnv("pi", this.options.telemetry, process.env),
           HOME: this.options.home,
-          PI_CODING_AGENT_DIR: process.env.PI_CODING_AGENT_DIR || path.join(this.options.home, ".pi", "agent"),
+          PI_CODING_AGENT_DIR: agentDir,
           PI_OFFLINE: "1",
           PI_SKIP_VERSION_CHECK: "1",
           PI_TELEMETRY: "0",
@@ -124,7 +128,13 @@ export class PiRunner {
     }
   }
 
-  async buildArgs(promptText: string, sessionID: string | undefined, sessionDir: string, invocationDir: string): Promise<string[]> {
+  async buildArgs(
+    promptText: string,
+    sessionID: string | undefined,
+    sessionDir: string,
+    invocationDir: string,
+    mcpEnabled: boolean,
+  ): Promise<string[]> {
     const args = [
       "--mode", "json",
       "--session-dir", sessionDir,
@@ -147,9 +157,11 @@ export class PiRunner {
       args.push("--append-system-prompt", systemPath);
     }
     for (const skillPath of await this.resolveSkillPaths()) args.push("--skill", skillPath);
-    const mcpConfigPath = await writePiMCPConfig(invocationDir, this.options.mcpConfig);
-    if (mcpConfigPath) {
-      args.push("--extension", piMCPAdapterExtension, "--mcp-config", mcpConfigPath);
+    if (mcpEnabled) {
+      // Pi 1.x ships MCP as a built-in extension. `--no-extensions` keeps
+      // discovery closed, so load only MCP and codemode: MCP servers default to
+      // codemode exposure, which reaches their tools through codemode scripts.
+      args.push("--extension", "builtin:mcp", "--extension", "builtin:codemode");
     }
     args.push(promptText);
     return args;
@@ -213,7 +225,7 @@ export class PiRunner {
       this.emit({
         kind: "step_end",
         step: this.step,
-        stopReason: stopReason === "toolUse" ? "tool_use" : stopReason === "stop" ? "stop" : stopReason === "error" ? "error" : undefined,
+        stopReason: piStepStopReason(stopReason),
         rawStopReason: firstString(message, "rawStopReason", "raw_stop_reason") || stopReason || undefined,
       });
       if (stopReason === "error") {
@@ -291,6 +303,7 @@ export class PiRunner {
       if (String(message?.role || event.role || "") === "assistant") {
         const stopReason = firstString(message, "stopReason", "stop_reason")
           || firstString(event, "stopReason", "stop_reason");
+        this.lastAssistantStopReason = stopReason;
         if (stopReason === "error") {
           const detail = firstString(message, "errorMessage", "error_message")
             || firstString(event, "errorMessage", "error_message")
@@ -311,7 +324,11 @@ export class PiRunner {
       return;
     }
     if (type === "agent_end") {
-      result.stopReason = firstString(event, "stopReason", "stop_reason") || "completed";
+      // Pi 1.x no longer puts a stop reason on agent_end; the authoritative
+      // value is on the last assistant message. Keep reading the old field so
+      // stored event fixtures from older releases remain interpretable.
+      result.stopReason = firstString(event, "stopReason", "stop_reason")
+        || piResultStopReason(this.lastAssistantStopReason);
       if (!result.finalText) {
         const finalText = lastAssistantMessage(event.messages);
         if (finalText) {
@@ -319,8 +336,19 @@ export class PiRunner {
           result.finalTextSource = "provider_message";
         }
       }
-      this.reportedError ??= this.latestAssistantError
-        || (result.stopReason === "error" ? new Error("pi agent ended with an error") : null);
+      // An intermediate agent_end with willRetry=true can still recover through
+      // a retry or compaction, so its assistant error is not final.
+      if (event.willRetry !== true) {
+        this.reportedError ??= this.latestAssistantError
+          || (result.stopReason === "error" ? new Error("pi agent ended with an error") : null);
+      }
+      return;
+    }
+    if (type === "agent_settled") {
+      if (event.aborted === true && result.stopReason === "completed") {
+        result.stopReason = "cancelled";
+      }
+      this.reportedError ??= this.latestAssistantError;
       return;
     }
     if (type.startsWith("auto_retry_") || type.startsWith("compaction_")) {
@@ -375,6 +403,26 @@ function recordValue(value: unknown): Record<string, unknown> | undefined {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function piStepStopReason(raw: string): "tool_use" | "stop" | "max_tokens" | "cancelled" | "error" | undefined {
+  switch (raw) {
+    case "toolUse": return "tool_use";
+    case "stop": return "stop";
+    case "length": return "max_tokens";
+    case "aborted": return "cancelled";
+    case "error": return "error";
+    default: return undefined;
+  }
+}
+
+function piResultStopReason(raw: string): string {
+  switch (raw) {
+    case "error": return "error";
+    case "aborted": return "cancelled";
+    case "length": return "max_tokens";
+    default: return "completed";
+  }
 }
 
 function lastAssistantMessage(value: unknown): string {
