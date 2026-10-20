@@ -683,12 +683,17 @@ func (r *microsandboxRuntime) ensureReady(ctx context.Context) error {
 		return err
 	}
 	// ResolveRuntime is the SDK's availability check, not a config lookup: it
-	// requires a complete msb + libkrunfw pair under the configured paths and
-	// fails otherwise (the SDK defines IsRuntimeInstalled as ResolveRuntime
+	// requires a complete msb + libkrunfw pair in the runtime home and fails
+	// otherwise (the SDK defines IsRuntimeInstalled as ResolveRuntime
 	// succeeding). Resolution never downloads, unlike EnsureRuntime, which
 	// installs the SDK's pinned runtime whenever nothing resolves. The resolved
-	// pair is intentionally discarded: prepareEnvironment has just installed
-	// and recorded exactly these paths.
+	// pair is intentionally discarded: prepareEnvironment has just installed it
+	// into that home.
+	//
+	// Resolve through the home alone, without the explicit pair: later sandbox
+	// operations resolve the runtime from MSB_HOME on their own, so checking
+	// explicit paths here would only prove the mounted image artifacts exist
+	// and would hide a home installation that those operations cannot use.
 	if _, err := microsandbox.ResolveRuntime(runtimeConfig); err != nil {
 		return fmt.Errorf("resolve microsandbox runtime: %w", err)
 	}
@@ -696,8 +701,9 @@ func (r *microsandboxRuntime) ensureReady(ctx context.Context) error {
 	return nil
 }
 
-// prepareEnvironment provisions the mounted deployment paths and returns the
-// runtime pair the v0.7 SDK resolves before any sandbox operation.
+// prepareEnvironment provisions the microsandbox home and the mounted runtime
+// artifacts, then returns the home the v0.7 SDK resolves before any sandbox
+// operation.
 func (r *microsandboxRuntime) prepareEnvironment() (microsandbox.RuntimeConfig, error) {
 	if err := os.MkdirAll(r.config.MicrosandboxHome, 0o755); err != nil {
 		return microsandbox.RuntimeConfig{}, fmt.Errorf("create microsandbox home: %w", err)
@@ -718,7 +724,8 @@ func (r *microsandboxRuntime) prepareEnvironment() (microsandbox.RuntimeConfig, 
 	if libkrunfwPath == "" {
 		return microsandbox.RuntimeConfig{}, fmt.Errorf("microsandbox libkrunfw not found next to %s", r.config.MicrosandboxLibPath)
 	}
-	if err := r.installMicrosandboxRuntime(r.config.MicrosandboxMSBPath, libkrunfwPath); err != nil {
+	installedMSBPath, installedLibkrunfwPath, err := r.installMicrosandboxRuntime(r.config.MicrosandboxMSBPath, libkrunfwPath)
+	if err != nil {
 		return microsandbox.RuntimeConfig{}, err
 	}
 
@@ -726,14 +733,12 @@ func (r *microsandboxRuntime) prepareEnvironment() (microsandbox.RuntimeConfig, 
 	prependEnvPath("LD_LIBRARY_PATH", filepath.Dir(r.config.MicrosandboxLibPath))
 	_ = os.Setenv("MSB_HOME", r.config.MicrosandboxHome)
 	_ = os.Setenv("MSB_PATH", r.config.MicrosandboxMSBPath)
-	if err := r.writeMicrosandboxConfig(libkrunfwPath); err != nil {
+	if err := r.writeMicrosandboxConfig(installedMSBPath, installedLibkrunfwPath); err != nil {
 		return microsandbox.RuntimeConfig{}, err
 	}
-	return microsandbox.RuntimeConfig{
-		Home:          r.config.MicrosandboxHome,
-		MSBPath:       r.config.MicrosandboxMSBPath,
-		LibkrunfwPath: libkrunfwPath,
-	}, nil
+	// Only the home: later sandbox operations resolve the pair from MSB_HOME
+	// themselves, and the readiness check must validate that same resolution.
+	return microsandbox.RuntimeConfig{Home: r.config.MicrosandboxHome}, nil
 }
 
 func (r *microsandboxRuntime) resolveLibkrunfwPath() (string, error) {
@@ -816,37 +821,42 @@ func compareIntVersions(left []int, right []int) int {
 	return 0
 }
 
-func (r *microsandboxRuntime) installMicrosandboxRuntime(msbPath string, libkrunfwPath string) error {
-	homeDir, err := os.UserHomeDir()
-	if err != nil {
-		return fmt.Errorf("resolve home directory for microsandbox install: %w", err)
-	}
-
-	installRoot := filepath.Join(homeDir, ".microsandbox")
-	binDir := filepath.Join(installRoot, "bin")
-	libDir := filepath.Join(installRoot, "lib")
+// installMicrosandboxRuntime copies the mounted runtime pair into the
+// microsandbox home and returns the installed paths.
+//
+// The SDK resolves sandbox runtimes from its home, and agent-compose exports
+// MicrosandboxHome as MSB_HOME. The SDK's environment tier only resolves a
+// complete MSB_PATH + MSB_LIBKRUNFW_PATH pair, so the lone MSB_PATH that
+// agent-compose sets falls through to that home: installing the pair under the
+// process user's ~/.microsandbox instead leaves the exported home without a
+// resolvable runtime, and every sandbox start fails with "microsandbox runtime
+// is not installed".
+func (r *microsandboxRuntime) installMicrosandboxRuntime(msbPath string, libkrunfwPath string) (string, string, error) {
+	binDir := filepath.Join(r.config.MicrosandboxHome, "bin")
+	libDir := filepath.Join(r.config.MicrosandboxHome, "lib")
 	if err := os.MkdirAll(binDir, 0o755); err != nil {
-		return fmt.Errorf("create microsandbox install bin dir: %w", err)
+		return "", "", fmt.Errorf("create microsandbox install bin dir: %w", err)
 	}
 	if err := os.MkdirAll(libDir, 0o755); err != nil {
-		return fmt.Errorf("create microsandbox install lib dir: %w", err)
+		return "", "", fmt.Errorf("create microsandbox install lib dir: %w", err)
 	}
-	if err := copyFileWithMode(msbPath, filepath.Join(binDir, "msb"), 0o755); err != nil {
-		return fmt.Errorf("install microsandbox msb: %w", err)
+	installedMSBPath := filepath.Join(binDir, "msb")
+	if err := copyFileWithMode(msbPath, installedMSBPath, 0o755); err != nil {
+		return "", "", fmt.Errorf("install microsandbox msb: %w", err)
 	}
 
 	libFilename := filepath.Base(libkrunfwPath)
 	installedLibPath := filepath.Join(libDir, libFilename)
 	if err := copyFileWithMode(libkrunfwPath, installedLibPath, 0o644); err != nil {
-		return fmt.Errorf("install microsandbox libkrunfw: %w", err)
+		return "", "", fmt.Errorf("install microsandbox libkrunfw: %w", err)
 	}
 	if err := symlinkForce(libFilename, filepath.Join(libDir, "libkrunfw.so.5")); err != nil {
-		return fmt.Errorf("link microsandbox libkrunfw.so.5: %w", err)
+		return "", "", fmt.Errorf("link microsandbox libkrunfw.so.5: %w", err)
 	}
 	if err := symlinkForce("libkrunfw.so.5", filepath.Join(libDir, "libkrunfw.so")); err != nil {
-		return fmt.Errorf("link microsandbox libkrunfw.so: %w", err)
+		return "", "", fmt.Errorf("link microsandbox libkrunfw.so: %w", err)
 	}
-	return nil
+	return installedMSBPath, installedLibPath, nil
 }
 
 func copyFileWithMode(src string, dst string, mode os.FileMode) (err error) {
@@ -887,7 +897,10 @@ func symlinkForce(target string, path string) error {
 	return os.Symlink(target, path)
 }
 
-func (r *microsandboxRuntime) writeMicrosandboxConfig(libkrunfwPath string) error {
+// writeMicrosandboxConfig records the installed runtime pair in the
+// microsandbox config, so the persisted configuration names the same files the
+// SDK resolver selects instead of the mount they were copied from.
+func (r *microsandboxRuntime) writeMicrosandboxConfig(msbPath string, libkrunfwPath string) error {
 	configPath := filepath.Join(r.config.MicrosandboxHome, "config.json")
 	payload := map[string]any{}
 	if data, err := os.ReadFile(configPath); err == nil {
@@ -902,7 +915,7 @@ func (r *microsandboxRuntime) writeMicrosandboxConfig(libkrunfwPath string) erro
 
 	payload["home"] = r.config.MicrosandboxHome
 	paths := ensureJSONObject(payload, "paths")
-	paths["msb"] = r.config.MicrosandboxMSBPath
+	paths["msb"] = msbPath
 	paths["libkrunfw"] = libkrunfwPath
 
 	registries := ensureJSONObject(payload, "registries")
