@@ -48,6 +48,9 @@ function piMCPServers(configured?: Record<string, unknown>): Record<string, Reco
       servers[name] = entry;
     } else if (server.type === "remote") {
       if (typeof server.url !== "string" || server.url === "") continue;
+      if (server.transport === "sse") {
+        throw new Error(`pi runner does not support MCP transport "sse" (server "${name}")`);
+      }
       const entry: Record<string, unknown> = { url: server.url };
       const headers = flattenEnvMap(server.headers as Record<string, { value: string }> | undefined);
       if (headers) entry.headers = headers;

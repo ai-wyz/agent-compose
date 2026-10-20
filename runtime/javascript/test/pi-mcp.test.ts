@@ -41,6 +41,22 @@ describe("Pi MCP configuration", () => {
     expect(JSON.parse(await fs.readFile(path.join(managed, "mcp.json"), "utf8"))).toEqual({ mcpServers: { stale: {} } });
   });
 
+  it("rejects remote SSE because Pi only supports streamable HTTP", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "pi-mcp-test-"));
+    roots.push(root);
+    const managed = path.join(root, "managed");
+    const invocation = path.join(root, "invocation");
+    await fs.mkdir(managed);
+    await fs.mkdir(invocation);
+
+    await expect(
+      preparePiAgentDir(managed, invocation, {
+        legacy: { type: "remote", transport: "sse", url: "https://mcp.example/sse" },
+      }),
+    ).rejects.toThrow('pi runner does not support MCP transport "sse" (server "legacy")');
+    await expect(fs.readdir(invocation)).resolves.toEqual([]);
+  });
+
   it("returns the managed dir and writes nothing when no supported server is configured", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "pi-mcp-test-"));
     roots.push(root);

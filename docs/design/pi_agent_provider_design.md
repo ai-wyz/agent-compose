@@ -216,7 +216,7 @@ Pi 1.x 内置 MCP（`builtin:mcp`）：server 从 `<agent-dir>/mcp.json` 读取�
 - 复用 `execution.WriteAgentMCPConfigFile` 生成的 provider-neutral MCP 配置，避免再维护第三种 host-side MCP 配置格式。
 - runner 将 provider-neutral 配置转换为 Pi 原生 `mcpServers` 格式。Pi 没有 invocation 级 MCP 配置参数，只读 agent dir 或已信任项目的 `.pi/mcp.json`；因此 runner 在本次 invocation 的临时目录中创建隔离的 agent dir，symlink 受管目录的现有条目（尤其是 daemon 写入的 `models.json`），再写入权限 `0600` 的 `mcp.json`。调用结束随临时目录删除，既不修改持久 catalog，也不与其他 run 竞争。
 - 保持 `--no-extensions`，仅在存在 MCP 配置时显式加载 `-e builtin:mcp -e builtin:codemode`；默认 `codemode` exposure 让模型经 codemode 脚本调用 MCP 工具。
-- Pi 1.3 不支持 legacy SSE transport；remote server 使用 streamable HTTP URL。local server 支持 command、args、env、cwd，remote server 支持 URL、headers。secret 只在 `0600` 临时文件和子进程环境中存在，日志必须脱敏。
+- Pi 1.3 不支持 legacy SSE transport；remote server 使用 streamable HTTP URL，runner 遇到 `transport: sse` 会直接报错而不是降级为 HTTP。local server 支持 command、args、env、cwd，remote server 支持 URL、headers。secret 只在 `0600` 临时文件和子进程环境中存在，日志必须脱敏。
 
 ## 6. 代码改动清单
 
