@@ -38,7 +38,7 @@ daemon 仍然负责选择镜像、挂载 sandbox state、通过 runtime driver �
 - `check` 在 lock、两个 guest Dockerfile 的 `ARG` 默认值、构建脚本的转发或生成的 manifest 任意一处不一致时失败；
 - `bump K=V [K=V ...]` 一次性改写 lock、两个 Dockerfile 和 manifest 中的某个 provider 版本，且不校验新版本。
 
-`guest-images/guest-abi.json` 由 lock 生成并提交到仓库。只有提供 agent 可执行文件的包才会出现在 `providers` 下；`pi-mcp-adapter` 这类 companion 包属于构建输入，因此被有意排除。daemon 要求 manifest 描述它认识的每个 provider（`codex`、`claude`、`opencode`、`pi`、`dsh`）；缺少其中任何一个时，daemon 会放弃该 manifest 并改用编译期声明（`pkg/capmatrix/provider_matrix.go` 中的 `DeclaredProvidersFromManifest`）：
+`guest-images/guest-abi.json` 由 lock 生成并提交到仓库。只有提供 agent 可执行文件的包才会出现在 `providers` 下；companion 包属于构建输入，因此被有意排除。daemon 要求 manifest 描述它认识的每个 provider（`codex`、`claude`、`opencode`、`pi`、`dsh`）；缺少其中任何一个时，daemon 会放弃该 manifest 并改用编译期声明（`pkg/capmatrix/provider_matrix.go` 中的 `DeclaredProvidersFromManifest`）：
 
 ```json
 {
@@ -283,7 +283,7 @@ daemon 托管 agent 的 LLM 连接时，会把这些 facade 变量发布到 sand
 | Codex | Runtime package 中的 `@openai/codex-sdk`，以及通过 `CODEX_BIN`、`AGENT_COMPOSE_CODEX_BIN`、`/usr/bin/codex`、`/usr/local/bin/codex` 或 `PATH` 中 `codex` 选择的可执行文件 |
 | Claude | `@anthropic-ai/claude-agent-sdk` 和 Claude Code；通过 `CLAUDE_CODE_EXECUTABLE`/`CLAUDE_CODE_PATH`、`/usr/bin/claude` 或 SDK 支持的默认位置选择 |
 | OpenCode | `PATH` 中的 `opencode` 可执行文件 |
-| Pi | `PATH` 中的 `pi` 可执行文件；使用 MCP 的 project 还需要 `/usr/local/share/agent-compose/pi-mcp-adapter/index.ts` 中固定版本的 `pi-mcp-adapter` extension |
+| Pi | `PATH` 中的 `pi` 可执行文件；Pi 1.x 内置 MCP 支持，不再需要 adapter extension |
 | DSH | `PATH` 中的 `dsh` 可执行文件（官方 guest 会全局安装 `@deepseek-ai/dsh`）；`dsh --profile agent-compose` 还需要 `/root/.dsh/profiles/agent-compose` 下的 profile 资源 |
 
 Provider credential 和 endpoint variable 会在执行时注入，**不得**写入镜像。
@@ -377,7 +377,7 @@ task image:agent-compose-guest-archlinux
 | `GO_VERSION`、`GRPCURL_VERSION`、`NODE_MAJOR` | 默认 guest 工具链参数；`NODE_MAJOR` 仅适用于 Debian guest |
 | `ARCHLINUX_TAG` | Arch Linux guest 基础镜像 tag |
 | `GUEST_ABI` | 由 label 和烘焙 manifest 声明的 guest ABI 契约版本；默认取 lock 中的 `guestAbi` |
-| `CODEX_VERSION`、`CLAUDE_CODE_VERSION`、`OPENCODE_VERSION`、`PI_AGENT_VERSION`、`PI_MCP_ADAPTER_VERSION`、`DSH_VERSION` | guest provider 包版本；各自默认取 `guest-images/providers.lock.json` 中对应的固定版本 |
+| `CODEX_VERSION`、`CLAUDE_CODE_VERSION`、`OPENCODE_VERSION`、`PI_AGENT_VERSION`、`DSH_VERSION` | guest provider 包版本；各自默认取 `guest-images/providers.lock.json` 中对应的固定版本 |
 
 `guest-images/providers.lock.json` 是 provider 版本的唯一编写点。`scripts/build-agent-compose-guest.sh` 会从 lock 读取每个 provider 版本和 `GUEST_ABI`，因此即使不设置这些变量，构建仍然是固定且可复现的；显式设置环境变量可为一次性本地构建覆盖 lock。当 lock、两个 guest Dockerfile 的 `ARG` 默认值、构建脚本的转发或生成的 `guest-images/guest-abi.json` 任意一处不一致时，`scripts/provider-lock.sh check` 会失败。
 
@@ -602,7 +602,7 @@ daemon release 与 guest 镜像构建现在是两条独立的轨道。`guestAbi`
 
 任何会提高 `guestAbi` 的改动都不是纯 guest 改动。提高它意味着 daemon/guest 契约发生变化，因此必须先发布带有匹配 `CurrentGuestAbi` 的 daemon，新取值的镜像才能被采用。除此之外没有更宽的版本矩阵：当 manifest 的 `guestAbi` 等于 daemon 的 `CurrentGuestAbi` 时即为兼容，比较逻辑就是这一条（`pkg/guestabi/compat.go` 中的 `VerifyCompatible`）。
 
-伴生包可以记录「某个 provider 的后续版本会让它变得多余」，从而让「升级时记得摘掉它」由升级动作本身强制，而不是靠人记。`pi-mcp-adapter` 带有：
+伴生包可以记录「某个 provider 的后续版本会让它变得多余」，从而让「升级时记得摘掉它」由升级动作本身强制，而不是靠人记。`pi-mcp-adapter` 曾带有：
 
 ```json
 "retiredBy": {
@@ -612,7 +612,7 @@ daemon release 与 guest 镜像构建现在是两条独立的轨道。`guestAbi`
 }
 ```
 
-当被退役的包仍与不低于 `retiredBy.version` 的版本一起固定时，`scripts/provider-lock.sh check` 会失败，并在消息中点名该包与原因。修复属于这次升级的一部分：从 lock、两个 guest Dockerfile 和构建脚本中移除该包。当前固定的是 `pi` 0.82.1，所以今天仍然需要这个 adapter；门禁会在不再需要它的那个版本上触发。
+当被退役的包仍与不低于 `retiredBy.version` 的版本一起固定时，`scripts/provider-lock.sh check` 会失败，并在消息中点名该包与原因。修复属于这次升级的一部分：从 lock、两个 guest Dockerfile 和构建脚本中移除该包。`pi` 升级到 1.3.0 时该门禁触发，adapter 因此被移除；当前 lock 已不再固定伴生包，该机制保留给下一个伴生包。
 
 [`.github/workflows/guest-image-release.yml`](https://github.com/chaitin/agent-compose/blob/main/.github/workflows/guest-image-release.yml) 是独立的发布路径。手动 `workflow_dispatch` 时，它会校验 lock、构建可加载的 `linux/amd64` 镜像、运行 `scripts/verify-guest-image-abi.sh`、探测 baseline guest ABI、打印镜像内 `agent-compose-runtime abi --json` 报告，然后才可选地发布多架构镜像。它的 tag 规则为：
 

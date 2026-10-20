@@ -452,6 +452,9 @@ mcp_servers:
 | `args` | string[] | 禁止 | Remote MCP 不接受命令参数。 |
 | `env` | map | 禁止 | Remote MCP 不接受进程环境。 |
 
+默认 guest 中的 Pi provider 仅支持 streamable HTTP 远程 MCP，不支持 legacy SSE
+transport；供 Pi 使用的远程 Server 应声明 `transport: http`。
+
 项目级 MCP 不会自动注入所有 Agent。Agent 必须在自己的 `mcp_servers` 中引用或定义需要的 Server。
 
 ## `octobus_servers`：项目级 OctoBus Server

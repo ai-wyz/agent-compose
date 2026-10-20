@@ -727,8 +727,12 @@ a stored provider thread exists, the runner appends
 unseen id as a resume miss and warns. When `systemContext` is non-empty, the
 runner writes it to a temporary file and appends
 `--append-system-prompt <file>`. Enabled skills are resolved under
-`$HOME/.agents/skills` and appended as `--skill <path>`. A declared MCP config is
-passed through `--extension <pi MCP adapter> --mcp-config <file>`.
+`$HOME/.agents/skills` and appended as `--skill <path>`. A declared MCP config
+makes the runner build an invocation-scoped agent directory: it symlinks the
+managed catalog entries, writes the run's servers to `mcp.json`, points
+`PI_CODING_AGENT_DIR` there, and appends
+`--extension builtin:mcp --extension builtin:codemode`. Pi 1.x has no
+invocation-level MCP config flag, so this leaves persistent state untouched.
 
 The runner sets `PI_OFFLINE=1`, `PI_SKIP_VERSION_CHECK=1`, and `PI_TELEMETRY=0`,
 and points `PI_CODING_AGENT_DIR` at an existing environment value or

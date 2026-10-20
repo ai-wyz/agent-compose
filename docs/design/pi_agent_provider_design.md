@@ -9,7 +9,7 @@
 - 调研基线：本文保留原始实现评审基线；当前代码和 guest image 以本仓库
   `main` 分支为准。
 - Pi：[`earendil-works/pi`](https://github.com/earendil-works/pi)，调研提交 [`bc41f612`](https://github.com/earendil-works/pi/commit/bc41f612da8c15c4acc5f7ab7a7178a4fe17c942)，调研时发布版 `v0.81.1`。
-- Pi npm 包：调研基线为 `@earendil-works/pi-coding-agent@0.81.1`，要求 Node.js `>=22.19.0`；当前 guest image 使用 Node.js 22，满足要求。当前 pin 的版本以 `guest-images/Dockerfile.agent-compose-guest` 的 `PI_AGENT_VERSION` 为准（现为 `0.82.1`）。
+- Pi npm 包：调研基线为 `@earendil-works/pi-coding-agent@0.81.1`，要求 Node.js `>=22.19.0`；当前 guest image 使用 Node.js 22，满足要求。当前 pin 的版本以 `guest-images/Dockerfile.agent-compose-guest` 的 `PI_AGENT_VERSION` 为准（现为 `1.3.0`）。
 
 建议将规范 provider 名称定为 `pi`，兼容输入别名 `pi-agent` 和 `pi_agent`。首版使用 Pi 的 JSON event stream 模式，每个 agent-compose prompt turn 启动一个 `pi --mode json` 子进程，并用 Pi session ID 延续上下文。暂不以 RPC 模式作为首版执行通道。
 
@@ -18,10 +18,9 @@
 1. 基础可用：prompt、模型路由、system prompt、skills、session resume、流式日志、取消、镜像和文档全部可用。
 2. 完整可用：补齐 agent-compose 声明式 MCP server 到 Pi tool 的适配。
 
-Pi 官方刻意不内置 MCP；当前 guest image 通过固定版本的
-`pi-mcp-adapter` extension 提供声明式 MCP 映射。runtime 将控制面已经验证并
-物化的 local/remote server 配置转换为 adapter 配置；extension 缺失或执行
-失败会使本次 run 明确失败。
+Pi 1.x 已内置 MCP。当前 guest image 使用 Pi 的 `builtin:mcp` extension；
+runtime 将控制面已经验证并物化的 local/remote server 配置转换为 Pi 原生
+`mcp.json`。1.3.0 之前由社区 `pi-mcp-adapter` 提供的适配已在本次升级时删除。
 
 ## 2. 当前 agent provider 执行链
 
@@ -51,7 +50,7 @@ AgentDefinition / compose agent
 | agent 进程和事件翻译 | `runtime/javascript/src/runners/*` | 新增 `runners/pi.ts` |
 | LLM facade | `pkg/llms/runtimefacade`、`pkg/llms` | 解析 Pi 模型选择并写 `models.json` |
 | skills 投影 | `pkg/execution/agent_files.go`、runtime options | 复用 `~/.agents/skills`，通过显式 `--skill` 限定本次 agent skills |
-| MCP | `AgentRunner.prepareAgentMCPConfig`、guest runtime | 通过固定版本 `pi-mcp-adapter` extension 映射 |
+| MCP | `AgentRunner.prepareAgentMCPConfig`、guest runtime | 通过 Pi 1.x 内置 MCP（`builtin:mcp` + `builtin:codemode`）读取 invocation 级 `mcp.json` |
 | guest image | `guest-images/Dockerfile.agent-compose-guest` 等 | 固定版本安装 npm CLI，增加镜像断言 |
 | CLI prompt attach | `cmd/agent-compose/cli_resource_reference.go` | 将 `pi` 加入非交互/交互支持矩阵（按实际完成能力） |
 
@@ -109,7 +108,8 @@ pi --mode json
 | `message_update` + `assistantMessageEvent.type=text_delta` | 把 `delta` 追加到 transcript |
 | `message_end`（assistant） | 从 message content 提取最终文本，更新 `finalText` |
 | `tool_execution_start/update/end` | 不写入用户可见 transcript；与其他 provider 保持一致，只展示 assistant 文本。工具仍正常执行，最终失败由 assistant/进程状态报告 |
-| `agent_end` | 将 stop reason 设为 `completed`，从 messages 兜底提取最后 assistant text |
+| `agent_end` | 结束一次底层 run；stop reason 取自最后一条 assistant message，`willRetry=true` 时不提前判定失败，并从 messages 兜底提取最后 assistant text |
+| `agent_settled` | run 不再自动继续；`aborted=true` 记为 `cancelled` |
 | `auto_retry_*`、`compaction_*` | 输出简短状态行，不能混入 `finalText` |
 | 子进程非零退出、`error` message/异常终止 | 返回带 provider 和 exit code 上下文的 error |
 
@@ -207,23 +207,16 @@ Pi 原生实现 Agent Skills standard，并扫描 `~/.agents/skills`。现有 `e
 
 agent definition 的 `system_prompt`、MPI context 与 agent-compose 管理的 runtime context合成后作为 append system prompt file 传入 Pi。`--no-context-files` 禁止 Pi自行扫描 workspace 中的 AGENTS.md/CLAUDE.md；否则同一输入会因 workspace 内容和 trust settings 发生不可见变化。
 
-### 5.3 MCP adapter
+### 5.3 MCP
 
-Pi 官方 README 明确列出 “No MCP”，推荐用 CLI tools/skills 或 extension 扩展。因此不能仅写一个 `.pi` 配置文件期望 Pi 自动加载 MCP。
-
-实现采用社区维护的 `pi-mcp-adapter` extension。官方 guest 通过
-`PI_MCP_ADAPTER_VERSION` build argument 安装精确版本，并把入口固定暴露为
-`/usr/local/share/agent-compose/pi-mcp-adapter/index.ts`；调用方可以像其他
-provider 版本参数一样在构建时覆盖版本，而运行时不联网安装 extension。
+Pi 1.x 内置 MCP（`builtin:mcp`）：server 从 `<agent-dir>/mcp.json` 读取，工具默认经 `codemode` exposure 暴露给模型。社区 `pi-mcp-adapter` 因此变得多余，1.3.0 升级时已从 lock、guest 镜像和 runtime 中删除。
 
 设计约束：
 
 - 复用 `execution.WriteAgentMCPConfigFile` 生成的 provider-neutral MCP 配置，避免再维护第三种 host-side MCP 配置格式。
-- runner 将 provider-neutral 配置转换为 adapter 的 `mcpServers` 格式，写入权限为 `0600` 的 invocation 临时目录，并通过 `--mcp-config` 显式传入；调用结束后删除，避免持久配置和并发覆盖。
-- adapter 通过显式 `--extension <absolute path>` 加载；仍保留 `--no-extensions`，不加载任何用户 extension。
-- headless prompt 模式禁用 sampling 和 elicitation，并启用 output guard；server 默认 lazy 连接。
-- local server 支持 command、args、env；remote server 支持 URL、transport、headers。secret 只在子进程环境/请求 header 中存在，日志必须脱敏。
-- stdio/HTTP/SSE 生命周期、schema/content 转换、tool name 冲突和输出限制由固定版本 adapter 负责；升级 adapter 时需要重新执行 MCP 集成测试。
+- runner 将 provider-neutral 配置转换为 Pi 原生 `mcpServers` 格式。Pi 没有 invocation 级 MCP 配置参数，只读 agent dir 或已信任项目的 `.pi/mcp.json`；因此 runner 在本次 invocation 的临时目录中创建隔离的 agent dir，symlink 受管目录的现有条目（尤其是 daemon 写入的 `models.json`），再写入权限 `0600` 的 `mcp.json`。调用结束随临时目录删除，既不修改持久 catalog，也不与其他 run 竞争。
+- 保持 `--no-extensions`，仅在存在 MCP 配置时显式加载 `-e builtin:mcp -e builtin:codemode`；默认 `codemode` exposure 让模型经 codemode 脚本调用 MCP 工具。
+- Pi 1.3 不支持 legacy SSE transport；remote server 使用 streamable HTTP URL。local server 支持 command、args、env、cwd，remote server 支持 URL、headers。secret 只在 `0600` 临时文件和子进程环境中存在，日志必须脱敏。
 
 ## 6. 代码改动清单
 
@@ -257,7 +250,7 @@ provider 版本参数一样在构建时覆盖版本，而运行时不联网安�
 
 ### 6.4 Guest image 与供应链
 
-- `guest-images/Dockerfile.agent-compose-guest` 增加 `ARG PI_AGENT_VERSION=0.82.1`，安装 `@earendil-works/pi-coding-agent@${PI_AGENT_VERSION}`。
+- `guest-images/Dockerfile.agent-compose-guest` 增加 `ARG PI_AGENT_VERSION=1.3.0`，安装 `@earendil-works/pi-coding-agent@${PI_AGENT_VERSION}`。
 - `Dockerfile.devbox-archlinux` 同步安装，确保开发镜像语义一致。
 - 为 `/usr/bin/pi` 建显式 symlink 或断言 npm bin 已在 PATH，并执行 `pi --version` 构建时 smoke。
 - 更新镜像 CI contract，断言版本 pin、CLI 存在且不使用 floating `latest`。

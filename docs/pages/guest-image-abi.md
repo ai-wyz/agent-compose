@@ -78,7 +78,7 @@ everything else from that lock:
 
 `guest-images/guest-abi.json` is generated from the lock and committed. Only
 packages that expose an agent executable appear under `providers`; a companion
-package such as `pi-mcp-adapter` is a build input, so it is deliberately absent.
+package is a build input, so it is deliberately absent.
 The daemon requires the manifest to describe every provider it knows (`codex`,
 `claude`, `opencode`, `pi`, `dsh`); a manifest that omits one is rejected in
 favor of the compiled declaration (`DeclaredProvidersFromManifest` in
@@ -436,7 +436,7 @@ guest Dockerfile unless a combination has been independently tested.
 | Codex | `@openai/codex-sdk` in the runtime package plus an executable selected by `CODEX_BIN`, `AGENT_COMPOSE_CODEX_BIN`, `/usr/bin/codex`, `/usr/local/bin/codex`, or `codex` in `PATH` |
 | Claude | `@anthropic-ai/claude-agent-sdk` plus Claude Code; use `CLAUDE_CODE_EXECUTABLE`/`CLAUDE_CODE_PATH`, `/usr/bin/claude`, or the SDK-supported default |
 | OpenCode | An `opencode` executable in `PATH` |
-| Pi | A `pi` executable in `PATH`; projects using MCP also require the pinned `pi-mcp-adapter` extension at `/usr/local/share/agent-compose/pi-mcp-adapter/index.ts` |
+| Pi | A `pi` executable in `PATH`; Pi 1.x includes built-in MCP support, so no adapter extension is required |
 | DSH | A `dsh` executable in `PATH` (the published guest installs `@deepseek-ai/dsh` globally); `dsh --profile agent-compose` also requires the profile assets under `/root/.dsh/profiles/agent-compose` |
 
 Provider credentials and endpoint variables are injected at execution time.
@@ -583,7 +583,7 @@ The remaining build controls are:
 | `GO_VERSION`, `GRPCURL_VERSION`, `NODE_MAJOR` | Default guest toolchain inputs; `NODE_MAJOR` applies only to the Debian guest |
 | `ARCHLINUX_TAG` | Arch Linux guest base-image tag |
 | `GUEST_ABI` | Guest ABI contract version declared by the label and baked manifest; defaults to the lock's `guestAbi` |
-| `CODEX_VERSION`, `CLAUDE_CODE_VERSION`, `OPENCODE_VERSION`, `PI_AGENT_VERSION`, `PI_MCP_ADAPTER_VERSION`, `DSH_VERSION` | Guest provider package versions; each defaults to the matching pin in `guest-images/providers.lock.json` |
+| `CODEX_VERSION`, `CLAUDE_CODE_VERSION`, `OPENCODE_VERSION`, `PI_AGENT_VERSION`, `DSH_VERSION` | Guest provider package versions; each defaults to the matching pin in `guest-images/providers.lock.json` |
 
 `guest-images/providers.lock.json` is the single authoring point for provider
 versions. `scripts/build-agent-compose-guest.sh` reads the lock for every
@@ -889,7 +889,7 @@ rule (`VerifyCompatible` in `pkg/guestabi/compat.go`).
 
 A companion package can record that a later release of its provider makes it
 redundant, so "drop this when we upgrade" is enforced by the upgrade instead of
-remembered by a person. `pi-mcp-adapter` carries:
+remembered by a person. `pi-mcp-adapter` carried:
 
 ```json
 "retiredBy": {
@@ -902,9 +902,9 @@ remembered by a person. `pi-mcp-adapter` carries:
 `scripts/provider-lock.sh check` then fails while a retired package is still
 pinned next to a version at or above `retiredBy.version`, and the message names
 the package and the reason. The fix is part of the upgrade: remove the package
-from the lock, both guest Dockerfiles, and the build script. Because the current
-pin is `pi` 0.82.1, the adapter is still required today; the gate fires on the
-release that makes it unnecessary.
+from the lock, both guest Dockerfiles, and the build script. The gate fired when
+`pi` moved to 1.3.0, which is how the adapter was removed; the lock no longer
+pins a companion today, and the mechanism remains for the next one.
 
 [`.github/workflows/guest-image-release.yml`](https://github.com/chaitin/agent-compose/blob/main/.github/workflows/guest-image-release.yml)
 is the independent release path. On manual `workflow_dispatch` it verifies the
