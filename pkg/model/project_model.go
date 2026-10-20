@@ -192,8 +192,10 @@ type ProjectRunRecord struct {
 }
 
 const (
-	DetachKindCommand = "command"
-	DetachKindAgent   = "agent"
+	DetachKindCommand            = "command"
+	DetachKindAgent              = "agent"
+	DetachKindInteractivePrompt  = "interactive_prompt"
+	DetachKindInteractiveCommand = "interactive_command"
 )
 
 // ProjectRunCompletionRecord is the durable intent to finish a run after its

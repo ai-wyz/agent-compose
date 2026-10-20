@@ -1,11 +1,15 @@
 import { spawn } from "node:child_process";
 import type { ChildProcess } from "node:child_process";
+import fs from "node:fs/promises";
+import net from "node:net";
+import path from "node:path";
 import { StringDecoder } from "node:string_decoder";
 import type { ExitRecord, StopReason, StopRecord } from "./contract.js";
 import { journalMaxBytes, stopGraceMs } from "./contract.js";
 import { processIdentity, writeExit, writeReady, writeStop, readStop } from "./execution-state.js";
 import { JournalWriter } from "./journal.js";
-import { journalPath } from "./execution-state.js";
+import { journalPath, stdinSocketPath } from "./execution-state.js";
+import { StdinFrameDecoder } from "./stdin-frames.js";
 
 export interface SupervisorOptions {
   stateRoot: string;
@@ -29,6 +33,11 @@ export interface SupervisorOptions {
   taskTimeoutMs?: number;
   /** Overrides /proc for tests. */
   procRoot?: string;
+  /**
+   * Give the task a stdin fed through a unix socket (see stdin-frames.ts),
+   * so an interactive task keeps its input open across daemon restarts.
+   */
+  stdin?: boolean;
 }
 
 interface CloseOutcome {
@@ -53,7 +62,7 @@ export async function runSupervisor(options: SupervisorOptions): Promise<void> {
 
   const task = spawn(options.taskCommand, options.taskArgs, {
     detached: true,
-    stdio: ["ignore", "pipe", "pipe"],
+    stdio: [options.stdin ? "pipe" : "ignore", "pipe", "pipe"],
     env: { ...process.env, AGENT_COMPOSE_EXECUTION_NONCE: nonce, ...options.extraEnv },
   });
 
@@ -70,6 +79,21 @@ export async function runSupervisor(options: SupervisorOptions): Promise<void> {
     void journal.append("stderr", stderrDecoder.write(chunk));
   });
 
+  // The socket is listening before ready.json exists, so an attach that saw
+  // ready can always connect.
+  let stdinServer: StdinServer | undefined;
+  if (options.stdin) {
+    try {
+      stdinServer = await serveTaskStdin(task, stdinSocketPath(stateRoot, executionId));
+    } catch (error) {
+      // Without its input channel the task cannot be driven: do not leave it
+      // running unmanaged, and record why it ended.
+      signalGroup(task, "SIGKILL");
+      await waitForClose(task);
+      await writeExit(stateRoot, executionId, { code: -1, reason: "abnormal" });
+      throw error;
+    }
+  }
   const identity = await processIdentity(process.pid, options.procRoot);
   await writeReady(stateRoot, executionId, { pid: process.pid, nonce, taskPid: task.pid ?? 0, ...identity });
 
@@ -107,9 +131,69 @@ export async function runSupervisor(options: SupervisorOptions): Promise<void> {
     void journal.append("stderr", stderrTail);
   }
 
+  await stdinServer?.close();
   await journal.flush();
   const record = buildExitRecord(outcome ?? { code: null, signal: null }, stopRecord);
   await writeExit(stateRoot, executionId, record);
+}
+
+interface StdinServer {
+  close(): Promise<void>;
+}
+
+const FORWARDABLE_SIGNALS = new Set(["SIGINT", "SIGTERM", "SIGHUP", "SIGQUIT", "SIGKILL", "SIGUSR1", "SIGUSR2"]);
+
+/**
+ * Feed the task's stdin from frames on a unix socket. One connection is
+ * served at a time: a new one (the next daemon's attach) replaces the old.
+ * A dropped connection leaves stdin open; only an explicit end-of-input
+ * frame closes it.
+ */
+async function serveTaskStdin(task: ChildProcess, socketPath: string): Promise<StdinServer> {
+  const stdin = task.stdin;
+  // Writes after the task exits fail with EPIPE; the exit record reports it.
+  stdin?.on("error", () => undefined);
+  let active: net.Socket | undefined;
+  const server = net.createServer((connection) => {
+    active?.destroy();
+    active = connection;
+    const decoder = new StdinFrameDecoder();
+    connection.on("error", () => undefined);
+    connection.on("data", (chunk: Buffer) => {
+      let frames;
+      try {
+        frames = decoder.push(chunk);
+      } catch {
+        connection.destroy();
+        return;
+      }
+      for (const frame of frames) {
+        if (frame.type === "data") {
+          stdin?.write(frame.data);
+        } else if (frame.type === "eof") {
+          stdin?.end();
+        } else if (FORWARDABLE_SIGNALS.has(frame.signal)) {
+          signalGroup(task, frame.signal as NodeJS.Signals);
+        }
+      }
+    });
+  });
+  await fs.rm(socketPath, { force: true });
+  await fs.mkdir(path.dirname(socketPath), { recursive: true });
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(socketPath, () => {
+      server.off("error", reject);
+      resolve();
+    });
+  });
+  return {
+    async close() {
+      active?.destroy();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+      await fs.rm(socketPath, { force: true });
+    },
+  };
 }
 
 async function terminateTask(task: ChildProcess, graceMs: number): Promise<void> {

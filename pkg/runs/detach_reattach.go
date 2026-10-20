@@ -56,8 +56,11 @@ func (c *Controller) ReattachDetachedRun(ctx context.Context, run domain.Project
 		runCtx, cancel = context.WithDeadline(runCtx, run.Deadline)
 		defer cancel()
 	}
-	if run.DetachKind == domain.DetachKindAgent {
+	switch run.DetachKind {
+	case domain.DetachKindAgent:
 		return c.reattachDetachedAgentRun(transitionCtx, runCtx, run, sandbox)
+	case domain.DetachKindInteractivePrompt, domain.DetachKindInteractiveCommand:
+		return c.reattachInteractiveRun(transitionCtx, runCtx, run, sandbox)
 	}
 
 	artifactsDir := projectRunCommandArtifactsDir(run, sandbox)

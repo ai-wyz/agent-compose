@@ -159,14 +159,18 @@ export function createProgram(options: { exitOverride?: boolean } = {}): Command
     .requiredOption("--execution-id <id>", "detached execution id")
     .option("--state-root <path>", "agent-compose runtime state root")
     .option("--task-timeout-ms <ms>", "stop the task with reason timeout after this long", parseNumberOption)
+    .option("--stdin", "give the task a stdin that attach --stdin can feed")
+    .option("--raw-command", "run the task args as a command line instead of a runtime subcommand")
     .allowExcessArguments(true)
-    .action(async function start(this: Command, options: { executionId: string; stateRoot?: string; taskTimeoutMs?: number }) {
+    .action(async function start(this: Command, options: { executionId: string; stateRoot?: string; taskTimeoutMs?: number; stdin?: boolean; rawCommand?: boolean }) {
       await startDetached({
         stateRoot: options.stateRoot ?? defaultStateRoot(),
         executionId: options.executionId,
         taskArgs: this.args ?? [],
         cliPath: resolveCliPath(),
         taskTimeoutMs: options.taskTimeoutMs,
+        ...(options.stdin ? { stdin: true } : {}),
+        ...(options.rawCommand ? { rawCommand: true } : {}),
       });
     });
 
@@ -175,11 +179,13 @@ export function createProgram(options: { exitOverride?: boolean } = {}): Command
     .requiredOption("--execution-id <id>", "detached execution id")
     .requiredOption("--from <offset>", "journal byte offset to resume from", parseNumberOption)
     .option("--state-root <path>", "agent-compose runtime state root")
-    .action(async (options: { executionId: string; from: number; stateRoot?: string }) => {
+    .option("--stdin", "forward stdin frames to the task")
+    .action(async (options: { executionId: string; from: number; stateRoot?: string; stdin?: boolean }) => {
       const exitCode = await attachExecution({
         stateRoot: options.stateRoot ?? defaultStateRoot(),
         executionId: options.executionId,
         from: options.from,
+        ...(options.stdin ? { stdin: process.stdin } : {}),
       });
       process.exitCode = exitCode;
     });
@@ -219,15 +225,33 @@ export function createProgram(options: { exitOverride?: boolean } = {}): Command
     .requiredOption("--state-root <path>", "agent-compose runtime state root")
     .requiredOption("--nonce <nonce>", "per-execution nonce")
     .option("--task-timeout-ms <ms>", "stop the task with reason timeout after this long", parseNumberOption)
+    .option("--stdin", "feed the task's stdin from the execution's stdin socket")
+    .option("--raw-command", "run the task args as a command line instead of a runtime subcommand")
     .allowExcessArguments(true)
-    .action(async function supervisor(this: Command, options: { executionId: string; stateRoot: string; nonce: string; taskTimeoutMs?: number }) {
+    .action(async function supervisor(this: Command, options: { executionId: string; stateRoot: string; nonce: string; taskTimeoutMs?: number; stdin?: boolean; rawCommand?: boolean }) {
       const taskArgs = this.args ?? [];
+      if (options.rawCommand) {
+        if (taskArgs.length === 0) {
+          throw new Error("--raw-command needs a command after --");
+        }
+        await runSupervisor({
+          stateRoot: options.stateRoot,
+          executionId: options.executionId,
+          nonce: options.nonce,
+          taskTimeoutMs: options.taskTimeoutMs,
+          ...(options.stdin ? { stdin: true } : {}),
+          taskCommand: taskArgs[0],
+          taskArgs: taskArgs.slice(1),
+        });
+        return;
+      }
       const taskCommand = process.execPath;
       await runSupervisor({
         stateRoot: options.stateRoot,
         executionId: options.executionId,
         nonce: options.nonce,
         taskTimeoutMs: options.taskTimeoutMs,
+        ...(options.stdin ? { stdin: true } : {}),
         taskCommand,
         taskArgs: [resolveCliPath(), ...taskArgs],
       });

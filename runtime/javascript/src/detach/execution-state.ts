@@ -18,6 +18,14 @@ export function exitPath(stateRoot: string, executionId: string): string {
   return path.join(executionDir(stateRoot, executionId), "exit.json");
 }
 
+/**
+ * Unix socket the supervisor of an interactive execution listens on for the
+ * task's stdin. Kept short: socket paths are limited to ~108 bytes.
+ */
+export function stdinSocketPath(stateRoot: string, executionId: string): string {
+  return path.join(executionDir(stateRoot, executionId), "stdin.sock");
+}
+
 export function stopPath(stateRoot: string, executionId: string): string {
   return path.join(executionDir(stateRoot, executionId), "stop.json");
 }

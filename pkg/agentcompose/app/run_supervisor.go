@@ -59,6 +59,14 @@ func (s *RunSupervisor) detachedRunContext(request context.Context) context.Cont
 	return domain.NewContextWithRequestMetadata(s.root, domain.RequestMetadataFromContext(request))
 }
 
+// clientlessRunContext is the context of a run that outlives its client:
+// like detachedRunContext, but it also survives daemon shutdown and carries
+// the shutdown signal instead, so a task behind the guest supervisor is only
+// disconnected while everything else in the run still stops with the daemon.
+func (s *RunSupervisor) clientlessRunContext(request context.Context) context.Context {
+	return runs.WithDaemonShutdown(context.WithoutCancel(s.detachedRunContext(request)), s.root.Done())
+}
+
 func (s *RunSupervisor) StartRun(ctx context.Context, req runs.RunAgentRequest) (domain.ProjectRunRecord, error) {
 	if req.Interactive {
 		return s.startInteractiveRun(ctx, req)
@@ -101,7 +109,7 @@ func (s *RunSupervisor) ReattachRun(run domain.ProjectRunRecord, onFailure func(
 }
 
 func (s *RunSupervisor) startInteractiveRun(ctx context.Context, req runs.RunAgentRequest) (domain.ProjectRunRecord, error) {
-	execCtx, cancel := context.WithCancelCause(s.detachedRunContext(ctx))
+	execCtx, cancel := context.WithCancelCause(s.clientlessRunContext(ctx))
 	type interactiveRunStarted struct {
 		runID         string
 		inputReleased <-chan struct{}
@@ -180,7 +188,7 @@ func (s *RunSupervisor) Attach(ctx context.Context, receive runs.RunAttachReceiv
 	}
 	parent := ctx
 	if first.DisconnectPolicy == runs.AttachDisconnectDetach && first.RunID == "" {
-		parent = s.detachedRunContext(ctx)
+		parent = s.clientlessRunContext(ctx)
 	}
 	execCtx, cancel := context.WithCancelCause(parent)
 	defer cancel(nil)

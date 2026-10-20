@@ -4,6 +4,8 @@ import type { Writable } from "node:stream";
 import { DETACH_POLL_INTERVAL_MS, DEFAULT_READY_TIMEOUT_MS, FINISHED_EXECUTION_RETENTION_MS, type AttachRecord, type Capabilities, type ExitRecord, type JournalRecord, type StopReason } from "./contract.js";
 import { journalMaxBytes, stopGraceMs } from "./contract.js";
 import fs from "node:fs/promises";
+import net from "node:net";
+import type { Readable } from "node:stream";
 import {
   cleanupExecution,
   executionDir,
@@ -11,6 +13,7 @@ import {
   pruneFinishedExecutions,
   readExit,
   readReady,
+  stdinSocketPath,
   supervisorAlive,
   writeStop,
 } from "./execution-state.js";
@@ -35,6 +38,10 @@ export interface StartDetachedOptions {
   timeoutMs?: number;
   /** Run timeout the supervisor enforces on its own; 0 or absent disables it. */
   taskTimeoutMs?: number;
+  /** Give the task a socket-fed stdin for interactive use. */
+  stdin?: boolean;
+  /** taskArgs are a command line, not a runtime subcommand. */
+  rawCommand?: boolean;
   pollMs?: number;
 }
 
@@ -57,6 +64,8 @@ export async function startDetached(options: StartDetachedOptions): Promise<void
     "--nonce",
     nonce,
     ...(options.taskTimeoutMs && options.taskTimeoutMs > 0 ? ["--task-timeout-ms", String(Math.floor(options.taskTimeoutMs))] : []),
+    ...(options.stdin ? ["--stdin"] : []),
+    ...(options.rawCommand ? ["--raw-command"] : []),
     "--",
     ...options.taskArgs,
   ];
@@ -76,6 +85,9 @@ async function waitForReady(stateRoot: string, executionId: string, timeoutMs: n
     if (ready) {
       return;
     }
+    if (await readExit(stateRoot, executionId)) {
+      throw new Error(`detached execution ${executionId} ended before it became ready`);
+    }
     if (Date.now() >= deadline) {
       throw new Error(`detached execution ${executionId} did not become ready within ${timeoutMs}ms`);
     }
@@ -89,6 +101,12 @@ export interface AttachExecutionOptions {
   from: number;
   stdout?: Writable;
   pollMs?: number;
+  /**
+   * Forward this stream (normally process.stdin, carrying stdin frames from
+   * the daemon) to the supervisor's stdin socket.
+   */
+  stdin?: Readable;
+  stderr?: Writable;
 }
 
 /**
@@ -99,6 +117,35 @@ export interface AttachExecutionOptions {
 export async function attachExecution(options: AttachExecutionOptions): Promise<number> {
   const stdout = options.stdout ?? process.stdout;
   const pollMs = options.pollMs ?? DETACH_POLL_INTERVAL_MS;
+  const input = options.stdin ? forwardStdin(options.stdin, stdinSocketPath(options.stateRoot, options.executionId), options.stderr ?? process.stderr) : undefined;
+  try {
+    return await followExecution(options, stdout, pollMs);
+  } finally {
+    input?.close();
+  }
+}
+
+/**
+ * Pipe input frames to the supervisor's stdin socket. The bytes are already
+ * framed by the daemon and are forwarded unchanged; when this exec dies the
+ * connection just drops, which leaves the task's stdin open.
+ */
+function forwardStdin(input: Readable, socketPath: string, stderr: Writable): { close(): void } {
+  const connection = net.createConnection(socketPath);
+  connection.on("error", (error) => {
+    stderr.write(`detach attach: stdin unavailable: ${error.message}\n`);
+    input.unpipe(connection);
+  });
+  input.pipe(connection);
+  return {
+    close() {
+      input.unpipe(connection);
+      connection.destroy();
+    },
+  };
+}
+
+async function followExecution(options: AttachExecutionOptions, stdout: Writable, pollMs: number): Promise<number> {
 
   let cursor = options.from;
   // Skip re-reading the journal while it is unchanged: appends grow it and

@@ -82,7 +82,7 @@ func executeDetachedCommand(ctx context.Context, opts DetachedTask) detachedExec
 // startDetachedCommand launches the supervisor in the guest and waits for its
 // ready record (the start exec blocks until the task is detached).
 func startDetachedCommand(ctx context.Context, opts DetachedTask) detachedExecutionResult {
-	startSpec := execution.BuildDetachStartSpec(opts.Config, opts.ExecutionID, opts.TaskTimeout, opts.TaskArgs)
+	startSpec := execution.BuildDetachStartSpec(opts.Config, opts.ExecutionID, execution.DetachStartOptions{TaskTimeout: opts.TaskTimeout}, opts.TaskArgs)
 	startSpec.Env = opts.Env
 	if _, err := opts.Runtime.ExecStream(ctx, opts.Sandbox, opts.VMState, startSpec, nil); err != nil {
 		if detachIsShutdown(ctx) {

@@ -145,23 +145,40 @@ func BuildDetachCapabilitiesSpec(config *appconfig.Config) domain.ExecSpec {
 	}
 }
 
+// DetachStartOptions are the supervisor settings for one detached task.
+type DetachStartOptions struct {
+	// TaskTimeout, when positive, is handed to the supervisor, which then
+	// stops the task with reason "timeout" by itself, so the run timeout holds
+	// while no daemon is attached. It is relative because guest and host
+	// clocks can differ.
+	TaskTimeout time.Duration
+	// Stdin gives the task a stdin fed through `attach --stdin`.
+	Stdin bool
+	// RawCommand runs taskArgs as a command line (argv[0] first) instead of
+	// as an agent-compose-runtime subcommand.
+	RawCommand bool
+}
+
 // BuildDetachStartSpec builds the `start --detach` exec. taskArgs is the guest
 // CLI subcommand plus its flags (e.g. ["exec", "--request-file", ...]); the
 // supervisor re-enters the CLI with those args, so no `agent-compose-runtime`
 // prefix belongs here. The returned spec carries the execution id as its
 // marker so a later TerminateProcessTree can reach the whole detached tree.
-// A positive taskTimeout is handed to the supervisor, which then stops the
-// task with reason "timeout" by itself, so the run timeout holds while no
-// daemon is attached. It is relative because guest and host clocks can differ.
-func BuildDetachStartSpec(config *appconfig.Config, executionID string, taskTimeout time.Duration, taskArgs []string) domain.ExecSpec {
+func BuildDetachStartSpec(config *appconfig.Config, executionID string, opts DetachStartOptions, taskArgs []string) domain.ExecSpec {
 	appconfig.ApplyDefaultGuestPaths(config)
 	startArgs := []string{
 		detachCLI, "start", "--detach",
 		"--execution-id", executionID,
 		"--state-root", config.GuestStateRoot,
 	}
-	if ms := taskTimeout.Milliseconds(); ms > 0 {
+	if ms := opts.TaskTimeout.Milliseconds(); ms > 0 {
 		startArgs = append(startArgs, "--task-timeout-ms", strconv.FormatInt(ms, 10))
+	}
+	if opts.Stdin {
+		startArgs = append(startArgs, "--stdin")
+	}
+	if opts.RawCommand {
+		startArgs = append(startArgs, "--raw-command")
 	}
 	startArgs = append(startArgs, "--")
 	startArgs = append(startArgs, taskArgs...)
