@@ -220,3 +220,48 @@ func TestIntegrationReconcilePendingSessionStateMarksStaleStartupFailed(t *testi
 func TestE2EReconcilePendingSessionStateMarksStaleStartupFailed(t *testing.T) {
 	TestReconcilePendingSessionStateMarksStaleStartupFailed(t)
 }
+
+// A detached run whose result was staged before the restart is finishing: the
+// completion manager finalizes it with that result, and re-attaching it would
+// race that with a second result.
+func TestReconcilePersistedProjectRunsLeavesStagedDetachedRunsToCompletion(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	config := &appconfig.Config{DataRoot: root, SandboxRoot: filepath.Join(root, "sandboxes"), DbAddr: filepath.Join(root, "data.db")}
+	di := do.New()
+	do.ProvideValue(di, ctx)
+	do.ProvideValue(di, config)
+	store, err := testutil.OpenConfigStore(t, di)
+	if err != nil {
+		t.Fatalf("NewConfigStore returned error: %v", err)
+	}
+	project, err := store.UpsertProject(ctx, domain.ProjectRecord{ID: "project-1", Name: "project", SourcePath: filepath.Join(root, "agent-compose.yml"), SourceJSON: `{}`})
+	if err != nil {
+		t.Fatal(err)
+	}
+	agent, err := store.UpsertProjectAgent(ctx, domain.ProjectAgentRecord{ProjectID: project.ID, AgentName: "worker"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, err := store.CreateProjectRun(ctx, domain.ProjectRunRecord{
+		RunID: "run-staged", ProjectID: project.ID, ProjectName: project.Name, AgentName: "worker", AgentID: agent.ID,
+		Source: domain.ProjectRunSourceManual, Status: domain.ProjectRunStatusRunning, Detach: true, ExecutionID: "exec-1",
+		CleanupPolicy: domain.ProjectRunCleanupKeepRunning,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := store.StageProjectRunCompletion(ctx, domain.ProjectRunCompletionRecord{
+		RunID: run.RunID, TargetStatus: domain.ProjectRunStatusSucceeded, TransitionJSON: `{"run_id":"run-staged","status":"succeeded"}`,
+	}, nil); err != nil {
+		t.Fatal(err)
+	}
+	completions := runs.NewCompletionManager(runs.CompletionManagerDeps{Store: store})
+	reattacher := &failingReattacher{}
+	if err := reconcilePersistedProjectRuns(ctx, projectRunReconcileContext{ConfigDB: store, Completions: completions, Reattacher: reattacher, RootCtx: ctx, StartedAt: time.Now().Add(2 * time.Second)}); err != nil {
+		t.Fatalf("reconcilePersistedProjectRuns returned error: %v", err)
+	}
+	if len(reattacher.runIDs) != 0 {
+		t.Fatalf("re-attached %v; a run with a staged result must be left to the completion manager", reattacher.runIDs)
+	}
+}

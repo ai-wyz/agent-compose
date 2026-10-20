@@ -186,6 +186,14 @@ func reconcilePersistedProjectRunsWithStatus(ctx context.Context, reconcile proj
 	}
 	for _, run := range staleRuns {
 		if run.Detach && reconcile.Reattacher != nil {
+			// A run whose result was already staged before the restart is
+			// finishing, not running: the completion manager finalizes it with
+			// that result. Re-attaching would race it with a second result.
+			if pending, err := reconcile.Completions.Pending(ctx, run.RunID); err != nil {
+				slog.Warn("failed to check staged completion of detached project run", "run_id", run.RunID, "error", err)
+			} else if pending {
+				continue
+			}
 			// A detached run survives the daemon that started it: re-attach to
 			// its guest journal and complete it when the task exits instead of
 			// declaring it interrupted. The follower outlives this startup
