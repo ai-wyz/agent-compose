@@ -108,14 +108,15 @@ func (c *Controller) ReattachDetachedRun(ctx context.Context, run domain.Project
 	}
 
 	transition, execErr := finishProjectRunCommand(projectRunCommandOutcome{
-		Run:          run,
-		Sandbox:      sandbox,
-		CommandText:  readProjectRunCommandText(artifactsDir),
-		ArtifactsDir: artifactsDir,
-		LogsPath:     logsPath,
-		Result:       result.Result,
-		ExecErr:      execErr,
-		SendErr:      sendErr,
+		Run:                run,
+		Sandbox:            sandbox,
+		CommandText:        readProjectRunCommandText(artifactsDir),
+		ArtifactsDir:       artifactsDir,
+		LogsPath:           logsPath,
+		Result:             result.Result,
+		ExecErr:            execErr,
+		SendErr:            sendErr,
+		ResultFileFallback: true,
 	})
 	if execErr != nil || transition.ExitCode != 0 {
 		return c.completeProjectRunError(transitionCtx, runCtx, transition, execErr)

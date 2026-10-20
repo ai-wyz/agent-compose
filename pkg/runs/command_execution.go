@@ -149,6 +149,11 @@ type projectRunCommandOutcome struct {
 	Result       domain.ExecResult
 	ExecErr      error
 	SendErr      error
+	// ResultFileFallback makes a missing result payload fall back to the
+	// command-result.json the guest wrote into ArtifactsDir. A re-attach only
+	// sees journal records past its cursor, which may already be past the
+	// payload line when the daemon stopped between the payload and the exit.
+	ResultFileFallback bool
 }
 
 // finishProjectRunCommand parses the runtime's command result payload, mirrors
@@ -175,6 +180,11 @@ func finishProjectRunCommand(outcome projectRunCommandOutcome) (TransitionReques
 		return transition, execErr
 	}
 	commandResult, err := execution.ParseCommandExecResult(result)
+	if err != nil && outcome.ResultFileFallback {
+		if fromFile, ok := readProjectRunCommandResultFile(outcome.ArtifactsDir); ok {
+			commandResult, err = fromFile, nil
+		}
+	}
 	if err != nil {
 		transition.ExitCode = execution.FirstNonZeroInt(transition.ExitCode, 1)
 		transition.Error = fmt.Sprintf("command execution failed: %v", err)
@@ -188,6 +198,20 @@ func finishProjectRunCommand(outcome projectRunCommandOutcome) (TransitionReques
 	transition = transitionFromCommandResult(run, sandbox, commandOutcome{Command: outcome.CommandText, Result: execution.RuntimeCommandResultToExecResult(commandResult)})
 	transition.LogsPath = outcome.LogsPath
 	return transition, nil
+}
+
+// readProjectRunCommandResultFile reads the command-result.json the guest
+// runtime writes next to its artifacts before printing the result payload.
+func readProjectRunCommandResultFile(artifactsDir string) (domain.RuntimeCommandResult, bool) {
+	data, err := os.ReadFile(filepath.Join(artifactsDir, "command-result.json"))
+	if err != nil {
+		return domain.RuntimeCommandResult{}, false
+	}
+	var result domain.RuntimeCommandResult
+	if err := json.Unmarshal(data, &result); err != nil {
+		return domain.RuntimeCommandResult{}, false
+	}
+	return result, true
 }
 
 // readProjectRunCommandText recovers the command a run was started with from

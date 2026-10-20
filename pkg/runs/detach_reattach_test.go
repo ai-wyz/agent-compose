@@ -3,6 +3,7 @@ package runs
 import (
 	"context"
 	"encoding/json"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -190,5 +191,36 @@ func TestReattachDetachedRunFailsWithoutResultPayload(t *testing.T) {
 	}
 	if got.Status != domain.ProjectRunStatusFailed {
 		t.Fatalf("run status = %q, want failed", got.Status)
+	}
+}
+
+func TestReattachDetachedRunFallsBackToResultFileWhenCursorPassedPayload(t *testing.T) {
+	// The daemon stopped after consuming the payload line but before the exit
+	// record, so the re-attach only sees the exit.
+	controller, run := newReattachTestController(t, []string{
+		`{"t":"exit","code":0,"reason":"completed"}`,
+	})
+	sandbox, err := controller.store.GetSandbox(context.Background(), run.SandboxID)
+	if err != nil {
+		t.Fatalf("GetSandbox returned error: %v", err)
+	}
+	artifactsDir := projectRunCommandArtifactsDir(run, sandbox)
+	if err := os.MkdirAll(artifactsDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll returned error: %v", err)
+	}
+	data, err := json.Marshal(domain.RuntimeCommandResult{Stdout: "done\n", Output: "done\n", ExitCode: 0, Success: true})
+	if err != nil {
+		t.Fatalf("marshal result: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(artifactsDir, "command-result.json"), data, 0o644); err != nil {
+		t.Fatalf("WriteFile returned error: %v", err)
+	}
+
+	got, err := controller.ReattachDetachedRun(context.Background(), run)
+	if err != nil {
+		t.Fatalf("ReattachDetachedRun returned error: %v", err)
+	}
+	if got.Status != domain.ProjectRunStatusSucceeded || got.Output != "done\n" {
+		t.Fatalf("run status = %q output = %q, want succeeded from command-result.json", got.Status, got.Output)
 	}
 }
