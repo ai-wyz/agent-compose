@@ -16,7 +16,7 @@ func k8sRuntimeCapabilityFacts() RuntimeCapabilityFacts {
 	}
 	security := securityContextFacts(uniformSecurityContextReasons(reasonNotConfigured), securityContextObserved{
 		CapabilityDrop: "the sandbox container's SecurityContext drops NET_RAW from its capability set",
-		ReadOnlyRootfs: "the container SecurityContext is unset, so its root filesystem stays writable",
+		ReadOnlyRootfs: "the container SecurityContext sets only capabilities and leaves ReadonlyRootfs unset, so its root filesystem stays writable",
 		NonRootUser:    "no PodSecurityContext runAsNonRoot or runAsUser is set, and ServiceAccountName is empty",
 		UserNamespaces: "no PodSecurityContext is set, so no user-namespace remapping is requested",
 	})
