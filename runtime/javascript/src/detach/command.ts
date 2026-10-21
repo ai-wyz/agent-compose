@@ -2,13 +2,12 @@ import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import type { Writable } from "node:stream";
 import { DETACH_POLL_INTERVAL_MS, DEFAULT_READY_TIMEOUT_MS, FINISHED_EXECUTION_RETENTION_MS, type AttachRecord, type Capabilities, type ExitRecord, type JournalRecord, type StopReason } from "./contract.js";
-import { journalMaxBytes, stopGraceMs } from "./contract.js";
 import fs from "node:fs/promises";
 import net from "node:net";
 import type { Readable } from "node:stream";
 import {
   cleanupExecution,
-  executionDir,
+  executionExists,
   journalPath,
   pruneFinishedExecutions,
   readExit,
@@ -17,8 +16,7 @@ import {
   supervisorAlive,
   writeStop,
 } from "./execution-state.js";
-import { JournalWriter, readJournalFrom } from "./journal.js";
-import { runSupervisor } from "./supervisor.js";
+import { readJournalFrom } from "./journal.js";
 
 export function capabilities(): Capabilities {
   return { detach: true };
@@ -53,6 +51,13 @@ export interface StartDetachedOptions {
 export async function startDetached(options: StartDetachedOptions): Promise<void> {
   // Best-effort: a failed prune must not block the run.
   await pruneFinishedExecutions(options.stateRoot, FINISHED_EXECUTION_RETENTION_MS).catch(() => undefined);
+  // A fresh start must never re-enter an execution directory a previous start
+  // left behind (a retried request reusing the same execution id): a stale
+  // ready/exit/stop record would make the new supervisor look ready, kill its
+  // task at once, or race the old supervisor for the same journal.
+  if (await executionExists(options.stateRoot, options.executionId)) {
+    throw new Error(`detached execution ${options.executionId} already exists`);
+  }
   const nonce = randomBytes(16).toString("hex");
   const cliPath = options.cliPath ?? resolveCliPath();
   const supervisorArgs = [
@@ -74,15 +79,21 @@ export async function startDetached(options: StartDetachedOptions): Promise<void
     stdio: "ignore",
   });
   child.unref();
-  await waitForReady(options.stateRoot, options.executionId, options.timeoutMs ?? DEFAULT_READY_TIMEOUT_MS, options.pollMs);
+  await waitForReady(options.stateRoot, options.executionId, nonce, options.timeoutMs ?? DEFAULT_READY_TIMEOUT_MS, options.pollMs);
 }
 
-async function waitForReady(stateRoot: string, executionId: string, timeoutMs: number, pollMs?: number): Promise<void> {
+async function waitForReady(stateRoot: string, executionId: string, nonce: string, timeoutMs: number, pollMs?: number): Promise<void> {
   const interval = pollMs ?? DETACH_POLL_INTERVAL_MS;
   const deadline = Date.now() + timeoutMs;
   for (;;) {
     const ready = await readReady(stateRoot, executionId);
     if (ready) {
+      // The ready record is only trustworthy when it came from this start's
+      // supervisor: a stale record from a reused execution id would otherwise
+      // make the exec report success without a live supervisor behind it.
+      if (ready.nonce !== nonce) {
+        throw new Error(`detached execution ${executionId} is owned by a different supervisor`);
+      }
       return;
     }
     if (await readExit(stateRoot, executionId)) {
@@ -226,9 +237,6 @@ async function statSignature(filePath: string): Promise<string> {
   }
 }
 
-/** Paths and journal handles needed by the internal supervisor subcommand. */
-export { executionDir, journalPath, JournalWriter, journalMaxBytes, runSupervisor, stopGraceMs };
-
 function journalToAttach(record: JournalRecord): AttachRecord {
   if (record.kind === "out") {
     return { t: "out", s: record.stream, text: record.text, offset: record.offset };
@@ -236,13 +244,14 @@ function journalToAttach(record: JournalRecord): AttachRecord {
   return { t: "gap", from: record.from, to: record.to };
 }
 
-function exitRecord(record: { code: number; reason: string; stopReason?: StopReason; signal?: string }): Extract<AttachRecord, { t: "exit" }> {
+function exitRecord(record: { code: number; reason: string; stopReason?: StopReason; signal?: string; detail?: string }): Extract<AttachRecord, { t: "exit" }> {
   return {
     t: "exit",
     code: record.code,
     reason: record.reason as Extract<AttachRecord, { t: "exit" }>["reason"],
     ...(record.stopReason ? { stopReason: record.stopReason } : {}),
     ...(record.signal ? { signal: record.signal } : {}),
+    ...(record.detail ? { detail: record.detail } : {}),
   };
 }
 

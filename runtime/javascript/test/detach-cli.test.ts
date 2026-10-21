@@ -1,8 +1,10 @@
+import fs from "node:fs/promises";
+import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createProgram } from "../src/cli.js";
 import * as detachCommand from "../src/detach/command.js";
 import * as supervisorModule from "../src/detach/supervisor.js";
-import { captureStdio } from "./helpers.js";
+import { captureStdio, withTempSession } from "./helpers.js";
 
 describe("detach CLI commands", () => {
   afterEach(() => {
@@ -76,6 +78,20 @@ describe("detach CLI commands", () => {
       nonce: "n1",
       taskCommand: process.execPath,
       taskArgs: [expect.any(String), "exec", "--request-file", "/tmp/req.json"],
+    });
+  });
+
+  it("start rejects an execution id whose state directory already exists", async () => {
+    await withTempSession(async (root) => {
+      const stateRoot = path.join(root, "state");
+      const executionId = "ex-reuse";
+      const dir = path.join(stateRoot, "executions", executionId);
+      await fs.mkdir(dir, { recursive: true });
+      await fs.writeFile(path.join(dir, "ready.json"), '{"pid":1,"nonce":"stale","taskPid":2}\n');
+
+      await expect(
+        detachCommand.startDetached({ stateRoot, executionId, taskArgs: ["exec", "--request-file", "/tmp/r.json"] }),
+      ).rejects.toThrow(/already exists/);
     });
   });
 });

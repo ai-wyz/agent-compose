@@ -96,4 +96,44 @@ describe("JournalWriter", () => {
     expect(parseJournalLine('{"kind":"unknown"}')).toBeNull();
     expect(parseJournalLine('{"kind":"gap","from":0,"to":5}')).toEqual({ kind: "gap", from: 0, to: 5 });
   });
+
+  it("trims an out record at a byte boundary inside a multi-byte text", () => {
+    // "中文\n" is 7 UTF-8 bytes (中 = 3, 文 = 3, \n = 1). A cursor at byte 3 must
+    // resume at 文, not slice by UTF-16 code units (which would return "").
+    const raw = `${JSON.stringify({ kind: "out", offset: 0, stream: "stdout", text: "中文\n" })}\n`;
+    expect(journalRecordsBeyond(raw, 3)).toEqual([
+      { kind: "out", offset: 3, stream: "stdout", text: "文\n" },
+    ]);
+  });
+
+  it("compaction keeps the gap aligned with kept records when a torn line is present", async () => {
+    await withTempSession(async (root) => {
+      const file = path.join(root, "journal");
+      await fs.mkdir(path.dirname(file), { recursive: true });
+      // A torn line (invalid JSON) at the front, as a crash mid-append would
+      // leave. Compaction must skip it without desynchronizing the gap from the
+      // kept records (which would otherwise overlap).
+      await fs.appendFile(file, "garbage\n");
+
+      const writer = new JournalWriter(file, 220);
+      await writer.append("stdout", "first\n");
+      await writer.append("stdout", "second\n");
+      await writer.append("stdout", "third\n");
+      await writer.append("stdout", "fourth\n");
+      await writer.append("stdout", "fifth\n");
+      await writer.flush();
+
+      const raw = await readRaw(file);
+      const records = journalRecordsBeyond(raw, 0);
+      const gap = records.find((r) => r.kind === "gap");
+      const outs = records.filter((r): r is { kind: "out"; offset: number } => r.kind === "out");
+      expect(outs.length).toBeGreaterThan(0);
+      if (gap && gap.kind === "gap") {
+        expect(Number.isFinite(gap.from)).toBe(true);
+        for (const out of outs) {
+          expect(out.offset).toBeGreaterThanOrEqual(gap.to);
+        }
+      }
+    });
+  });
 });

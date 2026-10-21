@@ -72,11 +72,29 @@ export async function runSupervisor(options: SupervisorOptions): Promise<void> {
   // reassembled instead of being written as replacement characters.
   const stdoutDecoder = new StringDecoder("utf8");
   const stderrDecoder = new StringDecoder("utf8");
-  task.stdout?.on("data", (chunk: Buffer) => {
-    void journal.append("stdout", stdoutDecoder.write(chunk));
-  });
-  task.stderr?.on("data", (chunk: Buffer) => {
-    void journal.append("stderr", stderrDecoder.write(chunk));
+
+  // The first journal write failure. Appends are chained on the writer, so one
+  // rejected write poisons the chain; track it once so the supervisor can end
+  // the task and record the cause instead of crashing without an exit record.
+  // Each append still carries a rejection handler so a failed write can never
+  // surface as an unhandled rejection.
+  let journalFailure: unknown = null;
+  const appendJournal = (stream: "stdout" | "stderr", text: string): void => {
+    if (text.length === 0) {
+      return;
+    }
+    journal.append(stream, text).catch((error: unknown) => {
+      journalFailure ??= error;
+    });
+  };
+  task.stdout?.on("data", (chunk: Buffer) => appendJournal("stdout", stdoutDecoder.write(chunk)));
+  task.stderr?.on("data", (chunk: Buffer) => appendJournal("stderr", stderrDecoder.write(chunk)));
+
+  // A spawn failure (e.g. a raw command that does not exist) surfaces only as
+  // an 'error' event; without a listener the supervisor would crash uncaught.
+  let spawnFailure = false;
+  task.once("error", () => {
+    spawnFailure = true;
   });
 
   // The socket is listening before ready.json exists, so an attach that saw
@@ -99,7 +117,7 @@ export async function runSupervisor(options: SupervisorOptions): Promise<void> {
 
   let stopRecord: StopRecord | null = null;
   let outcome: CloseOutcome | null = null;
-  while (stopRecord === null && outcome === null) {
+  while (stopRecord === null && outcome === null && journalFailure === null && !spawnFailure) {
     const raced = await Promise.race([
       closePromise.then((closed) => ({ closed }) as const),
       sleep(pollMs).then(() => ({ closed: null }) as const),
@@ -115,26 +133,44 @@ export async function runSupervisor(options: SupervisorOptions): Promise<void> {
     }
   }
 
-  if (stopRecord !== null) {
+  if (stopRecord !== null && !spawnFailure) {
     await terminateTask(task, graceMs);
     outcome = await waitForClose(task);
   }
 
   // Flush any trailing multi-byte sequence buffered by the decoders so a
   // truncated final character still lands in the journal before the exit record.
-  const stdoutTail = stdoutDecoder.end();
-  const stderrTail = stderrDecoder.end();
-  if (stdoutTail) {
-    void journal.append("stdout", stdoutTail);
-  }
-  if (stderrTail) {
-    void journal.append("stderr", stderrTail);
-  }
+  appendJournal("stdout", stdoutDecoder.end());
+  appendJournal("stderr", stderrDecoder.end());
 
   await stdinServer?.close();
-  await journal.flush();
+  try {
+    await journal.flush();
+  } catch (error) {
+    journalFailure ??= error;
+  }
+
+  if (journalFailure !== null || spawnFailure) {
+    // The task's output can no longer be recorded (or the task never started):
+    // end it and record why, so the daemon reports the real cause instead of a
+    // task that keeps running unmanaged with no exit record.
+    if (!spawnFailure) {
+      await terminateTask(task, graceMs);
+    }
+    const detail = journalFailure !== null ? errorMessage(journalFailure) : "task failed to spawn";
+    await writeExit(stateRoot, executionId, { code: -1, reason: "abnormal", detail });
+    return;
+  }
+
   const record = buildExitRecord(outcome ?? { code: null, signal: null }, stopRecord);
   await writeExit(stateRoot, executionId, record);
+}
+
+function errorMessage(error: unknown): string {
+  if (error instanceof Error) {
+    return error.message;
+  }
+  return String(error);
 }
 
 interface StdinServer {

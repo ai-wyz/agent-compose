@@ -167,4 +167,51 @@ describe("runSupervisor", () => {
       expect(await fs.stat(exitPath(stateRoot, executionId))).toBeDefined();
     });
   });
+
+  it("records an abnormal exit and stops the task when the journal cannot be written", async () => {
+    await withTempSession(async (root) => {
+      const stateRoot = path.join(root, "state");
+      const executionId = "ex-journal-fail";
+      // Make the journal path a directory so the first append fails (EISDIR).
+      await fs.mkdir(journalPath(stateRoot, executionId), { recursive: true });
+      // Write output to trigger the failing append, then keep running so the
+      // supervisor must terminate the task itself rather than wait for it.
+      const taskArgs = ["-e", "console.log('out'); setInterval(() => {}, 1000);"];
+      await runSupervisor({
+        stateRoot,
+        executionId,
+        nonce: "n6",
+        taskCommand: process.execPath,
+        taskArgs,
+        pollMs: 10,
+        graceMs: 200,
+      });
+
+      const exit = await readExit(stateRoot, executionId);
+      expect(exit).not.toBeNull();
+      expect(exit?.reason).toBe("abnormal");
+      expect(exit?.code).toBe(-1);
+      expect(exit?.detail).toContain("EISDIR");
+    });
+  });
+
+  it("records an abnormal exit when the task fails to spawn", async () => {
+    await withTempSession(async (root) => {
+      const stateRoot = path.join(root, "state");
+      const executionId = "ex-spawn-fail";
+      await runSupervisor({
+        stateRoot,
+        executionId,
+        nonce: "n7",
+        taskCommand: "/nonexistent/agent-compose-task",
+        taskArgs: [],
+        pollMs: 10,
+      });
+
+      const exit = await readExit(stateRoot, executionId);
+      expect(exit).not.toBeNull();
+      expect(exit?.reason).toBe("abnormal");
+      expect(exit?.detail).toBe("task failed to spawn");
+    });
+  });
 });

@@ -51,6 +51,8 @@ export interface ExitRecord {
   stopReason?: StopReason;
   /** Signal name when reason is "signal". */
   signal?: string;
+  /** Free-form cause for an abnormal exit (e.g. a journal write failure). */
+  detail?: string;
 }
 
 /** Contents of `stop.json`. */
@@ -62,7 +64,7 @@ export interface StopRecord {
 export type AttachRecord =
   | { t: "out"; s: StdioStream; text: string; offset: number }
   | { t: "gap"; from: number; to: number }
-  | { t: "exit"; code: number; reason: ExitReason; stopReason?: StopReason; signal?: string };
+  | { t: "exit"; code: number; reason: ExitReason; stopReason?: StopReason; signal?: string; detail?: string };
 
 export interface Capabilities {
   detach: boolean;

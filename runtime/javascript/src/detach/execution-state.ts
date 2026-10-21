@@ -30,6 +30,19 @@ export function stopPath(stateRoot: string, executionId: string): string {
   return path.join(executionDir(stateRoot, executionId), "stop.json");
 }
 
+/** True when an execution directory already holds state from a previous run. */
+export async function executionExists(stateRoot: string, executionId: string): Promise<boolean> {
+  try {
+    const entries = await fs.readdir(executionDir(stateRoot, executionId));
+    return entries.length > 0;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      return false;
+    }
+    throw error;
+  }
+}
+
 /** Write a file atomically: temp file + rename so readers never see a partial write. */
 export async function writeFileAtomic(filePath: string, content: string): Promise<void> {
   const dir = path.dirname(filePath);
@@ -92,6 +105,7 @@ export function parseExit(raw: string): ExitRecord | null {
       reason: parsed.reason as ExitRecord["reason"],
       stopReason: parsed.stopReason as ExitRecord["stopReason"] | undefined,
       signal: parsed.signal,
+      detail: parsed.detail,
     };
   } catch {
     return null;

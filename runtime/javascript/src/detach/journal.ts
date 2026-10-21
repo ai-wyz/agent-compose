@@ -1,6 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import type { JournalRecord, StdioStream } from "./contract.js";
+import { journalPath, writeFileAtomic } from "./execution-state.js";
 
 /**
  * Append-only journal of the task's stdout/stderr plus gap markers, keyed by a
@@ -61,9 +62,6 @@ export class JournalWriter {
   private async compact(hintBytes: number): Promise<void> {
     const raw = await fs.readFile(this.filePath, "utf8");
     const lines = raw.split("\n").filter((line) => line.length > 0);
-    const records = lines
-      .map((line) => parseJournalLine(line))
-      .filter((record): record is JournalRecord => record !== null);
 
     const budget = Math.max(Math.floor(this.maxBytes / 2), Math.min(hintBytes, 64 * 1024));
     let keptFrom = lines.length;
@@ -81,17 +79,22 @@ export class JournalWriter {
       return;
     }
 
-    const droppedFrom = records.slice(0, keptFrom).reduce(
-      (acc, record) => Math.min(acc, recordStart(record)),
-      Number.POSITIVE_INFINITY,
-    );
-    const droppedTo = records.slice(keptFrom).reduce(
-      (acc, record) => Math.min(acc, recordStart(record)),
-      this.offset,
-    );
+    // keptFrom indexes lines, so the dropped/kept byte ranges must be computed
+    // from the same line array (parse each line on demand): indexing a filtered
+    // records array with a line index would misalign as soon as one torn or
+    // malformed line is skipped, and could produce a gap that overlaps the kept
+    // records or has no finite bounds at all.
+    const droppedFrom = lines.slice(0, keptFrom).reduce((acc, line) => {
+      const record = parseJournalLine(line);
+      return record ? Math.min(acc, recordStart(record)) : acc;
+    }, Number.POSITIVE_INFINITY);
+    const droppedTo = lines.slice(keptFrom).reduce((acc, line) => {
+      const record = parseJournalLine(line);
+      return record ? Math.min(acc, recordStart(record)) : acc;
+    }, this.offset);
 
     const gap: JournalRecord = { kind: "gap", from: droppedFrom, to: droppedTo };
-    const head = droppedFrom < droppedTo ? [`${JSON.stringify(gap)}\n`] : [];
+    const head = Number.isFinite(droppedFrom) && droppedFrom < droppedTo ? [`${JSON.stringify(gap)}\n`] : [];
     const rebuilt = [...head, ...lines.slice(keptFrom)].join("\n");
     // Rebuild with a trailing newline so future appends stay line-aligned.
     const content = rebuilt.length === 0 ? "" : `${rebuilt}\n`;
@@ -146,7 +149,7 @@ export function recordEnd(record: JournalRecord): number {
 export async function readJournalFrom(stateRoot: string, executionId: string, from: number): Promise<JournalRecord[]> {
   let raw: string;
   try {
-    raw = await fs.readFile(journalPathFor(stateRoot, executionId), "utf8");
+    raw = await fs.readFile(journalPath(stateRoot, executionId), "utf8");
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") {
       return [];
@@ -175,7 +178,15 @@ export function journalRecordsBeyond(raw: string, from: number): JournalRecord[]
       if (record.offset >= from) {
         out.push(record);
       } else {
-        out.push({ kind: "out", offset: from, stream: record.stream, text: record.text.slice(from - record.offset) });
+        // `from - record.offset` is a byte count; slicing the string by UTF-16
+        // code units would misalign as soon as a multi-byte character precedes
+        // the cut. Decode from the byte offset instead.
+        out.push({
+          kind: "out",
+          offset: from,
+          stream: record.stream,
+          text: Buffer.from(record.text, "utf8").subarray(from - record.offset).toString("utf8"),
+        });
       }
       continue;
     }
@@ -185,16 +196,4 @@ export function journalRecordsBeyond(raw: string, from: number): JournalRecord[]
     out.push({ kind: "gap", from: Math.max(record.from, from), to: record.to });
   }
   return out;
-}
-
-function journalPathFor(stateRoot: string, executionId: string): string {
-  return path.join(stateRoot, "executions", executionId, "journal");
-}
-
-async function writeFileAtomic(filePath: string, content: string): Promise<void> {
-  const dir = path.dirname(filePath);
-  await fs.mkdir(dir, { recursive: true });
-  const tmp = `${filePath}.${process.pid}.${Date.now()}.tmp`;
-  await fs.writeFile(tmp, content, { encoding: "utf8", mode: 0o600 });
-  await fs.rename(tmp, filePath);
 }
