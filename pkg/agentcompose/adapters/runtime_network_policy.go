@@ -13,8 +13,8 @@ import (
 
 // SandboxNetworkDeclarationResolver resolves the outbound network policy a
 // sandbox's project agent declared, or nil when it declared none. It is
-// optional: a composition without one cannot know a declaration exists, so the
-// driver-boundary policy stays nil (D3) instead of being invented.
+// optional: a composition without one cannot know an agent declaration exists,
+// so only the daemon-wide policy applies (D3), instead of inventing one.
 type SandboxNetworkDeclarationResolver interface {
 	ResolveNetworkDeclaration(context.Context, *domain.Sandbox) (*egress.NetworkDeclaration, error)
 }

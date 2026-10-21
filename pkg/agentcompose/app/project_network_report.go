@@ -19,9 +19,11 @@ type sandboxEgressMediation interface {
 }
 
 // agentNetworkPolicyReports accounts for every agent in a normalized project
-// that declared an outbound network policy. It runs at admission, so an operator
-// learns which mechanism will apply the declaration before any sandbox exists;
-// an agent that declared nothing is omitted because undeclared is not deny.
+// with an effective outbound network policy: its own declaration, the
+// daemon-wide policy, or both. It runs at admission, so an operator learns
+// which mechanism will apply the effective policy before any sandbox exists;
+// when neither layer declares anything, the agent is omitted because undeclared
+// is not deny.
 //
 // A declaration the engine cannot translate is reported as an error rather than
 // skipped: the project would not compile a policy for it either, so silently

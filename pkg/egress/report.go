@@ -38,8 +38,9 @@ type DeclaredDenial struct {
 // is derived from the same declaration the decision policy is compiled from, so
 // it cannot describe a policy the engine does not have.
 type NetworkPolicyReport struct {
-	// Declared is false when the sandbox declared no policy. In that case the
-	// engine is unrestricted and there is no exemption to report.
+	// Declared is false when neither the sandbox nor the daemon declared a
+	// policy. In that case the engine is unrestricted and there is no exemption
+	// to report.
 	Declared bool
 	// Restricts reports whether the declaration can refuse a destination: a
 	// deny default or at least one denial. An allow default with no denial does
