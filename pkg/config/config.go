@@ -92,7 +92,10 @@ type Config struct {
 	// GlobalNetworkPolicy is the daemon-wide outer bound for every agent's
 	// outbound network policy. It is nil when no global policy file is
 	// configured, preserving the undeclared behavior.
-	GlobalNetworkPolicy        *egress.NetworkDeclaration
+	GlobalNetworkPolicy *egress.NetworkDeclaration
+	// GlobalNetworkPolicyInfo identifies the file and digest the effective
+	// daemon-wide policy was compiled from. It is zero when no policy is set.
+	GlobalNetworkPolicyInfo    GlobalNetworkPolicyInfo
 	BoxliteHome                string
 	BoxliteRuntimeDir          string
 	DockerHome                 string
@@ -188,23 +191,24 @@ func NewConfig(di do.Injector) (*Config, error) {
 // configSources bundles every environment-derived config group NewConfig
 // assembles into the final *Config.
 type configSources struct {
-	AgentTelemetry  AgentTelemetryConfig
-	Database        databaseConfig
-	Sandbox         sandboxRootConfigValues
-	DaemonHTTP      daemonHTTPConfig
-	LLM             llmEnvConfig
-	Timeouts        runtimeTimeoutsConfig
-	Drivers         driverHomesConfig
-	Images          imageEnvConfig
-	Resources       sandboxResourceConfig
-	Cleanup         cleanupConfigValues
-	GuestPaths      *Config
-	GuestABI        string
-	SandboxTimeouts sandboxTimeoutsConfig
-	HTTPLimits      httpLimitsConfig
-	EventDelivery   domain.EventDeliveryScope
-	EgressEnforce   EgressUnenforceablePolicy
-	GlobalPolicy    *egress.NetworkDeclaration
+	AgentTelemetry   AgentTelemetryConfig
+	Database         databaseConfig
+	Sandbox          sandboxRootConfigValues
+	DaemonHTTP       daemonHTTPConfig
+	LLM              llmEnvConfig
+	Timeouts         runtimeTimeoutsConfig
+	Drivers          driverHomesConfig
+	Images           imageEnvConfig
+	Resources        sandboxResourceConfig
+	Cleanup          cleanupConfigValues
+	GuestPaths       *Config
+	GuestABI         string
+	SandboxTimeouts  sandboxTimeoutsConfig
+	HTTPLimits       httpLimitsConfig
+	EventDelivery    domain.EventDeliveryScope
+	EgressEnforce    EgressUnenforceablePolicy
+	GlobalPolicy     *egress.NetworkDeclaration
+	GlobalPolicyInfo GlobalNetworkPolicyInfo
 }
 
 func loadConfigSources(logger *slog.Logger, dataRoot string) (configSources, error) {
@@ -259,28 +263,29 @@ func loadConfigSources(logger *slog.Logger, dataRoot string) (configSources, err
 	if err != nil {
 		return configSources{}, err
 	}
-	globalPolicy, err := loadGlobalNetworkPolicy()
+	globalPolicy, globalPolicyInfo, err := loadGlobalNetworkPolicy()
 	if err != nil {
 		return configSources{}, err
 	}
 	return configSources{
-		AgentTelemetry:  telemetry,
-		Database:        database,
-		Sandbox:         sandbox,
-		DaemonHTTP:      daemonHTTP,
-		LLM:             loadLLMEnvConfig(logger),
-		Timeouts:        loadRuntimeTimeoutsConfig(logger),
-		Drivers:         drivers,
-		Images:          images,
-		Resources:       resources,
-		Cleanup:         cleanup,
-		GuestPaths:      guestPaths,
-		GuestABI:        loadGuestABIManifestPath(),
-		SandboxTimeouts: sandboxTimeouts,
-		HTTPLimits:      loadHTTPLimitsConfig(logger),
-		EventDelivery:   eventDelivery,
-		EgressEnforce:   egressEnforce,
-		GlobalPolicy:    globalPolicy,
+		AgentTelemetry:   telemetry,
+		Database:         database,
+		Sandbox:          sandbox,
+		DaemonHTTP:       daemonHTTP,
+		LLM:              loadLLMEnvConfig(logger),
+		Timeouts:         loadRuntimeTimeoutsConfig(logger),
+		Drivers:          drivers,
+		Images:           images,
+		Resources:        resources,
+		Cleanup:          cleanup,
+		GuestPaths:       guestPaths,
+		GuestABI:         loadGuestABIManifestPath(),
+		SandboxTimeouts:  sandboxTimeouts,
+		HTTPLimits:       loadHTTPLimitsConfig(logger),
+		EventDelivery:    eventDelivery,
+		EgressEnforce:    egressEnforce,
+		GlobalPolicy:     globalPolicy,
+		GlobalPolicyInfo: globalPolicyInfo,
 	}, nil
 }
 
@@ -342,6 +347,7 @@ func buildConfig(sources configSources, normalized configPathsToNormalize) *Conf
 		RuntimeDriver:              drivers.RuntimeDriver,
 		EgressUnenforceablePolicy:  sources.EgressEnforce,
 		GlobalNetworkPolicy:        sources.GlobalPolicy,
+		GlobalNetworkPolicyInfo:    sources.GlobalPolicyInfo,
 		BoxliteHome:                normalized.BoxliteHome,
 		BoxliteRuntimeDir:          normalized.BoxliteRuntimeDir,
 		DockerHome:                 normalized.DockerHome,

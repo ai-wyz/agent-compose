@@ -218,6 +218,20 @@ func RequireSandboxNetworkEnforcement(driver, sandboxID string, policy *SandboxN
 		// The mechanism applies the declaration, but possibly not every part of
 		// it. A part it does not apply is a sandbox running as if the declaration
 		// said less than it did, which is the failure this gate exists to prevent.
+		//
+		// A mediated sandbox can have a driver mechanism that applies the
+		// destinations but not allowed_ips. The proxy still applies the address
+		// constraint to traffic it sees, but a process that bypasses the proxy is
+		// only subject to the driver's narrower rule, so the declaration is not
+		// fully enforced. Report that separately from the no-mediation case below:
+		// naming the proxy as the mechanism that lacks the addresses would be
+		// false, and silently treating the proxy as complete would hide the gap.
+		if constrained := policy.AddressConstrainedAllowances(); constrained > 0 && policy.MediatedByForwardProxy &&
+			driverEnforcement.Strength != SandboxEgressStrengthNone && !driverEnforcement.AppliesAllowedAddresses {
+			return reportUndeclaredEnforcement(mode, sandboxID, enforcement, egressGapPartial,
+				fmt.Sprintf("%d declared allowance(s) constrain the addresses a name may resolve to; %s applies them to proxied traffic, but the %s driver mechanism (%s) does not apply allowed_ips to traffic that bypasses the proxy",
+					constrained, enforcement.Mechanism, driverEnforcement.Driver, driverEnforcement.Mechanism))
+		}
 		if constrained := policy.AddressConstrainedAllowances(); constrained > 0 && !enforcement.AppliesAllowedAddresses {
 			return reportUndeclaredEnforcement(mode, sandboxID, enforcement, egressGapPartial,
 				fmt.Sprintf("%d declared allowance(s) constrain the addresses a name may resolve to, and %s applies the destinations without them", constrained, enforcement.Mechanism))

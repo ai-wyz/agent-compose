@@ -2315,8 +2315,23 @@ type AgentNetworkPolicyReport struct {
 	Enforced bool `protobuf:"varint,8,opt,name=enforced,proto3" json:"enforced,omitempty"`
 	// The mechanism's strength: "none", "allowlist", or "denylist".
 	Strength string `protobuf:"bytes,9,opt,name=strength,proto3" json:"strength,omitempty"`
-	// The concrete mechanism, for example "forward_proxy".
+	// The primary mechanism, for example "forward_proxy". It determines the
+	// reported strength.
 	Mechanism string `protobuf:"bytes,10,opt,name=mechanism,proto3" json:"mechanism,omitempty"`
+	// Every mechanism that applies at least part of the declaration, in
+	// driver-first order. When both the driver and the engine's forward proxy
+	// apply the declaration this lists both, instead of hiding the driver behind
+	// the proxy's label.
+	Mechanisms []string `protobuf:"bytes,14,rep,name=mechanisms,proto3" json:"mechanisms,omitempty"`
+	// Material limits of the reported enforcement that do not make it
+	// unenforced, for example traffic that bypasses the forward proxy.
+	Limitations []string `protobuf:"bytes,15,rep,name=limitations,proto3" json:"limitations,omitempty"`
+	// Path of the daemon-wide policy file the effective declaration was computed
+	// against. Empty when no daemon-wide policy is configured.
+	DaemonPolicySource string `protobuf:"bytes,16,opt,name=daemon_policy_source,json=daemonPolicySource,proto3" json:"daemon_policy_source,omitempty"`
+	// SHA-256 of the daemon-wide policy file's bytes. Empty when no daemon-wide
+	// policy is configured.
+	DaemonPolicySha256 string `protobuf:"bytes,17,opt,name=daemon_policy_sha256,json=daemonPolicySha256,proto3" json:"daemon_policy_sha256,omitempty"`
 	// The parts of the declaration the mechanism does not apply. Empty when it
 	// applies all of it.
 	Unapplied []string `protobuf:"bytes,11,rep,name=unapplied,proto3" json:"unapplied,omitempty"`
@@ -2435,6 +2450,34 @@ func (x *AgentNetworkPolicyReport) GetMechanism() string {
 	return ""
 }
 
+func (x *AgentNetworkPolicyReport) GetMechanisms() []string {
+	if x != nil {
+		return x.Mechanisms
+	}
+	return nil
+}
+
+func (x *AgentNetworkPolicyReport) GetLimitations() []string {
+	if x != nil {
+		return x.Limitations
+	}
+	return nil
+}
+
+func (x *AgentNetworkPolicyReport) GetDaemonPolicySource() string {
+	if x != nil {
+		return x.DaemonPolicySource
+	}
+	return ""
+}
+
+func (x *AgentNetworkPolicyReport) GetDaemonPolicySha256() string {
+	if x != nil {
+		return x.DaemonPolicySha256
+	}
+	return ""
+}
+
 func (x *AgentNetworkPolicyReport) GetUnapplied() []string {
 	if x != nil {
 		return x.Unapplied
@@ -2456,7 +2499,10 @@ type DeclaredNetworkAllowance struct {
 	Endpoint string `protobuf:"bytes,1,opt,name=endpoint,proto3" json:"endpoint,omitempty"`
 	// The canonical CIDR ranges the name may resolve to. Empty when the
 	// declaration left the addresses unconstrained.
-	AllowedIps    []string `protobuf:"bytes,3,rep,name=allowed_ips,json=allowedIps,proto3" json:"allowed_ips,omitempty"`
+	AllowedIps []string `protobuf:"bytes,3,rep,name=allowed_ips,json=allowedIps,proto3" json:"allowed_ips,omitempty"`
+	// Declaration layers that contributed the effective entry: "daemon" and/or
+	// "agent". Empty when provenance was not annotated.
+	Sources       []string `protobuf:"bytes,4,rep,name=sources,proto3" json:"sources,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -2505,11 +2551,21 @@ func (x *DeclaredNetworkAllowance) GetAllowedIps() []string {
 	return nil
 }
 
+func (x *DeclaredNetworkAllowance) GetSources() []string {
+	if x != nil {
+		return x.Sources
+	}
+	return nil
+}
+
 // DeclaredNetworkDenial is one declared refusal as it appears in a report.
 type DeclaredNetworkDenial struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// The canonical host:port/* pattern.
-	Endpoint      string `protobuf:"bytes,1,opt,name=endpoint,proto3" json:"endpoint,omitempty"`
+	Endpoint string `protobuf:"bytes,1,opt,name=endpoint,proto3" json:"endpoint,omitempty"`
+	// Declaration layers that contributed the effective entry: "daemon" and/or
+	// "agent". Empty when provenance was not annotated.
+	Sources       []string `protobuf:"bytes,3,rep,name=sources,proto3" json:"sources,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -2549,6 +2605,13 @@ func (x *DeclaredNetworkDenial) GetEndpoint() string {
 		return x.Endpoint
 	}
 	return ""
+}
+
+func (x *DeclaredNetworkDenial) GetSources() []string {
+	if x != nil {
+		return x.Sources
+	}
+	return nil
 }
 
 type PatchProjectRequest struct {
@@ -21698,7 +21761,7 @@ const file_agentcompose_v2_agentcompose_proto_rawDesc = "" +
 	"\x06issues\x18\x04 \x03(\v2'.agentcompose.v2.ProjectValidationIssueR\x06issues\x12\x18\n" +
 	"\aapplied\x18\x05 \x01(\bR\aapplied\x12\x1c\n" +
 	"\tunchanged\x18\x06 \x01(\bR\tunchanged\x12T\n" +
-	"\x10network_policies\x18\a \x03(\v2).agentcompose.v2.AgentNetworkPolicyReportR\x0fnetworkPolicies\"\xc3\x03\n" +
+	"\x10network_policies\x18\a \x03(\v2).agentcompose.v2.AgentNetworkPolicyReportR\x0fnetworkPolicies\"\xe9\x04\n" +
 	"\x18AgentNetworkPolicyReport\x12\x14\n" +
 	"\x05agent\x18\x01 \x01(\tR\x05agent\x12\x16\n" +
 	"\x06driver\x18\x02 \x01(\tR\x06driver\x12\x1a\n" +
@@ -21711,15 +21774,23 @@ const file_agentcompose_v2_agentcompose_proto_rawDesc = "" +
 	"\benforced\x18\b \x01(\bR\benforced\x12\x1a\n" +
 	"\bstrength\x18\t \x01(\tR\bstrength\x12\x1c\n" +
 	"\tmechanism\x18\n" +
-	" \x01(\tR\tmechanism\x12\x1c\n" +
+	" \x01(\tR\tmechanism\x12\x1e\n" +
+	"\n" +
+	"mechanisms\x18\x0e \x03(\tR\n" +
+	"mechanisms\x12 \n" +
+	"\vlimitations\x18\x0f \x03(\tR\vlimitations\x120\n" +
+	"\x14daemon_policy_source\x18\x10 \x01(\tR\x12daemonPolicySource\x120\n" +
+	"\x14daemon_policy_sha256\x18\x11 \x01(\tR\x12daemonPolicySha256\x12\x1c\n" +
 	"\tunapplied\x18\v \x03(\tR\tunapplied\x12\x18\n" +
-	"\awarning\x18\f \x01(\tR\awarning\"j\n" +
+	"\awarning\x18\f \x01(\tR\awarning\"\x84\x01\n" +
 	"\x18DeclaredNetworkAllowance\x12\x1a\n" +
 	"\bendpoint\x18\x01 \x01(\tR\bendpoint\x12\x1f\n" +
 	"\vallowed_ips\x18\x03 \x03(\tR\n" +
-	"allowedIpsJ\x04\b\x02\x10\x03R\vinspectable\"F\n" +
+	"allowedIps\x12\x18\n" +
+	"\asources\x18\x04 \x03(\tR\asourcesJ\x04\b\x02\x10\x03R\vinspectable\"`\n" +
 	"\x15DeclaredNetworkDenial\x12\x1a\n" +
-	"\bendpoint\x18\x01 \x01(\tR\bendpointJ\x04\b\x02\x10\x03R\vinspectable\"\xd4\x01\n" +
+	"\bendpoint\x18\x01 \x01(\tR\bendpoint\x12\x18\n" +
+	"\asources\x18\x03 \x03(\tR\asourcesJ\x04\b\x02\x10\x03R\vinspectable\"\xd4\x01\n" +
 	"\x13PatchProjectRequest\x125\n" +
 	"\aproject\x18\x01 \x01(\v2\x1b.agentcompose.v2.ProjectRefR\aproject\x12;\n" +
 	"\x1aexpected_current_spec_hash\x18\x02 \x01(\tR\x17expectedCurrentSpecHash\x120\n" +

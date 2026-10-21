@@ -1,8 +1,11 @@
 package config
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/chaitin/agent-compose/pkg/egress"
@@ -10,9 +13,9 @@ import (
 
 func TestLoadGlobalNetworkPolicy(t *testing.T) {
 	t.Setenv(EgressGlobalPolicyFileEnv, "")
-	policy, err := loadGlobalNetworkPolicy()
-	if err != nil || policy != nil {
-		t.Fatalf("unset global policy = %+v, %v, want nil, nil", policy, err)
+	policy, info, err := loadGlobalNetworkPolicy()
+	if err != nil || policy != nil || info != (GlobalNetworkPolicyInfo{}) {
+		t.Fatalf("unset global policy = %+v, %+v, %v, want nil, empty info, nil", policy, info, err)
 	}
 
 	path := filepath.Join(t.TempDir(), "global-policy.yaml")
@@ -30,9 +33,13 @@ deny:
 		t.Fatalf("write policy file: %v", err)
 	}
 	t.Setenv(EgressGlobalPolicyFileEnv, path)
-	policy, err = loadGlobalNetworkPolicy()
+	policy, info, err = loadGlobalNetworkPolicy()
 	if err != nil {
 		t.Fatalf("loadGlobalNetworkPolicy() error = %v", err)
+	}
+	digest := sha256.Sum256(data)
+	if info.Path != path || info.SHA256 != hex.EncodeToString(digest[:]) {
+		t.Fatalf("global policy info = %+v, want path %q and SHA-256 %s", info, path, hex.EncodeToString(digest[:]))
 	}
 	if policy == nil || policy.Default != egress.Deny {
 		t.Fatalf("policy = %+v, want a deny-all policy", policy)
@@ -71,13 +78,17 @@ func TestLoadGlobalNetworkPolicyRejectsInvalidConfig(t *testing.T) {
 				t.Fatalf("write policy file: %v", err)
 			}
 			t.Setenv(EgressGlobalPolicyFileEnv, path)
-			if _, err := loadGlobalNetworkPolicy(); err == nil {
+			_, _, err := loadGlobalNetworkPolicy()
+			if err == nil {
 				t.Fatal("loadGlobalNetworkPolicy() accepted an invalid file")
+			}
+			if tt.name == "protocol field removed" && !strings.Contains(err.Error(), "protocol was removed") {
+				t.Fatalf("error = %q, want the protocol migration message", err)
 			}
 		})
 	}
 	t.Setenv(EgressGlobalPolicyFileEnv, filepath.Join(t.TempDir(), "missing.yaml"))
-	if _, err := loadGlobalNetworkPolicy(); err == nil {
+	if _, _, err := loadGlobalNetworkPolicy(); err == nil {
 		t.Fatal("loadGlobalNetworkPolicy() accepted a missing file")
 	}
 }

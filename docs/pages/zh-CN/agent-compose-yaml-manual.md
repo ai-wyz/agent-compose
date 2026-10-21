@@ -1118,6 +1118,8 @@ Daemon 还会记录每个 runtime 创建时所依据的出网策略。启动 san
 | `allow` | list | 空 | 显式放行项。只在白名单模式（`default: deny-all`）下起限制作用，或作为未被拒绝时的例外。 |
 | `deny` | list | 空 | 显式拒绝项。在两种模式下都起限制作用，并在所有放行项之前应用。 |
 
+旧文件迁移只需处理两处：已删除的 `default: deny` 现在会报 `network default "deny" is no longer supported; use "deny-all"`；`allow` 或 `deny` 项内的 `protocol` 会报 `protocol was removed from network entries`。仍带 `protocol` 的已存 canonical spec 在读取时会带 agent 名和条目路径拒绝，删除该字段后重新 apply 即可。现在条目匹配任意协议；过去选择 `https` 也从未改变实际执行。
+
 每个 `allow` 项：
 
 | 字段 | 类型 | 默认值 | 作用 |
@@ -1164,7 +1166,7 @@ policy:
 
 #### Daemon 全局策略
 
-部署可以在 daemon 环境中设置 `EGRESS_GLOBAL_POLICY_FILE`，指向一个 YAML 文件。文件内容与 `policy.network` 的 `default`、`allow`、`deny` 相同（不需要外层 `network:` 键）。daemon 在启动时读取一次；文件不可读、包含未知字段或值非法都会导致启动失败，而不是悄悄放宽策略。在仓库提供的 Compose 部署中，可以把文件放在挂载的数据目录下并指向它，例如 `EGRESS_GLOBAL_POLICY_FILE=/data/work/global-network-policy.yaml`。
+部署可以在 daemon 环境中设置 `EGRESS_GLOBAL_POLICY_FILE`，指向一个 YAML 文件。文件内容与 `policy.network` 的 `default`、`allow`、`deny` 相同（不需要外层 `network:` 键）。daemon 在启动时读取一次；文件不可读、包含未知字段或值非法都会导致启动失败，而不是悄悄放宽策略。在仓库提供的 Compose 部署中，可以把文件放在挂载的数据目录下并指向它，例如 `EGRESS_GLOBAL_POLICY_FILE=/data/work/global-network-policy.yaml`。准入报告会给出启动时读入的文件路径与 SHA-256，运维可以据此确认运行中的 daemon 使用的是不是预期的文件；修改文件后需要重启 daemon 才会重新读取。
 
 ```yaml
 default: deny-all
@@ -1200,7 +1202,7 @@ daemon 策略是**应用到所有 sandbox 的外层边界**，包括没有声明
 
 该声明会被校验、进入 hash、经 API 往返，并编译进引擎统一的出网判定模型。它是否会限制流量取决于 runtime driver；driver 的能力报告会如实说明它实际执行的强度，而不会把部分机制呈现为完整机制：
 
-- 在 Microsandbox 上，SDK 的网络配置会应用该声明：引擎端点在前，`deny` 项随后，`allow` 项最后；未命中任何规则的流量回落到默认值。其能力报告在白名单模式下带有 `strength=allowlist`，在黑名单模式下带有 `strength=denylist`，并列出仍然存在的限制，同时注明真实 KVM 验证的结果：拒绝默认值与放行规则成立（未放行的名称无法解析，地址放行只对该地址和端口生效），`allowed_ips` 约束不会被应用，被放行的 HTTPS 目标未能完成 TLS 握手，因此当沙箱能访问守护进程时由引擎的正向代理承载 HTTPS 放行。
+- 在 Microsandbox 上，SDK 的网络配置会应用该声明：引擎端点在前，`deny` 项随后，`allow` 项最后；未命中任何规则的流量回落到默认值。其能力报告在白名单模式下带有 `strength=allowlist`，在黑名单模式下带有 `strength=denylist`，并列出仍然存在的限制，同时注明真实 KVM 验证的结果：拒绝默认值与放行规则成立（未放行的名称无法解析，地址放行只对该地址和端口生效），`allowed_ips` 约束不会被应用，被放行的 HTTPS 目标未能完成 TLS 握手，因此当沙箱能访问守护进程时由引擎的正向代理承载 HTTPS 放行。当代理也处于流量路径时，准入报告会同时列出两种机制，并说明绕过代理的流量不受代理判定；若声明还带有 `allowed_ips`，报告会说明 SDK 过滤器不会对比流量应用该地址约束，而 `EGRESS_UNENFORCEABLE_POLICY=refuse` 会拒绝这样的 sandbox。
 - Microsandbox 的 VM 内 DNS 代理会拒绝解析到私有地址的回答，这正是用于阻断 DNS rebinding 的机制。该保护默认开启，对所有 sandbox 生效（无论是否声明了网络策略）。如果部署中的 guest 必须解析内网名称（例如位于 `10/8` 地址段的内网服务），可设置 `MICROSANDBOX_DNS_REBIND_PROTECTION=false`；此时 daemon 会在启动 sandbox 时输出一条 warning，而该部署内的 guest 可能被任意可解析的域名指向内网地址。该开关没有按域名豁免的能力，作用范围是整个部署。
 - 对于**任何 sandbox 能访问到 daemon 的 driver**（包括 Docker、Kubernetes 与 BoxLite），引擎会在**自己的正向代理中执行该声明**。sandbox 会拿到代理作为它的出网路径（`HTTP_PROXY`、`HTTPS_PROXY`、`NO_PROXY` 及其小写形式，项目无法覆盖），代理会认证该 sandbox，并对每个连接做判定：命中 `deny` 条目的连接以 `403` 回复并附带拒绝它的规则；白名单模式下命中 `allow` 条目的连接被建立隧道；黑名单模式下未被任何 `deny` 命中的连接按默认放行建立隧道。因此在 Docker 上，即使 driver 自身不安装任何过滤器，声明也具有真实强度。
 - **无论声明怎么写，代理都拒绝引擎永不转发的目标**：loopback、link-local（含 `169.254.169.254` 元数据地址）、unspecified、multicast 地址，以及集群暴露的控制面端口——`2379`/`2380`（etcd）、`6443`（API server）、`10250`/`10255`（kubelet）。每条拒绝都记录在各自的引擎规则名下（`engine.blocked-address`、`engine.blocked-port`），并写明它拒绝的角色。对有限制性的 sandbox 来说，这堵住了它本来能自己找到的一条路；对任何 sandbox 来说，这是防止代理变成通往 daemon 自身服务或承载它的平台的新通道。
@@ -1213,13 +1215,19 @@ daemon 策略是**应用到所有 sandbox 的外层边界**，包括没有声明
 
 ```
 Network policy
-  worker (driver docker)
+  daemon policy  /data/work/global-network-policy.yaml (sha256:6f1c...)
+  worker (driver microsandbox)
     declared  default deny-all, 1 allowance(s), 0 denial(s)
-      allow api.github.com:443/* (addresses 203.0.113.0/24)
-    enforced  forward_proxy (allowlist), the engine's forward proxy
+      deny  metadata.example.com:80/* [daemon]
+      allow api.github.com:443/* (addresses 203.0.113.0/24) [daemon+agent]
+    enforced  forward_proxy (allowlist; mechanisms: sdk_network_policy, forward_proxy)
+    limit     the engine's forward proxy decides only traffic that honors the proxy environment
+    limit     sdk_network_policy applies the declared destinations but not allowed_ips; traffic that bypasses the forward proxy is not address-constrained
 ```
 
-引擎不会执行的声明会打印为 `enforced  no:`，并给出原因以及本部署的处理方式（`EGRESS_UNENFORCEABLE_POLICY=warn` 或 `refuse`），同样的文本会作为 warning 写入 stderr。存在同一缺口的多个 agent 共用一条 warning。既未声明策略、又没有 daemon 全局策略的 agent 不会出现在报告中——未声明不等于拒绝，因此没有需要报告的内容。设置了 `EGRESS_GLOBAL_POLICY_FILE` 后，所有 agent 都会按最终生效的全局策略列出，包括自身没有声明策略的 agent。`agent-compose up --json` 会在 `network_policies` 下给出同样的信息。
+配置了全局策略时，第一行给出启动时读入的文件路径与精确字节的 SHA-256。每条最终生效的 allow/deny 项都带来源标记：`[daemon]`、`[agent]` 或 `[daemon+agent]`。`mechanisms` 按 driver 在前的顺序列出所有实际执行了部分声明的机制，因此同时启用 Microsandbox SDK 过滤器与正向代理时会列出两者，而不是用一个标签掩盖另一个。`limit` 行说明不构成“未执行”、但运维必须知道的限制，包括绕过代理的流量，以及 driver 未应用 `allowed_ips` 的情况。
+
+引擎不会执行的声明会打印为 `enforced  no:`，并给出原因以及本部署的处理方式（`EGRESS_UNENFORCEABLE_POLICY=warn` 或 `refuse`），同样的文本会作为 warning 写入 stderr。存在同一缺口的多个 agent 共用一条 warning。既未声明策略、又没有 daemon 全局策略的 agent 不会出现在报告中——未声明不等于拒绝，因此没有需要报告的内容。设置了 `EGRESS_GLOBAL_POLICY_FILE` 后，所有 agent 都会按最终生效的全局策略列出，包括自身没有声明策略的 agent。`agent-compose up --json` 会在 `network_policies` 下给出同样的信息，并包含 `sources`、`mechanisms`、`limitations`、`daemon_policy_source` 和 `daemon_policy_sha256` 字段。
 
 **声明何时生效。** 取决于由哪个机制执行它：
 

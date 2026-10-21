@@ -1156,6 +1156,8 @@ For `remove`, the daemon first persists `release_pending`, then confirms a drive
 | `allow` | list | Empty | Explicit allowances. They restrict only in allowlist mode (`default: deny-all`), or as exceptions when no denial matches. |
 | `deny` | list | Empty | Explicit denials. They restrict in either mode and are applied before every allowance. |
 
+Older files need a one-line migration: the removed `default: deny` spelling now fails with `network default "deny" is no longer supported; use "deny-all"`, and a `protocol` field inside an `allow` or `deny` entry fails with `protocol was removed from network entries`. Stored canonical specs that still carry `protocol` are rejected on read with the agent and entry path, so re-apply the project after removing the field. Entries match any protocol now; choosing `https` never changed enforcement.
+
 Each `allow` entry:
 
 | Field | Type | Default | Purpose |
@@ -1202,7 +1204,7 @@ policy:
 
 #### Daemon-wide policy
 
-A deployment can set `EGRESS_GLOBAL_POLICY_FILE` in the daemon environment to a YAML file with the same `default`, `allow`, and `deny` body as `policy.network` (without a wrapping `network:` key). The daemon reads it once at startup; an unreadable file, an unknown field, or an invalid value fails startup instead of silently running wider. In the shipped Compose deployment, put the file under the mounted data directory and point at it, for example `EGRESS_GLOBAL_POLICY_FILE=/data/work/global-network-policy.yaml`.
+A deployment can set `EGRESS_GLOBAL_POLICY_FILE` in the daemon environment to a YAML file with the same `default`, `allow`, and `deny` body as `policy.network` (without a wrapping `network:` key). The daemon reads it once at startup; an unreadable file, an unknown field, or an invalid value fails startup instead of silently running wider. In the shipped Compose deployment, put the file under the mounted data directory and point at it, for example `EGRESS_GLOBAL_POLICY_FILE=/data/work/global-network-policy.yaml`. Admission reports identify the loaded file and its SHA-256, so an operator can compare a running daemon with the file they expected; restart the daemon to load edited bytes.
 
 ```yaml
 default: deny-all
@@ -1238,7 +1240,7 @@ When the declaration restricts — a `deny` default or at least one `deny` entry
 
 The declaration is validated, hashed, round-trips through the API, and compiles into the engine's single egress decision model. Whether it restricts traffic depends on the runtime driver, and the driver's capability report states the strength it actually applies instead of presenting a partial mechanism as a complete one:
 
-- On Microsandbox the SDK network configuration applies the declaration: engine endpoints come first, then `deny` entries, then `allow` entries; traffic no rule matches falls through to the default. Its capability report carries `strength=allowlist` for allowlist mode or `strength=denylist` for denylist mode, plus the remaining limits, and it states what a real KVM run verified: the deny default and the allow rules hold (a name without an allowance fails to resolve, and an address allowance is refused on every other address and port), an `allowed_ips` constraint is not applied, an allowed HTTPS destination did not complete a TLS handshake, and the engine's forward proxy carries an HTTPS allowance when the sandbox can reach the daemon.
+- On Microsandbox the SDK network configuration applies the declaration: engine endpoints come first, then `deny` entries, then `allow` entries; traffic no rule matches falls through to the default. Its capability report carries `strength=allowlist` for allowlist mode or `strength=denylist` for denylist mode, plus the remaining limits, and it states what a real KVM run verified: the deny default and the allow rules hold (a name without an allowance fails to resolve, and an address allowance is refused on every other address and port), an `allowed_ips` constraint is not applied, an allowed HTTPS destination did not complete a TLS handshake, and the engine's forward proxy carries an HTTPS allowance when the sandbox can reach the daemon. When the proxy is also in the path, admission reports both mechanisms and states that traffic bypassing the proxy is not decided by it; when the declaration also has `allowed_ips`, it states that the SDK filter does not apply that address constraint to bypass traffic, and `EGRESS_UNENFORCEABLE_POLICY=refuse` refuses such a sandbox.
 - Microsandbox's in-VM DNS proxy refuses answers that point at private addresses, which is what stops DNS rebinding. The protection applies to every sandbox, with or without a declaration, and is on by default. A deployment whose guests must resolve internal names — an intranet service on a `10/8` address, for example — sets `MICROSANDBOX_DNS_REBIND_PROTECTION=false`; the daemon logs one warning when it then starts a sandbox, and those guests can be steered at internal addresses by any name they resolve. There is no per-domain exemption: the switch is global to the deployment.
 - On every driver whose sandbox can reach the daemon — Docker, Kubernetes, and BoxLite included — **the engine enforces the declaration itself, in its own forward proxy**. The sandbox is given the proxy as its egress path (`HTTP_PROXY`, `HTTPS_PROXY`, `NO_PROXY`, and the lowercase forms, none of which a project can override), the proxy authenticates that sandbox, and it decides every connection: a `deny` entry is answered `403` with the rule that refused it, an `allow` entry is tunnelled in allowlist mode, and in denylist mode anything no denial matches is tunnelled under the allow default. Docker therefore carries a real strength even though the driver installs no filter of its own.
 - **The proxy refuses destinations the engine never forwards to, whatever the declaration says**: loopback, link-local (including the `169.254.169.254` metadata address), unspecified, and multicast addresses, plus the control-plane ports a cluster exposes — `2379` and `2380` (etcd), `6443` (API server), `10250` and `10255` (kubelet). Each refusal is recorded under its own engine rule (`engine.blocked-address`, `engine.blocked-port`) with the role it refused. For a restricting sandbox this closes a path it would otherwise find on its own; for any sandbox it is what keeps the proxy from becoming a new route into the daemon's services or the platform hosting it.
@@ -1251,13 +1253,19 @@ The declaration is validated, hashed, round-trips through the API, and compiles 
 
 ```
 Network policy
-  worker (driver docker)
+  daemon policy  /data/work/global-network-policy.yaml (sha256:6f1c...)
+  worker (driver microsandbox)
     declared  default deny-all, 1 allowance(s), 0 denial(s)
-      allow api.github.com:443/* (addresses 203.0.113.0/24)
-    enforced  forward_proxy (allowlist), the engine's forward proxy
+      deny  metadata.example.com:80/* [daemon]
+      allow api.github.com:443/* (addresses 203.0.113.0/24) [daemon+agent]
+    enforced  forward_proxy (allowlist; mechanisms: sdk_network_policy, forward_proxy)
+    limit     the engine's forward proxy decides only traffic that honors the proxy environment
+    limit     sdk_network_policy applies the declared destinations but not allowed_ips; traffic that bypasses the forward proxy is not address-constrained
 ```
 
-A declaration the engine will not enforce is printed as `enforced  no:` with the reason and what this deployment does about it (`EGRESS_UNENFORCEABLE_POLICY=warn` or `refuse`), and the same text is written to stderr as a warning. Agents that share one gap share one warning. Agents that declared no policy and have no daemon-wide policy are not listed — undeclared is not deny, so there is nothing to report. With `EGRESS_GLOBAL_POLICY_FILE` set, every agent is listed under that effective policy, including agents that declared nothing. `agent-compose up --json` carries the same account under `network_policies`.
+When a daemon-wide policy is configured, the first line names the file and the SHA-256 of the exact bytes loaded at startup. Every effective allow/deny entry carries its provenance: `[daemon]`, `[agent]`, or `[daemon+agent]`. `mechanisms` lists every mechanism that applies part of the declaration in driver-first order, so a Microsandbox sandbox with both its SDK filter and the proxy shows both rather than hiding one behind the other. `limit` lines state material limits that do not make the declaration unenforced, including bypass traffic and a driver's failure to apply `allowed_ips`.
+
+A declaration the engine will not enforce is printed as `enforced  no:` with the reason and what this deployment does about it (`EGRESS_UNENFORCEABLE_POLICY=warn` or `refuse`), and the same text is written to stderr as a warning. Agents that share one gap share one warning. Agents that declared no policy and have no daemon-wide policy are not listed — undeclared is not deny, so there is nothing to report. With `EGRESS_GLOBAL_POLICY_FILE` set, every agent is listed under that effective policy, including agents that declared nothing. `agent-compose up --json` carries the same account under `network_policies`, with `sources`, `mechanisms`, `limitations`, `daemon_policy_source`, and `daemon_policy_sha256` fields.
 
 **When a declaration takes effect.** It depends on which mechanism applies it:
 

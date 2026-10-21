@@ -12,8 +12,12 @@ import (
 // ParseCanonicalJSON decodes the immutable representation produced by
 // NormalizedProjectSpec.MarshalCanonicalJSON.
 func ParseCanonicalJSON(data []byte) (*NormalizedProjectSpec, error) {
+	trimmed := bytes.TrimSpace(data)
+	if err := rejectRemovedNetworkFields(trimmed); err != nil {
+		return nil, err
+	}
 	var ordered orderedProjectSpec
-	if err := json.Unmarshal(bytes.TrimSpace(data), &ordered); err != nil {
+	if err := json.Unmarshal(trimmed, &ordered); err != nil {
 		return nil, fmt.Errorf("decode canonical project spec: %w", err)
 	}
 	applyHistoricalAgentEnabledDefaults(data, ordered.Agents)
@@ -86,4 +90,56 @@ func applyHistoricalSchedulerDefaults(agents []orderedAgentSpec) {
 			scheduler.ConcurrencyPolicy = domain.SchedulerConcurrencyPolicySkip
 		}
 	}
+}
+
+// rejectRemovedNetworkFields turns a legacy canonical spec's removed protocol
+// field into an actionable migration error. The field is no longer represented
+// in the ordered types, so decoding would silently drop it; a spec written by
+// an older daemon must be rejected rather than accepted with an unstated
+// semantic change.
+func rejectRemovedNetworkFields(data []byte) error {
+	var shape struct {
+		Agents []struct {
+			Name    string          `json:"name"`
+			Policy  json.RawMessage `json:"policy"`
+			Sandbox json.RawMessage `json:"sandbox"`
+		} `json:"agents"`
+	}
+	if err := json.Unmarshal(data, &shape); err != nil {
+		// Let the main decode report malformed JSON with its existing error.
+		return nil
+	}
+	for _, agent := range shape.Agents {
+		for _, candidate := range []struct {
+			name string
+			raw  json.RawMessage
+		}{
+			{name: "policy", raw: agent.Policy},
+			{name: "sandbox", raw: agent.Sandbox},
+		} {
+			if len(candidate.raw) == 0 {
+				continue
+			}
+			var spec struct {
+				Network *struct {
+					Allow []map[string]json.RawMessage `json:"allow"`
+					Deny  []map[string]json.RawMessage `json:"deny"`
+				} `json:"network"`
+			}
+			if err := json.Unmarshal(candidate.raw, &spec); err != nil || spec.Network == nil {
+				continue
+			}
+			for index, entry := range spec.Network.Allow {
+				if _, ok := entry["protocol"]; ok {
+					return fmt.Errorf("canonical project spec agent %q %s.network.allow[%d] still carries the removed protocol field; remove it and re-apply the project", agent.Name, candidate.name, index)
+				}
+			}
+			for index, entry := range spec.Network.Deny {
+				if _, ok := entry["protocol"]; ok {
+					return fmt.Errorf("canonical project spec agent %q %s.network.deny[%d] still carries the removed protocol field; remove it and re-apply the project", agent.Name, candidate.name, index)
+				}
+			}
+		}
+	}
+	return nil
 }

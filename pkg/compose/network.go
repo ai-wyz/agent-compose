@@ -107,6 +107,12 @@ func normalizeSandboxNetworkDefault(value string) (string, error) {
 		return normalized, nil
 	case SandboxNetworkDefaultDenyAll:
 		return SandboxNetworkDefaultDenyAll, nil
+	case "deny":
+		// The old spelling is kept as a migration diagnostic rather than falling
+		// through to the generic message: it is a real, previously accepted value
+		// and an operator upgrading an existing file needs the replacement, not a
+		// list of accepted values to decode.
+		return "", fmt.Errorf("network default %q is no longer supported; use %q", value, SandboxNetworkDefaultDenyAll)
 	default:
 		return "", fmt.Errorf("network default must be %q or %q", SandboxNetworkDefaultAllowAll, SandboxNetworkDefaultDenyAll)
 	}

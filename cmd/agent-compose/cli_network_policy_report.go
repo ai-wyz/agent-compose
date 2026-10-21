@@ -27,17 +27,28 @@ type composeNetworkPolicyOutput struct {
 	Enforced  bool                        `json:"enforced"`
 	Strength  string                      `json:"strength"`
 	Mechanism string                      `json:"mechanism"`
-	Unapplied []string                    `json:"unapplied,omitempty"`
-	Warning   string                      `json:"warning,omitempty"`
+	// Mechanisms lists every mechanism that applies part of the declaration.
+	Mechanisms []string `json:"mechanisms,omitempty"`
+	// Limitations states material limits that do not make the declaration
+	// unenforced, such as traffic bypassing the forward proxy.
+	Limitations []string `json:"limitations,omitempty"`
+	// DaemonPolicySource and DaemonPolicySHA256 identify the daemon-wide policy
+	// the effective declaration was computed against.
+	DaemonPolicySource string   `json:"daemon_policy_source,omitempty"`
+	DaemonPolicySHA256 string   `json:"daemon_policy_sha256,omitempty"`
+	Unapplied          []string `json:"unapplied,omitempty"`
+	Warning            string   `json:"warning,omitempty"`
 }
 
 type composeNetworkAllowOutput struct {
 	Endpoint   string   `json:"endpoint"`
 	AllowedIPs []string `json:"allowed_ips,omitempty"`
+	Sources    []string `json:"sources,omitempty"`
 }
 
 type composeNetworkDenyOutput struct {
-	Endpoint string `json:"endpoint"`
+	Endpoint string   `json:"endpoint"`
+	Sources  []string `json:"sources,omitempty"`
 }
 
 func composeNetworkPoliciesFromProto(reports []*agentcomposev2.AgentNetworkPolicyReport) []composeNetworkPolicyOutput {
@@ -51,27 +62,33 @@ func composeNetworkPoliciesFromProto(reports []*agentcomposev2.AgentNetworkPolic
 			allow = append(allow, composeNetworkAllowOutput{
 				Endpoint:   entry.GetEndpoint(),
 				AllowedIPs: append([]string(nil), entry.GetAllowedIps()...),
+				Sources:    append([]string(nil), entry.GetSources()...),
 			})
 		}
 		deny := make([]composeNetworkDenyOutput, 0, len(report.GetDeny()))
 		for _, entry := range report.GetDeny() {
 			deny = append(deny, composeNetworkDenyOutput{
 				Endpoint: entry.GetEndpoint(),
+				Sources:  append([]string(nil), entry.GetSources()...),
 			})
 		}
 		policies = append(policies, composeNetworkPolicyOutput{
-			Agent:     report.GetAgent(),
-			Driver:    report.GetDriver(),
-			Restricts: report.GetRestricts(),
-			Default:   report.GetDefault(),
-			Allow:     allow,
-			Deny:      deny,
-			Mediated:  report.GetMediated(),
-			Enforced:  report.GetEnforced(),
-			Strength:  report.GetStrength(),
-			Mechanism: report.GetMechanism(),
-			Unapplied: append([]string(nil), report.GetUnapplied()...),
-			Warning:   report.GetWarning(),
+			Agent:              report.GetAgent(),
+			Driver:             report.GetDriver(),
+			Restricts:          report.GetRestricts(),
+			Default:            report.GetDefault(),
+			Allow:              allow,
+			Deny:               deny,
+			Mediated:           report.GetMediated(),
+			Enforced:           report.GetEnforced(),
+			Strength:           report.GetStrength(),
+			Mechanism:          report.GetMechanism(),
+			Mechanisms:         append([]string(nil), report.GetMechanisms()...),
+			Limitations:        append([]string(nil), report.GetLimitations()...),
+			DaemonPolicySource: report.GetDaemonPolicySource(),
+			DaemonPolicySHA256: report.GetDaemonPolicySha256(),
+			Unapplied:          append([]string(nil), report.GetUnapplied()...),
+			Warning:            report.GetWarning(),
 		})
 	}
 	return policies
@@ -119,6 +136,9 @@ func writeComposeNetworkPolicyReport(out io.Writer, policies []composeNetworkPol
 	if _, err := fmt.Fprintln(out, "Network policy"); err != nil {
 		return err
 	}
+	if err := writeDaemonNetworkPolicyIdentity(out, policies); err != nil {
+		return err
+	}
 	for _, policy := range policies {
 		if err := writeComposeAgentNetworkPolicy(out, policy); err != nil {
 			return err
@@ -145,7 +165,7 @@ func writeComposeAgentNetworkPolicy(out io.Writer, policy composeNetworkPolicyOu
 		return err
 	}
 	for _, entry := range policy.Deny {
-		if _, err := fmt.Fprintf(out, "      deny  %s\n", entry.Endpoint); err != nil {
+		if _, err := fmt.Fprintf(out, "      deny  %s%s\n", entry.Endpoint, networkPolicySourcesSuffix(entry.Sources)); err != nil {
 			return err
 		}
 	}
@@ -158,7 +178,10 @@ func writeComposeAgentNetworkPolicy(out io.Writer, policy composeNetworkPolicyOu
 		}
 	} else {
 		mechanism := fmt.Sprintf("%s (%s)", policy.Mechanism, policy.Strength)
-		if policy.Mediated {
+		switch {
+		case len(policy.Mechanisms) > 1:
+			mechanism += fmt.Sprintf("; mechanisms: %s", strings.Join(policy.Mechanisms, ", "))
+		case policy.Mediated:
 			mechanism += ", the engine's forward proxy"
 		}
 		if _, err := fmt.Fprintf(out, "    enforced  %s\n", mechanism); err != nil {
@@ -173,18 +196,48 @@ func writeComposeAgentNetworkPolicy(out io.Writer, policy composeNetworkPolicyOu
 			return err
 		}
 	}
+	for _, limitation := range policy.Limitations {
+		if _, err := fmt.Fprintf(out, "    limit     %s\n", limitation); err != nil {
+			return err
+		}
+	}
 	return nil
+}
+
+// writeDaemonNetworkPolicyIdentity states the daemon policy file and digest
+// once, before the per-agent accounts. Repeating it on every agent would make
+// the report noisy while still leaving the first occurrence easy to miss.
+func writeDaemonNetworkPolicyIdentity(out io.Writer, policies []composeNetworkPolicyOutput) error {
+	for _, policy := range policies {
+		if policy.DaemonPolicySource == "" {
+			continue
+		}
+		identity := "  daemon policy  " + policy.DaemonPolicySource
+		if policy.DaemonPolicySHA256 != "" {
+			identity += " (sha256:" + policy.DaemonPolicySHA256 + ")"
+		}
+		_, err := fmt.Fprintln(out, identity)
+		return err
+	}
+	return nil
+}
+
+func networkPolicySourcesSuffix(sources []string) string {
+	if len(sources) == 0 {
+		return ""
+	}
+	return " [" + strings.Join(sources, "+") + "]"
 }
 
 func writeComposeNetworkAllowances(out io.Writer, allow []composeNetworkAllowOutput) error {
 	for _, entry := range allow {
 		if len(entry.AllowedIPs) > 0 {
-			if _, err := fmt.Fprintf(out, "      allow %s (addresses %s)\n", entry.Endpoint, strings.Join(entry.AllowedIPs, " ")); err != nil {
+			if _, err := fmt.Fprintf(out, "      allow %s (addresses %s)%s\n", entry.Endpoint, strings.Join(entry.AllowedIPs, " "), networkPolicySourcesSuffix(entry.Sources)); err != nil {
 				return err
 			}
 			continue
 		}
-		if _, err := fmt.Fprintf(out, "      allow %s\n", entry.Endpoint); err != nil {
+		if _, err := fmt.Fprintf(out, "      allow %s%s\n", entry.Endpoint, networkPolicySourcesSuffix(entry.Sources)); err != nil {
 			return err
 		}
 	}

@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -139,5 +140,69 @@ func TestWriteComposeNetworkPolicyReportIsSilentWithoutDeclarations(t *testing.T
 	}
 	if out.Len() != 0 {
 		t.Fatalf("report = %q, want no output for an undeclared project", out.String())
+	}
+}
+
+// TestWriteComposeNetworkPolicyReportShowsMechanismsSourcesAndLimits pins the
+// audit details an operator needs when more than one mechanism is active or a
+// rule came from the daemon: the report names both mechanisms, attributes each
+// entry, identifies the daemon policy bytes, and states material limits.
+func TestWriteComposeNetworkPolicyReportShowsMechanismsSourcesAndLimits(t *testing.T) {
+	policies := composeNetworkPoliciesFromProto([]*agentcomposev2.AgentNetworkPolicyReport{{
+		Agent: "worker", Driver: "microsandbox", Declared: true, Restricts: true, Default: "deny-all",
+		Allow: []*agentcomposev2.DeclaredNetworkAllowance{{
+			Endpoint: "api.example.com:443/*", AllowedIps: []string{"203.0.113.0/24"},
+			Sources: []string{"daemon", "agent"},
+		}},
+		Deny:     []*agentcomposev2.DeclaredNetworkDenial{{Endpoint: "metadata.example.com:80/*", Sources: []string{"daemon"}}},
+		Mediated: true, Enforced: true, Strength: "allowlist", Mechanism: "forward_proxy",
+		Mechanisms:         []string{"sdk_network_policy", "forward_proxy"},
+		Limitations:        []string{"a process that bypasses the proxy is not decided by the proxy", "the driver does not apply allowed_ips to bypass traffic"},
+		DaemonPolicySource: "/etc/agent-compose/network-policy.yaml",
+		DaemonPolicySha256: "abc123",
+	}})
+
+	var out bytes.Buffer
+	if err := writeComposeNetworkPolicyReport(&out, policies); err != nil {
+		t.Fatalf("writeComposeNetworkPolicyReport() error = %v", err)
+	}
+	text := out.String()
+	for _, want := range []string{
+		"daemon policy  /etc/agent-compose/network-policy.yaml (sha256:abc123)",
+		"allow api.example.com:443/* (addresses 203.0.113.0/24) [daemon+agent]",
+		"deny  metadata.example.com:80/* [daemon]",
+		"mechanisms: sdk_network_policy, forward_proxy",
+		"limit     a process that bypasses the proxy",
+		"limit     the driver does not apply allowed_ips",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("report text =\n%s\nwant it to contain %q", text, want)
+		}
+	}
+}
+
+// TestComposeNetworkPolicyJSONCarriesReportAuditFields pins that the machine
+// output exposes the same audit facts as the text report.
+func TestComposeNetworkPolicyJSONCarriesReportAuditFields(t *testing.T) {
+	policies := composeNetworkPoliciesFromProto([]*agentcomposev2.AgentNetworkPolicyReport{{
+		Agent: "worker", Driver: "microsandbox", Declared: true, Restricts: true, Default: "deny-all",
+		Allow:              []*agentcomposev2.DeclaredNetworkAllowance{{Endpoint: "api.example.com:443/*", Sources: []string{"agent"}}},
+		Mediated:           true,
+		Enforced:           true,
+		Strength:           "allowlist",
+		Mechanism:          "forward_proxy",
+		Mechanisms:         []string{"sdk_network_policy", "forward_proxy"},
+		Limitations:        []string{"bypass limit"},
+		DaemonPolicySource: "/policy.yaml",
+		DaemonPolicySha256: "abc123",
+	}})
+	data, err := json.Marshal(policies)
+	if err != nil {
+		t.Fatalf("json.Marshal() error = %v", err)
+	}
+	for _, want := range []string{`"mechanisms":["sdk_network_policy","forward_proxy"]`, `"limitations":["bypass limit"]`, `"daemon_policy_source":"/policy.yaml"`, `"sources":["agent"]`} {
+		if !strings.Contains(string(data), want) {
+			t.Fatalf("JSON = %s, want %q", data, want)
+		}
 	}
 }

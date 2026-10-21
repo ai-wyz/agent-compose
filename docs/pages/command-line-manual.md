@@ -1054,7 +1054,7 @@ deny:
     port: 80
 ```
 
-The daemon policy applies even to agents that declare no policy. An agent declaration can narrow it but cannot widen it: two allowlists are intersected and an agent allowance outside the daemon allowlist is refused; daemon denials always remain. The effective policy reaches the driver boundary and the forward proxy, and admission reports include it. Changing the file requires a daemon restart. See [the Agent Compose YAML manual](agent-compose-yaml-manual.html) for the composition rules.
+The daemon policy applies even to agents that declare no policy. An agent declaration can narrow it but cannot widen it: two allowlists are intersected and an agent allowance outside the daemon allowlist is refused; daemon denials always remain. The effective policy reaches the driver boundary and the forward proxy, and admission reports include it, including the loaded file path and SHA-256 and the `[daemon]`/`[agent]` provenance of every effective entry. Changing the file requires a daemon restart; the report keeps naming the bytes that were loaded. See [the Agent Compose YAML manual](agent-compose-yaml-manual.html) for the composition rules.
 
 ## Native Agent Telemetry
 

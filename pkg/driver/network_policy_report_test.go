@@ -259,3 +259,32 @@ func TestAdmissionReportCannotSeeUnappliedDenyDomains(t *testing.T) {
 		t.Fatalf("report = %+v: the report now accounts for deny domains, so this characterization test must be replaced by an assertion that it agrees with the creation gate", report)
 	}
 }
+
+// TestReportAgentNetworkPolicyNamesEveryMechanism pins that a mediated
+// Microsandbox sandbox does not hide the driver's own filter behind the proxy
+// label: both mechanisms apply part of the declaration, so both are named.
+func TestReportAgentNetworkPolicyNamesEveryMechanism(t *testing.T) {
+	declaration := &egress.NetworkDeclaration{
+		Default: egress.Deny,
+		Allow: []egress.AllowEntry{{
+			Host: "api.example.com", Port: 443, Protocol: egress.ProtocolHTTPS,
+			AllowedIPs: []string{"203.0.113.0/24"},
+		}},
+	}
+	report, err := ReportAgentNetworkPolicy("worker", RuntimeDriverMicrosandbox, declaration, true, config.EgressUnenforceableWarn)
+	if err != nil {
+		t.Fatalf("ReportAgentNetworkPolicy() error = %v", err)
+	}
+	if got, want := report.Mechanisms, []string{mechanismSDKNetworkPolicy, mechanismForwardProxy}; len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+		t.Fatalf("Mechanisms = %v, want %v", got, want)
+	}
+	if len(report.Limitations) < 2 {
+		t.Fatalf("Limitations = %v, want the proxy-bypass and allowed_ips limits", report.Limitations)
+	}
+	if !strings.Contains(strings.Join(report.Limitations, " "), "allowed_ips") {
+		t.Fatalf("Limitations = %v, want the driver's allowed_ips gap", report.Limitations)
+	}
+	if len(report.Unapplied) == 0 || !strings.Contains(strings.Join(report.Unapplied, " "), "bypasses the forward proxy") {
+		t.Fatalf("Unapplied = %v, want the bypass-only address gap", report.Unapplied)
+	}
+}

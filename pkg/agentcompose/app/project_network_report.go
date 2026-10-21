@@ -61,6 +61,11 @@ func agentNetworkPolicyReports(spec *compose.NormalizedProjectSpec, mediation sa
 		if err != nil {
 			return nil, err
 		}
+		if config != nil {
+			report.DaemonPolicySource = config.GlobalNetworkPolicyInfo.Path
+			report.DaemonPolicySHA256 = config.GlobalNetworkPolicyInfo.SHA256
+		}
+		annotateNetworkPolicySources(&report, global, declaration)
 		reports = append(reports, report)
 	}
 	sort.SliceStable(reports, func(i, j int) bool { return reports[i].Agent < reports[j].Agent })
@@ -75,4 +80,63 @@ func driverForAgent(agent compose.NormalizedAgentSpec) string {
 		return driverpkg.RuntimeDriverDocker
 	}
 	return agent.Driver.Name
+}
+
+// annotateNetworkPolicySources attaches declaration provenance to each effective
+// entry. The effective declaration is a merged value, so the source cannot be
+// recovered from it; comparing the effective endpoint with the two inputs is
+// what lets an operator tell a daemon rule from an agent rule after admission.
+func annotateNetworkPolicySources(report *driverpkg.AgentNetworkPolicyReport, global, agent *egress.NetworkDeclaration) {
+	for index := range report.Allow {
+		report.Allow[index].Sources = allowanceSources(report.Allow[index].Endpoint, global, agent)
+	}
+	for index := range report.Deny {
+		report.Deny[index].Sources = denialSources(report.Deny[index].Endpoint, global, agent)
+	}
+}
+
+func allowanceSources(endpoint string, global, agent *egress.NetworkDeclaration) []string {
+	sources := make([]string, 0, 2)
+	if declarationHasAllowance(global, endpoint) {
+		sources = append(sources, "daemon")
+	}
+	if declarationHasAllowance(agent, endpoint) {
+		sources = append(sources, "agent")
+	}
+	return sources
+}
+
+func denialSources(endpoint string, global, agent *egress.NetworkDeclaration) []string {
+	sources := make([]string, 0, 2)
+	if declarationHasDenial(global, endpoint) {
+		sources = append(sources, "daemon")
+	}
+	if declarationHasDenial(agent, endpoint) {
+		sources = append(sources, "agent")
+	}
+	return sources
+}
+
+func declarationHasAllowance(declaration *egress.NetworkDeclaration, endpoint string) bool {
+	if declaration == nil {
+		return false
+	}
+	for _, entry := range declaration.Allow {
+		if egress.FormatEndpointPattern(entry.Host, entry.Port, entry.Protocol) == endpoint {
+			return true
+		}
+	}
+	return false
+}
+
+func declarationHasDenial(declaration *egress.NetworkDeclaration, endpoint string) bool {
+	if declaration == nil {
+		return false
+	}
+	for _, entry := range declaration.Deny {
+		if egress.FormatEndpointPattern(entry.Host, entry.Port, entry.Protocol) == endpoint {
+			return true
+		}
+	}
+	return false
 }

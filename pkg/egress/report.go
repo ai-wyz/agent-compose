@@ -25,12 +25,21 @@ type DeclaredAllowance struct {
 	// which the report must state rather than imply a constraint that is not
 	// there.
 	AllowedIPs []string
+	// Sources names the declaration layers that contributed this allowance.
+	// The values are "daemon" and "agent"; both are present when the effective
+	// entry came from both layers. It is empty when the caller did not annotate
+	// provenance, which keeps the pure decision-model report independent of
+	// project admission.
+	Sources []string
 }
 
 // DeclaredDenial is one declared refusal as it appears in a report.
 type DeclaredDenial struct {
 	// Endpoint is the canonical host:port/* pattern.
 	Endpoint string
+	// Sources names the declaration layers that contributed this denial, using
+	// the same values as DeclaredAllowance.Sources.
+	Sources []string
 }
 
 // NetworkPolicyReport is the auditable account of one sandbox's declared

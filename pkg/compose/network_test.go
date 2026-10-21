@@ -323,9 +323,9 @@ func TestSandboxNetworkRejectsInvalidDeclarations(t *testing.T) {
 			wantErr: "network default must be",
 		},
 		{
-			name:    "historical deny spelling is rejected",
+			name:    "historical deny spelling is rejected with the replacement",
 			body:    "sandbox:\n      network:\n        default: deny",
-			wantErr: "network default must be",
+			wantErr: `network default "deny" is no longer supported; use "deny-all"`,
 		},
 		{
 			name:    "unknown field under network",
@@ -370,7 +370,7 @@ func TestSandboxNetworkRejectsInvalidDeclarations(t *testing.T) {
 		{
 			name:    "protocol is not a declaration field",
 			body:    "sandbox:\n      network:\n        allow:\n          - host: api.github.com\n            port: 443\n            protocol: https",
-			wantErr: "unknown field",
+			wantErr: "protocol was removed from network entries",
 		},
 		{
 			name:    "duplicate allow entry",

@@ -494,8 +494,23 @@ message AgentNetworkPolicyReport {
   bool enforced = 8;
   // The mechanism's strength: "none", "allowlist", or "denylist".
   string strength = 9;
-  // The concrete mechanism, for example "forward_proxy".
+  // The primary mechanism, for example "forward_proxy". It determines the
+  // reported strength.
   string mechanism = 10;
+  // Every mechanism that applies at least part of the declaration, in
+  // driver-first order. When both the driver and the engine's forward proxy
+  // apply the declaration this lists both, instead of hiding the driver behind
+  // the proxy's label.
+  repeated string mechanisms = 14;
+  // Material limits of the reported enforcement that do not make it
+  // unenforced, for example traffic that bypasses the forward proxy.
+  repeated string limitations = 15;
+  // Path of the daemon-wide policy file the effective declaration was computed
+  // against. Empty when no daemon-wide policy is configured.
+  string daemon_policy_source = 16;
+  // SHA-256 of the daemon-wide policy file's bytes. Empty when no daemon-wide
+  // policy is configured.
+  string daemon_policy_sha256 = 17;
   // The parts of the declaration the mechanism does not apply. Empty when it
   // applies all of it.
   repeated string unapplied = 11;
@@ -514,6 +529,9 @@ message DeclaredNetworkAllowance {
   // The canonical CIDR ranges the name may resolve to. Empty when the
   // declaration left the addresses unconstrained.
   repeated string allowed_ips = 3;
+  // Declaration layers that contributed the effective entry: "daemon" and/or
+  // "agent". Empty when provenance was not annotated.
+  repeated string sources = 4;
 }
 
 // DeclaredNetworkDenial is one declared refusal as it appears in a report.
@@ -522,6 +540,9 @@ message DeclaredNetworkDenial {
   string endpoint = 1;
   reserved 2;
   reserved "inspectable";
+  // Declaration layers that contributed the effective entry: "daemon" and/or
+  // "agent". Empty when provenance was not annotated.
+  repeated string sources = 3;
 }
 
 message PatchProjectRequest {

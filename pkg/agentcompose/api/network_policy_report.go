@@ -21,28 +21,34 @@ func NetworkPolicyReportsToProto(reports []driverpkg.AgentNetworkPolicyReport) [
 			allow = append(allow, &agentcomposev2.DeclaredNetworkAllowance{
 				Endpoint:   entry.Endpoint,
 				AllowedIps: append([]string(nil), entry.AllowedIPs...),
+				Sources:    append([]string(nil), entry.Sources...),
 			})
 		}
 		deny := make([]*agentcomposev2.DeclaredNetworkDenial, 0, len(report.Deny))
 		for _, entry := range report.Deny {
 			deny = append(deny, &agentcomposev2.DeclaredNetworkDenial{
 				Endpoint: entry.Endpoint,
+				Sources:  append([]string(nil), entry.Sources...),
 			})
 		}
 		mapped = append(mapped, &agentcomposev2.AgentNetworkPolicyReport{
-			Agent:     report.Agent,
-			Driver:    report.Driver,
-			Declared:  report.Declared,
-			Restricts: report.Restricts,
-			Default:   networkPolicyDefaultMode(report.Default),
-			Allow:     allow,
-			Deny:      deny,
-			Mediated:  report.Mediated,
-			Enforced:  report.Enforced,
-			Strength:  string(report.Enforcement.Strength),
-			Mechanism: report.Enforcement.Mechanism,
-			Unapplied: append([]string(nil), report.Unapplied...),
-			Warning:   report.Warning,
+			Agent:              report.Agent,
+			Driver:             report.Driver,
+			Declared:           report.Declared,
+			Restricts:          report.Restricts,
+			Default:            networkPolicyDefaultMode(report.Default),
+			Allow:              allow,
+			Deny:               deny,
+			Mediated:           report.Mediated,
+			Enforced:           report.Enforced,
+			Strength:           string(report.Enforcement.Strength),
+			Mechanism:          report.Enforcement.Mechanism,
+			Mechanisms:         append([]string(nil), report.Mechanisms...),
+			Limitations:        append([]string(nil), report.Limitations...),
+			DaemonPolicySource: report.DaemonPolicySource,
+			DaemonPolicySha256: report.DaemonPolicySHA256,
+			Unapplied:          append([]string(nil), report.Unapplied...),
+			Warning:            report.Warning,
 		})
 	}
 	return mapped

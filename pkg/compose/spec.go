@@ -1072,6 +1072,9 @@ func validateMapping(node *yaml.Node, path string, fields map[string]nodeValidat
 		seen[key.Value] = key
 		validator, ok := fields[key.Value]
 		if !ok {
+			if key.Value == "protocol" && networkEntryPath(path) {
+				return newParseError(key, fieldPath, `protocol was removed from network entries; remove this field, entries match any protocol`)
+			}
 			return newParseError(key, fieldPath, "unknown field")
 		}
 		if err := validator(value, fieldPath); err != nil {
@@ -1124,6 +1127,14 @@ func requireKind(node *yaml.Node, path string, want yaml.Kind, wantName string) 
 		return newParseError(node, path, fmt.Sprintf("expected %s, got %s", wantName, nodeKindName(node.Kind)))
 	}
 	return nil
+}
+
+// networkEntryPath reports whether path is the parent of one allow or deny
+// entry. It is intentionally narrow: only the removed protocol field gets the
+// migration message, while every other unknown field keeps the strict generic
+// error.
+func networkEntryPath(path string) bool {
+	return strings.Contains(path, ".network.allow[") || strings.Contains(path, ".network.deny[")
 }
 
 func newParseError(node *yaml.Node, path string, message string) error {
