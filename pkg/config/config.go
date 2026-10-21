@@ -267,6 +267,13 @@ func loadConfigSources(logger *slog.Logger, dataRoot string) (configSources, err
 	if err != nil {
 		return configSources{}, err
 	}
+	if globalPolicyInfo.Path != "" {
+		// Name the exact bytes in the startup log as well as the admission
+		// report, so a daemon restart is auditable even before a project is
+		// applied. The path and digest are not secrets; the rules themselves stay
+		// out of the log.
+		logger.Info("daemon-wide network policy loaded", "source", globalPolicyInfo.Path, "sha256", globalPolicyInfo.SHA256)
+	}
 	return configSources{
 		AgentTelemetry:   telemetry,
 		Database:         database,
