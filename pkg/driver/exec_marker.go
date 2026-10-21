@@ -98,12 +98,28 @@ for pid in $(matching_pids); do
 done
 
 if [ -n "$root" ]; then
+  # The leader need not be its own process-group leader: a docker exec
+  # non-TTY control process can inherit a group whose leader lives outside the
+  # container's pid namespace (its pgrp then reads 0). Compare each candidate's
+  # pgrp against the leader's own pgrp, not the leader's pid.
+  root_pgrp=
+  if IFS= read -r stat < /proc/"$root"/stat 2>/dev/null; then
+    rest=${stat##*) }
+    set -- $rest
+    root_pgrp=$3
+  fi
   for pid in $(matching_pids); do
     IFS= read -r stat < /proc/"$pid"/stat 2>/dev/null || continue
     rest=${stat##*) }
     set -- $rest
     pgrp=$3
-    if [ "$pid" = "$root" ] || [ "$pgrp" = "$root" ]; then
+    killit=
+    if [ "$pid" = "$root" ]; then
+      killit=1
+    elif [ -n "$root_pgrp" ] && [ "$pgrp" = "$root_pgrp" ]; then
+      killit=1
+    fi
+    if [ -n "$killit" ]; then
       kill -KILL "$pid" 2>/dev/null || true
     fi
   done
