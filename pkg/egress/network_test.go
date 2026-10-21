@@ -477,3 +477,21 @@ func TestReportNetworkPolicyDenyList(t *testing.T) {
 		t.Fatalf("report = %+v, want an allow-only declaration not to restrict", report)
 	}
 }
+
+func TestNormalizeHostCanonicalizesBracketedIPv6(t *testing.T) {
+	tests := map[string]string{
+		"[2001:db8::1]":   "2001:db8::1",
+		"[2001:db8::/32]": "2001:db8::/32",
+		"2001:0DB8:0::1":  "2001:db8::1",
+		"10.2.16.21/8":    "10.0.0.0/8",
+	}
+	for input, want := range tests {
+		got, err := NormalizeHost(input)
+		if err != nil {
+			t.Fatalf("NormalizeHost(%q) error = %v", input, err)
+		}
+		if got != want {
+			t.Fatalf("NormalizeHost(%q) = %q, want %q", input, got, want)
+		}
+	}
+}

@@ -137,7 +137,7 @@ func FormatEndpointPattern(host string, port int, protocol Protocol) string {
 // lowercased. Brackets around an IPv6 literal are accepted on input and are not
 // part of the canonical value.
 func NormalizeHost(value string) (string, error) {
-	normalized := strings.ToLower(strings.TrimSpace(value))
+	normalized := strings.ToLower(strings.Trim(strings.TrimSpace(value), "[]"))
 	if normalized == "" {
 		return "", errors.New("host must not be empty")
 	}
