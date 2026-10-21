@@ -14,6 +14,7 @@ import (
 
 	"github.com/samber/do/v2"
 
+	"github.com/chaitin/agent-compose/pkg/egress"
 	domain "github.com/chaitin/agent-compose/pkg/model"
 )
 
@@ -87,7 +88,11 @@ type Config struct {
 	RuntimeDriver      string
 	// EgressUnenforceablePolicy decides whether a declared network policy the
 	// selected driver cannot apply warns and runs or refuses the sandbox.
-	EgressUnenforceablePolicy  EgressUnenforceablePolicy
+	EgressUnenforceablePolicy EgressUnenforceablePolicy
+	// GlobalNetworkPolicy is the daemon-wide outer bound for every agent's
+	// outbound network policy. It is nil when no global policy file is
+	// configured, preserving the undeclared behavior.
+	GlobalNetworkPolicy        *egress.NetworkDeclaration
 	BoxliteHome                string
 	BoxliteRuntimeDir          string
 	DockerHome                 string
@@ -199,6 +204,7 @@ type configSources struct {
 	HTTPLimits      httpLimitsConfig
 	EventDelivery   domain.EventDeliveryScope
 	EgressEnforce   EgressUnenforceablePolicy
+	GlobalPolicy    *egress.NetworkDeclaration
 }
 
 func loadConfigSources(logger *slog.Logger, dataRoot string) (configSources, error) {
@@ -253,6 +259,10 @@ func loadConfigSources(logger *slog.Logger, dataRoot string) (configSources, err
 	if err != nil {
 		return configSources{}, err
 	}
+	globalPolicy, err := loadGlobalNetworkPolicy()
+	if err != nil {
+		return configSources{}, err
+	}
 	return configSources{
 		AgentTelemetry:  telemetry,
 		Database:        database,
@@ -270,6 +280,7 @@ func loadConfigSources(logger *slog.Logger, dataRoot string) (configSources, err
 		HTTPLimits:      loadHTTPLimitsConfig(logger),
 		EventDelivery:   eventDelivery,
 		EgressEnforce:   egressEnforce,
+		GlobalPolicy:    globalPolicy,
 	}, nil
 }
 
@@ -330,6 +341,7 @@ func buildConfig(sources configSources, normalized configPathsToNormalize) *Conf
 		EventDeliveryScope:         sources.EventDelivery,
 		RuntimeDriver:              drivers.RuntimeDriver,
 		EgressUnenforceablePolicy:  sources.EgressEnforce,
+		GlobalNetworkPolicy:        sources.GlobalPolicy,
 		BoxliteHome:                normalized.BoxliteHome,
 		BoxliteRuntimeDir:          normalized.BoxliteRuntimeDir,
 		DockerHome:                 normalized.DockerHome,

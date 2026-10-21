@@ -7,6 +7,7 @@ import (
 	"github.com/chaitin/agent-compose/pkg/compose"
 	appconfig "github.com/chaitin/agent-compose/pkg/config"
 	driverpkg "github.com/chaitin/agent-compose/pkg/driver"
+	"github.com/chaitin/agent-compose/pkg/egress"
 )
 
 // sandboxEgressMediation reports whether the engine's forward proxy will be in a
@@ -30,25 +31,31 @@ func agentNetworkPolicyReports(spec *compose.NormalizedProjectSpec, mediation sa
 		return nil, nil
 	}
 	mode := appconfig.EgressUnenforceableWarn
+	var global *egress.NetworkDeclaration
 	if config != nil {
 		mode = config.EgressUnenforceablePolicy
+		global = config.GlobalNetworkPolicy
 	}
 	reports := make([]driverpkg.AgentNetworkPolicyReport, 0, len(spec.Agents))
 	for _, agent := range spec.Agents {
-		// PolicyBlock is nil for an agent that declared no policy block at all,
-		// which is the common case and must stay a no-op.
-		policy := agent.PolicyBlock()
-		if policy == nil || policy.Network == nil {
+		var declaration *egress.NetworkDeclaration
+		if policy := agent.PolicyBlock(); policy != nil && policy.Network != nil {
+			compiled, err := policy.Network.EgressDeclaration()
+			if err != nil {
+				return nil, fmt.Errorf("agent %q: %w", agent.Name, err)
+			}
+			declaration = &compiled
+		}
+		if declaration == nil && global == nil {
 			continue
 		}
-		network := policy.Network
-		declaration, err := network.EgressDeclaration()
+		effective, err := egress.LayerNetworkDeclarations(global, declaration)
 		if err != nil {
 			return nil, fmt.Errorf("agent %q: %w", agent.Name, err)
 		}
 		driver := driverForAgent(agent)
 		mediated := mediation != nil && mediation.MediatesDriver(driver)
-		report, err := driverpkg.ReportAgentNetworkPolicy(agent.Name, driver, &declaration, mediated, mode)
+		report, err := driverpkg.ReportAgentNetworkPolicy(agent.Name, driver, effective, mediated, mode)
 		if err != nil {
 			return nil, err
 		}

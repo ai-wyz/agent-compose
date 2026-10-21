@@ -362,3 +362,45 @@ func TestGuestFilePathsCarryDeclaredNetworkPolicy(t *testing.T) {
 		})
 	}
 }
+
+// TestEnsureSandboxAppliesTheDaemonGlobalPolicyWithoutAnAgentDeclaration pins
+// that the daemon-wide policy is not an opt-in the project can omit: an agent
+// that declares nothing still receives the daemon's outer bound at the driver
+// boundary and in the policy the proxy decides with.
+func TestEnsureSandboxAppliesTheDaemonGlobalPolicyWithoutAnAgentDeclaration(t *testing.T) {
+	config := networkPolicyTestConfig()
+	config.GlobalNetworkPolicy = &egress.NetworkDeclaration{
+		Default: egress.Deny,
+		Allow:   []egress.AllowEntry{{Host: "api.github.com", Port: 443, Protocol: egress.ProtocolAny}},
+	}
+	runtime := &capturingNetworkRuntime{}
+	adapter := driverRuntimeAdapter{
+		runtime:    runtime,
+		executions: newSandboxExecutions(),
+		networkPolicies: driverSandboxNetworkPolicy{
+			config:       config,
+			declarations: stubNetworkDeclarationResolver{},
+		},
+	}
+	if _, err := adapter.EnsureSandbox(context.Background(), networkPolicyTestSession(), domain.VMState{}, domain.ProxyState{}); err != nil {
+		t.Fatalf("EnsureSandbox returned error: %v", err)
+	}
+	if runtime.sandbox == nil || runtime.sandbox.NetworkPolicy == nil {
+		t.Fatal("daemon global policy did not reach the driver boundary")
+	}
+	if !runtime.sandbox.NetworkPolicy.DenyByDefault() {
+		t.Fatal("daemon deny-all policy did not remain deny-by-default")
+	}
+	policy, err := adapter.networkPolicies.effectivePolicy(context.Background(), networkPolicyTestSession())
+	if err != nil {
+		t.Fatalf("effectivePolicy returned error: %v", err)
+	}
+	result := egress.Decide(policy, egress.Request{Kind: egress.KindNetworkEndpoint, Name: "api.github.com:443/https"})
+	if !result.Allowed() {
+		t.Fatalf("global allowance was denied: %+v", result)
+	}
+	result = egress.Decide(policy, egress.Request{Kind: egress.KindNetworkEndpoint, Name: "other.example.com:443/https"})
+	if result.Allowed() {
+		t.Fatalf("global deny-all allowed an undeclared destination: %+v", result)
+	}
+}

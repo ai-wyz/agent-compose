@@ -6,6 +6,7 @@ import (
 
 	"github.com/chaitin/agent-compose/pkg/compose"
 	appconfig "github.com/chaitin/agent-compose/pkg/config"
+	"github.com/chaitin/agent-compose/pkg/egress"
 )
 
 type staticMediation struct {
@@ -35,7 +36,7 @@ func TestAgentNetworkPolicyReportsNameTheMechanismAndTheGap(t *testing.T) {
 	deny := &compose.NormalizedSandboxNetworkSpec{
 		Default: compose.SandboxNetworkDefaultDenyAll,
 		Allow: []compose.NormalizedSandboxNetworkAllowSpec{{
-			Host: "api.github.com", Port: 443, Protocol: "https",
+			Host: "api.github.com", Port: 443,
 			AllowedIPs: []string{"203.0.113.0/24"},
 		}},
 	}
@@ -143,4 +144,28 @@ func equalStrings(a, b []string) bool {
 		}
 	}
 	return true
+}
+
+// TestAgentNetworkPolicyReportsIncludeTheDaemonGlobalPolicy pins that admission
+// accounts for the daemon-wide bound even when an agent declared no policy of
+// its own; otherwise the report would describe a project wider than the one the
+// daemon will actually run.
+func TestAgentNetworkPolicyReportsIncludeTheDaemonGlobalPolicy(t *testing.T) {
+	spec := &compose.NormalizedProjectSpec{Agents: []compose.NormalizedAgentSpec{
+		normalizedAgentWithNetwork("plain", "docker", nil),
+	}}
+	global := &egress.NetworkDeclaration{
+		Default: egress.Deny,
+		Allow:   []egress.AllowEntry{{Host: "api.github.com", Port: 443, Protocol: egress.ProtocolAny}},
+	}
+	reports, err := agentNetworkPolicyReports(spec, staticMediation{drivers: map[string]bool{"docker": true}}, &appconfig.Config{GlobalNetworkPolicy: global})
+	if err != nil {
+		t.Fatalf("agentNetworkPolicyReports() error = %v", err)
+	}
+	if len(reports) != 1 || reports[0].Agent != "plain" || !reports[0].Declared || !reports[0].Restricts {
+		t.Fatalf("reports = %+v, want the daemon policy reported for the undeclared agent", reports)
+	}
+	if reports[0].Default != egress.Deny || len(reports[0].Allow) != 1 {
+		t.Fatalf("report = %+v, want the daemon allowlist", reports[0])
+	}
 }
