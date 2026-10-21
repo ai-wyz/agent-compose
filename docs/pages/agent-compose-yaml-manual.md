@@ -1148,11 +1148,11 @@ For `remove`, the daemon first persists `release_pending`, then confirms a drive
 
 ### `policy.network`: declared outbound network policy
 
-`network` declares what this agent's sandboxes may reach. **It is optional, and an undeclared policy is not deny**: when `policy.network` is absent the engine keeps its existing behavior exactly, and outbound access stays unrestricted. `default: deny-all` is a policy that takes effect only because the block was declared; it is not an engine default.
+`network` declares what this agent's sandboxes may reach. **It is optional, and an undeclared agent policy is not deny**: when `policy.network` is absent, the agent adds no restriction of its own. A daemon-wide policy configured with `EGRESS_GLOBAL_POLICY_FILE` still applies as an outer bound; without one, outbound access stays unrestricted exactly as before. `default: deny-all` is a policy that takes effect only because the block was declared; it is not an engine default.
 
 | Field | Type | Default | Purpose |
 | --- | --- | --- | --- |
-| `default` | string | `allow-all` | Selects the mode and the action for traffic no entry matches: `deny-all` is allowlist mode, `allow-all` is denylist mode. The historical spelling `deny` is accepted and normalized to `deny-all`. A `deny` entry wins over an `allow` entry in either mode. |
+| `default` | string | `allow-all` | Selects the mode and the action for traffic no entry matches: `deny-all` is allowlist mode, `allow-all` is denylist mode. `deny` is not an accepted spelling; use `deny-all`. A `deny` entry wins over an `allow` entry in either mode. |
 | `allow` | list | Empty | Explicit allowances. They restrict only in allowlist mode (`default: deny-all`), or as exceptions when no denial matches. |
 | `deny` | list | Empty | Explicit denials. They restrict in either mode and are applied before every allowance. |
 
@@ -1160,17 +1160,16 @@ Each `allow` entry:
 
 | Field | Type | Default | Purpose |
 | --- | --- | --- | --- |
-| `host` | string | Required | A host or host pattern. Labels are separated by `.`, and `*` matches exactly one label: `*.example.com` matches `api.example.com` but neither `example.com` nor `a.b.example.com`. IPv6 literals are not supported. |
+| `host` | string | Required | A host name, a label-wise host pattern, an IPv4 or IPv6 literal, or an IPv4 or IPv6 CIDR range. In a pattern, labels are separated by `.`, and `*` matches exactly one label: `*.example.com` matches `api.example.com` but neither `example.com` nor `a.b.example.com`. Literals and CIDRs are canonicalized; CIDR host bits are ignored (`10.2.16.21/8` becomes `10.0.0.0/8`). |
 | `port` | int | One of `port`/`ports` | A single destination port, 1–65535. |
-| `ports` | list of int | One of `port`/`ports` | A shorthand for several destination ports on the same host and protocol, for example `[80, 443]`. Normalization expands each port into its own canonical entry; `port` and `ports` are alternatives and must not be combined. |
-| `protocol` | string | `any` | `http`, `https`, `tcp`, `udp`, or `any`. This is a matching and reporting label, not an L7 check. No L7 mediator inspects payloads today, and Microsandbox collapses `http`/`https` to TCP. Omit it for a plain host-and-port rule; use `udp` only where the driver can carry UDP (the forward proxy cannot). |
+| `ports` | list of int | One of `port`/`ports` | A shorthand for several destination ports on the same host, for example `[80, 443]`. Normalization expands each port into its own canonical entry; `port` and `ports` are alternatives and must not be combined. |
 | `allowed_ips` | list | Empty | Optional IP addresses or CIDR ranges this entry's `host` may resolve to. Every address the name resolves to must fall inside one of them, or the allowance does not apply. A bare address is its own single-address range (`10.0.0.5` means `10.0.0.5/32`); entries are canonicalized and sorted. This constrains a hostname; it is not a subnet destination and is not accepted on a `deny` entry. |
 
-Each `deny` entry has `host`, `port` or `ports`, and the optional `protocol` with the same validation and normalization as an allowance; it has no `allowed_ips` field, because a denial refuses the destination itself. Each `ports` value is expanded into one canonical entry per port, so the spec hash and the admission report are the same as if each port had been written as its own `port` entry.
+Each `deny` entry has `host` and `port` or `ports`, with the same host and port validation as an allowance; it has no `allowed_ips` field, because a denial refuses the destination itself. Each `ports` value is expanded into one canonical entry per port, so the spec hash and the admission report are the same as if each port had been written as its own `port` entry.
 
 `allowed_ips` is what ties a name to an address. Without it an allowance for `api.example.com` follows that name wherever it resolves, so a poisoned or compromised answer could send the sandbox to an address the declaration never named. With it, the engine refuses the connection unless the address it is about to use is inside the declared range, and a name that resolves to both an allowed and a disallowed address is refused rather than picked opportunistically. An address the engine never forwards to at all — loopback, link-local including the metadata address `169.254.169.254`, multicast, and the control-plane ports `2379`, `2380`, `6443`, `10250`, `10255` — stays refused whatever `allowed_ips` says.
 
-A destination that names an IPv4 address (`host: 10.0.0.5`) is matched by that same address and never by a pattern: a wildcard allowance cannot reach an address the declaration did not name. IPv6 literals and CIDR ranges are not accepted in `host`; a CIDR range is currently meaningful only inside `allowed_ips`, as a constraint on a hostname. There is no subnet-wide allow or deny target yet.
+A destination that names an IPv4 or IPv6 address (`host: 10.0.0.5` or `host: 2001:db8::1`) is matched by that same address and never by a wildcard pattern: a wildcard allowance cannot reach an address the declaration did not name. A CIDR in `host` is itself a destination range: the forward proxy matches a direct address inside it, and a name whose resolved answers all fall inside it for an allowance (or any answer inside it for a denial). An exact address `host` does not automatically cover a name that resolves to it; use a CIDR or `allowed_ips` when the target is a name. `allowed_ips` remains a constraint on a hostname and is not a substitute for a subnet destination.
 
 ```yaml
 policy:
@@ -1185,6 +1184,10 @@ policy:
         port: 8080
       - host: 203.0.113.7
         port: 443
+      - host: 2001:db8::1
+        port: 443
+      - host: 10.0.0.0/8
+        port: 5432
 ```
 
 ```yaml
@@ -1196,6 +1199,31 @@ policy:
       - host: metadata.example.com
         port: 80
 ```
+
+#### Daemon-wide policy
+
+A deployment can set `EGRESS_GLOBAL_POLICY_FILE` in the daemon environment to a YAML file with the same `default`, `allow`, and `deny` body as `policy.network` (without a wrapping `network:` key). The daemon reads it once at startup; an unreadable file, an unknown field, or an invalid value fails startup instead of silently running wider. In the shipped Compose deployment, put the file under the mounted data directory and point at it, for example `EGRESS_GLOBAL_POLICY_FILE=/data/work/global-network-policy.yaml`.
+
+```yaml
+default: deny-all
+allow:
+  - host: "*.example.com"
+    ports: [443, 80]
+  - host: 10.0.0.0/8
+    port: 5432
+deny:
+  - host: metadata.example.com
+    port: 80
+```
+
+The daemon policy is an **outer bound applied to every sandbox**, including agents that declare no `policy.network`. An agent policy can narrow it but never widen it:
+
+- daemon allowlist and agent allowlist: an agent allowance must be inside a daemon allowance; an uncovered agent allowance is refused rather than accepted as a widening.
+- daemon allowlist and agent denylist: the daemon's allowances remain the set, and the agent's denials subtract from it.
+- daemon denylist and agent allowlist: the agent's allowances become the set, and the daemon's denials still subtract.
+- daemon denylist and agent denylist: both denial sets apply; everything else is allowed.
+
+Denials from both layers always win, and engine-owned endpoints are still emitted first whenever the effective policy restricts. The effective policy reaches the same driver boundary and forward proxy as an agent-only declaration, and admission reports include it for agents that declared nothing. Changing the file requires a daemon restart; an agent edit still takes effect through the mechanisms described below.
 
 The default field selects the mode:
 
@@ -1215,21 +1243,21 @@ The declaration is validated, hashed, round-trips through the API, and compiles 
 - On every driver whose sandbox can reach the daemon — Docker, Kubernetes, and BoxLite included — **the engine enforces the declaration itself, in its own forward proxy**. The sandbox is given the proxy as its egress path (`HTTP_PROXY`, `HTTPS_PROXY`, `NO_PROXY`, and the lowercase forms, none of which a project can override), the proxy authenticates that sandbox, and it decides every connection: a `deny` entry is answered `403` with the rule that refused it, an `allow` entry is tunnelled in allowlist mode, and in denylist mode anything no denial matches is tunnelled under the allow default. Docker therefore carries a real strength even though the driver installs no filter of its own.
 - **The proxy refuses destinations the engine never forwards to, whatever the declaration says**: loopback, link-local (including the `169.254.169.254` metadata address), unspecified, and multicast addresses, plus the control-plane ports a cluster exposes — `2379` and `2380` (etcd), `6443` (API server), `10250` and `10255` (kubelet). Each refusal is recorded under its own engine rule (`engine.blocked-address`, `engine.blocked-port`) with the role it refused. For a restricting sandbox this closes a path it would otherwise find on its own; for any sandbox it is what keeps the proxy from becoming a new route into the daemon's services or the platform hosting it.
 - The proxy resolves the destination itself and dials the address it decided against, so a name cannot resolve to something else between the decision and the connection.
-- **The limits are stated rather than implied.** A process that ignores the proxy environment still dials the internet directly and is not decided, until transparent capture puts every connection through the proxy; `udp` allowances cannot be carried by a forward proxy at all; and an IPv6 destination is refused, because the canonical endpoint identifier cannot express one.
+- **The limits are stated rather than implied.** A process that ignores the proxy environment still dials the internet directly and is not decided, until transparent capture puts every connection through the proxy. The policy schema covers host and port; it has no UDP field, and the forward proxy carries TCP traffic only. IPv4 and IPv6 literals, CIDR destinations, and IPv6-only names are supported; the sandbox runtime network must also have IPv6 connectivity for an IPv6 destination to work.
 - When the sandbox has no address for the proxy (a deployment where the daemon is not reachable from inside the sandbox), the declaration cannot be applied and the sandbox is **reported as unenforced and still runs** — a restriction the platform cannot deliver must not become an availability failure. The daemon logs `declared network policy is not enforced` with the sandbox, driver, and reason, and the capability report states the same limit, so an unenforced declaration is never presented as a control. Set `EGRESS_UNENFORCEABLE_POLICY=refuse` to reject the sandbox in that case instead; the refusal happens while the sandbox is created (inside a run or a scheduler tick), so a deployment that requires the constraint to be real should treat the project as invalid rather than relying on that error.
 - A declaration with `default: allow-all` and no `deny` entries (including an `allow` list without `default: deny-all`) never restricts traffic, is never given the proxy environment, and never makes a sandbox fail to start. A `deny` entry is a restriction even under `allow-all`, so it is mediated and reported accordingly.
 
-**Admission reports this, so you do not have to guess.** `config` prints the declared policies (their allowances and denials, whether each is inspectable, and any declared address ranges) to stderr while keeping the canonical spec on stdout. `up` and `apply` answer the question that matters at admission time — which mechanism will actually apply each declaration — from the daemon's own view:
+**Admission reports this, so you do not have to guess.** `config` prints the declared policies (their allowances and denials, and any declared address ranges) to stderr while keeping the canonical spec on stdout. `up` and `apply` answer the question that matters at admission time — which mechanism will actually apply each declaration — from the daemon's own view:
 
 ```
 Network policy
   worker (driver docker)
     declared  default deny-all, 1 allowance(s), 0 denial(s)
-      allow api.github.com:443/https (inspectable, addresses 203.0.113.0/24)
+      allow api.github.com:443/* (addresses 203.0.113.0/24)
     enforced  forward_proxy (allowlist), the engine's forward proxy
 ```
 
-A declaration the engine will not enforce is printed as `enforced  no:` with the reason and what this deployment does about it (`EGRESS_UNENFORCEABLE_POLICY=warn` or `refuse`), and the same text is written to stderr as a warning. Agents that share one gap share one warning. Agents that declared no policy are not listed — undeclared is not deny, so there is nothing to report. `agent-compose up --json` carries the same account under `network_policies`.
+A declaration the engine will not enforce is printed as `enforced  no:` with the reason and what this deployment does about it (`EGRESS_UNENFORCEABLE_POLICY=warn` or `refuse`), and the same text is written to stderr as a warning. Agents that share one gap share one warning. Agents that declared no policy and have no daemon-wide policy are not listed — undeclared is not deny, so there is nothing to report. With `EGRESS_GLOBAL_POLICY_FILE` set, every agent is listed under that effective policy, including agents that declared nothing. `agent-compose up --json` carries the same account under `network_policies`.
 
 **When a declaration takes effect.** It depends on which mechanism applies it:
 

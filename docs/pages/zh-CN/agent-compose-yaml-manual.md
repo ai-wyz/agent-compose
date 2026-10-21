@@ -1110,11 +1110,11 @@ Daemon 还会记录每个 runtime 创建时所依据的出网策略。启动 san
 
 ### `policy.network`：出网策略声明
 
-`network` 用于声明该 Agent 的 sandbox 可以访问什么。**它是可选的，且“未声明”不等于拒绝**：未声明 `policy.network` 时，引擎行为与今天完全一致，出网不受限制。`default: deny-all` 是因为声明了这个块才生效的策略，**不是引擎的新默认值**（D3）。
+`network` 用于声明该 Agent 的 sandbox 可以访问什么。**它是可选的，且 Agent 未声明不等于拒绝**：未声明 `policy.network` 时，Agent 自身不增加限制。若 daemon 通过 `EGRESS_GLOBAL_POLICY_FILE` 配置了全局策略，该策略仍作为外层边界生效；没有全局策略时，出网行为与今天完全一致，不受限制。`default: deny-all` 是因为声明了这个块才生效的策略，**不是引擎的新默认值**（D3）。
 
 | 字段 | 类型 | 默认值 | 作用 |
 | --- | --- | --- | --- |
-| `default` | string | `allow-all` | 同时选择模式与未命中任何条目时的动作：`deny-all` 是白名单模式，`allow-all` 是黑名单模式。历史写法 `deny` 仍被接受并规范化为 `deny-all`。两种模式下 `deny` 项都优先于 `allow` 项。 |
+| `default` | string | `allow-all` | 同时选择模式与未命中任何条目时的动作：`deny-all` 是白名单模式，`allow-all` 是黑名单模式。不再接受 `deny`，请使用 `deny-all`。两种模式下 `deny` 项都优先于 `allow` 项。 |
 | `allow` | list | 空 | 显式放行项。只在白名单模式（`default: deny-all`）下起限制作用，或作为未被拒绝时的例外。 |
 | `deny` | list | 空 | 显式拒绝项。在两种模式下都起限制作用，并在所有放行项之前应用。 |
 
@@ -1122,17 +1122,16 @@ Daemon 还会记录每个 runtime 创建时所依据的出网策略。启动 san
 
 | 字段 | 类型 | 默认值 | 作用 |
 | --- | --- | --- | --- |
-| `host` | string | 必填 | 主机或主机模式。各段以 `.` 分隔，`*` 只匹配一段：`*.example.com` 匹配 `api.example.com`，但不匹配 `example.com`，也不匹配 `a.b.example.com`。不支持 IPv6 字面量。 |
+| `host` | string | 必填 | 主机名、按段匹配的主机模式、IPv4/IPv6 字面量，或 IPv4/IPv6 CIDR 范围。模式中各段以 `.` 分隔，`*` 只匹配一段：`*.example.com` 匹配 `api.example.com`，但不匹配 `example.com`，也不匹配 `a.b.example.com`。字面量和 CIDR 会被规范化；CIDR 的主机位会被忽略（`10.2.16.21/8` 变为 `10.0.0.0/8`）。 |
 | `port` | int | 与 `ports` 二选一 | 单个目标端口，取值 1–65535。 |
-| `ports` | int 列表 | 与 `port` 二选一 | 同一主机和协议上多个端口的简写，例如 `[80, 443]`。规范化会把每个端口展开成独立的规范条目；`port` 与 `ports` 不能同时使用。 |
-| `protocol` | string | `any` | `http`、`https`、`tcp`、`udp` 或 `any`。它只是匹配与报告标签，不是 L7 检查：当前没有 L7 中间层检查载荷，Microsandbox 还会把 `http`/`https` 归并为 TCP。普通“主机 + 端口”规则可以省略；只有 driver 能承载 UDP 时才使用 `udp`（正向代理不能承载 UDP）。 |
+| `ports` | int 列表 | 与 `port` 二选一 | 同一主机上多个端口的简写，例如 `[80, 443]`。规范化会把每个端口展开成独立的规范条目；`port` 与 `ports` 不能同时使用。 |
 | `allowed_ips` | list | 空 | 该条目的 `host` 允许解析到的 IP 地址或 CIDR 范围（可选）。名字解析出的每个地址都必须落在其中，否则该放行项不适用。裸地址就是它自身的单地址范围（`10.0.0.5` 即 `10.0.0.5/32`）；条目会被规范化并排序。它约束的是主机名，不是子网目标，也不能用在 `deny` 项上。 |
 
-每个 `deny` 项包含 `host`、`port` 或 `ports`，以及可选的 `protocol`，校验和规范化规则与放行项相同；它没有 `allowed_ips` 字段，因为拒绝的是目标本身。 `ports` 中的每个端口都会展开成独立的规范条目，因此 spec hash 与准入报告和逐条写 `port` 完全等价。
+每个 `deny` 项包含 `host`、`port` 或 `ports`，host 与端口的校验和规范化规则与放行项相同；它没有 `allowed_ips` 字段，因为拒绝的是目标本身。`ports` 中的每个端口都会展开成独立的规范条目，因此 spec hash 与准入报告和逐条写 `port` 完全等价。
 
 `allowed_ips` 的作用是把名字与地址绑定起来。没有它时，对 `api.example.com` 的放行会跟随该名字解析到的任何地方，因此被污染或被攻陷的解析结果可以把 sandbox 引到声明从未指定的地址。有了它，引擎只有在即将使用的地址落在声明范围内时才建立连接；如果一个名字同时解析出允许与不允许的地址，会被拒绝而不是被择优采用。引擎永不转发的地址——loopback、link-local（含元数据地址 `169.254.169.254`）、multicast，以及控制面端口 `2379`、`2380`、`6443`、`10250`、`10255`——无论 `allowed_ips` 怎么写都保持被拒绝。
 
-以 IPv4 地址命名的目标（`host: 10.0.0.5`）只由同一地址匹配，永远不会由模式匹配：通配符放行项无法到达声明未点名的地址。`host` 不接受 IPv6 字面量或 CIDR 范围；CIDR 目前只在 `allowed_ips` 中有意义，作为主机名的地址约束。当前没有“按子网放行/拒绝”的目标写法。
+以 IPv4 或 IPv6 地址命名的目标（`host: 10.0.0.5` 或 `host: 2001:db8::1`）只由同一地址匹配，永远不会由通配符模式匹配：通配符放行项无法到达声明未点名的地址。`host` 中的 CIDR 本身就是目标范围：正向代理会让其中的直接地址命中，对放行项要求名字解析出的所有地址都落在范围内，对拒绝项则任一地址落在范围内即可。精确地址的 `host` 不会自动覆盖解析到该地址的主机名；目标若是主机名，请使用 CIDR 或 `allowed_ips`。`allowed_ips` 仍是对主机名的约束，不是子网目标声明的替代品。
 
 ```yaml
 policy:
@@ -1147,6 +1146,10 @@ policy:
         port: 8080
       - host: 203.0.113.7
         port: 443
+      - host: 2001:db8::1
+        port: 443
+      - host: 10.0.0.0/8
+        port: 5432
 ```
 
 ```yaml
@@ -1158,6 +1161,31 @@ policy:
       - host: metadata.example.com
         port: 80
 ```
+
+#### Daemon 全局策略
+
+部署可以在 daemon 环境中设置 `EGRESS_GLOBAL_POLICY_FILE`，指向一个 YAML 文件。文件内容与 `policy.network` 的 `default`、`allow`、`deny` 相同（不需要外层 `network:` 键）。daemon 在启动时读取一次；文件不可读、包含未知字段或值非法都会导致启动失败，而不是悄悄放宽策略。在仓库提供的 Compose 部署中，可以把文件放在挂载的数据目录下并指向它，例如 `EGRESS_GLOBAL_POLICY_FILE=/data/work/global-network-policy.yaml`。
+
+```yaml
+default: deny-all
+allow:
+  - host: "*.example.com"
+    ports: [443, 80]
+  - host: 10.0.0.0/8
+    port: 5432
+deny:
+  - host: metadata.example.com
+    port: 80
+```
+
+daemon 策略是**应用到所有 sandbox 的外层边界**，包括没有声明 `policy.network` 的 Agent。Agent 策略只能在其中收窄，不能放宽：
+
+- daemon 白名单 + Agent 白名单：Agent 的放行项必须落在 daemon 的某个放行项内；落在边界外的放行项会被拒绝，而不是被当作合法放宽。
+- daemon 白名单 + Agent 黑名单：仍以 daemon 的放行集为准，Agent 的拒绝项从中扣除。
+- daemon 黑名单 + Agent 白名单：以 Agent 的放行集为准，daemon 的拒绝项仍然扣除。
+- daemon 黑名单 + Agent 黑名单：两边的拒绝集合并生效，其余放行。
+
+两层中的 `deny` 始终优先；只要最终策略具有限制性，引擎端点仍然排在最前。最终策略与仅 Agent 声明走同一个 driver 边界和正向代理；准入报告也会为没有声明策略的 Agent 列出全局策略。修改该文件需要重启 daemon；Agent 自身的修改仍按下面的机制生效。
 
 `default` 字段选择模式：
 
@@ -1177,21 +1205,21 @@ policy:
 - 对于**任何 sandbox 能访问到 daemon 的 driver**（包括 Docker、Kubernetes 与 BoxLite），引擎会在**自己的正向代理中执行该声明**。sandbox 会拿到代理作为它的出网路径（`HTTP_PROXY`、`HTTPS_PROXY`、`NO_PROXY` 及其小写形式，项目无法覆盖），代理会认证该 sandbox，并对每个连接做判定：命中 `deny` 条目的连接以 `403` 回复并附带拒绝它的规则；白名单模式下命中 `allow` 条目的连接被建立隧道；黑名单模式下未被任何 `deny` 命中的连接按默认放行建立隧道。因此在 Docker 上，即使 driver 自身不安装任何过滤器，声明也具有真实强度。
 - **无论声明怎么写，代理都拒绝引擎永不转发的目标**：loopback、link-local（含 `169.254.169.254` 元数据地址）、unspecified、multicast 地址，以及集群暴露的控制面端口——`2379`/`2380`（etcd）、`6443`（API server）、`10250`/`10255`（kubelet）。每条拒绝都记录在各自的引擎规则名下（`engine.blocked-address`、`engine.blocked-port`），并写明它拒绝的角色。对有限制性的 sandbox 来说，这堵住了它本来能自己找到的一条路；对任何 sandbox 来说，这是防止代理变成通往 daemon 自身服务或承载它的平台的新通道。
 - 代理自行解析目标，并连接它做过判定的那个地址，因此名字无法在判定与建连之间被解析成别的东西。
-- **限制是明说的，而不是暗示的。** 忽略代理环境变量的进程仍会直连外网、不被判定，直到透明捕获把所有连接都纳入代理；`udp` 放行项无法由正向代理承载；IPv6 目标会被拒绝，因为规范化端点标识无法表达它。
+- **限制是明说的，而不是暗示的。** 忽略代理环境变量的进程仍会直连外网、不被判定，直到透明捕获把所有连接都纳入代理。策略 schema 只描述主机和端口，没有 UDP 字段，正向代理只承载 TCP。IPv4/IPv6 字面量、CIDR 目标和仅 IPv6 的名称都受支持；IPv6 目标还需要 sandbox 运行时网络具备 IPv6 连通性。
 - 当 sandbox 没有任何可达的代理地址时（例如 daemon 在 sandbox 内部不可达的部署），声明无法被执行，此时会**报告该声明未被执行，sandbox 照常运行**——平台无法交付的限制不应该变成可用性故障。daemon 会记录一条 `declared network policy is not enforced` 日志，包含 sandbox、driver 与原因；能力报告也写明同样的限制，因此未执行的声明不会被呈现为一项控制。设置 `EGRESS_UNENFORCEABLE_POLICY=refuse` 可在这种情况下改为拒绝 sandbox；此时拒绝发生在创建 sandbox 时（一次运行中或一个 scheduler tick 中），因此要求约束必须为真的部署应把项目视为非法，而不是依赖这条报错。
 - `default: allow-all` 且没有 `deny` 项的声明（包括只写 `allow` 列表而不写 `default: deny-all`）不会限制流量，不会被注入代理环境变量，也不会导致 sandbox 启动失败。`allow-all` 下的 `deny` 项仍是限制，因此会进入代理并如实报告。
 
-**准入阶段会报告这些信息，你不必自行推断。**`config` 会把声明的策略（各条 allow 与 deny、是否可检视、以及声明的地址范围）打印到 stderr，同时保持 stdout 上的规范化 spec 不变。`up` 与 `apply` 则从 daemon 自身的视角回答准入阶段真正重要的问题——每条声明最终由哪种机制执行：
+**准入阶段会报告这些信息，你不必自行推断。**`config` 会把声明的策略（各条 allow 与 deny，以及声明的地址范围）打印到 stderr，同时保持 stdout 上的规范化 spec 不变。`up` 与 `apply` 则从 daemon 自身的视角回答准入阶段真正重要的问题——每条声明最终由哪种机制执行：
 
 ```
 Network policy
   worker (driver docker)
     declared  default deny-all, 1 allowance(s), 0 denial(s)
-      allow api.github.com:443/https (inspectable, addresses 203.0.113.0/24)
+      allow api.github.com:443/* (addresses 203.0.113.0/24)
     enforced  forward_proxy (allowlist), the engine's forward proxy
 ```
 
-引擎不会执行的声明会打印为 `enforced  no:`，并给出原因以及本部署的处理方式（`EGRESS_UNENFORCEABLE_POLICY=warn` 或 `refuse`），同样的文本会作为 warning 写入 stderr。存在同一缺口的多个 agent 共用一条 warning。未声明策略的 agent 不会出现在报告中——未声明不等于拒绝，因此没有需要报告的内容。`agent-compose up --json` 会在 `network_policies` 下给出同样的信息。
+引擎不会执行的声明会打印为 `enforced  no:`，并给出原因以及本部署的处理方式（`EGRESS_UNENFORCEABLE_POLICY=warn` 或 `refuse`），同样的文本会作为 warning 写入 stderr。存在同一缺口的多个 agent 共用一条 warning。既未声明策略、又没有 daemon 全局策略的 agent 不会出现在报告中——未声明不等于拒绝，因此没有需要报告的内容。设置了 `EGRESS_GLOBAL_POLICY_FILE` 后，所有 agent 都会按最终生效的全局策略列出，包括自身没有声明策略的 agent。`agent-compose up --json` 会在 `network_policies` 下给出同样的信息。
 
 **声明何时生效。** 取决于由哪个机制执行它：
 

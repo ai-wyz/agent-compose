@@ -112,10 +112,17 @@ The composition rule has to follow ownership, not convenience.
 The second case is not reachable by adding a key to `agent-compose.yml`. Today a
 project author can delete `network: default: deny-all` and re-apply; the only thing
 preventing an unenforced containment claim from being removed is that the project
-file itself is trusted. Genuine operator ownership needs a policy authority
-outside the project, its own persistence, an intersection rule, and provenance in
-the capability report so a decision can be attributed to a layer. That is a
-separate feature, not a schema variant.
+file itself is trusted.
+
+The daemon now implements the first slice of operator ownership:
+`EGRESS_GLOBAL_POLICY_FILE` is loaded outside the project, applies to every
+sandbox even when the agent declares nothing, and is intersected with the agent
+declaration using the same allowlist/denylist rules described above. An agent
+allowance that is not provably inside a daemon allowlist is refused rather than
+silently widening the boundary. What remains from the full feature is a daemon
+policy record with its own generation and RPC surface, and provenance in the
+capability report so a reader can attribute each effective entry to the daemon or
+the agent layer instead of only seeing the intersection.
 
 ## Platform-owned policy: the agreed direction
 

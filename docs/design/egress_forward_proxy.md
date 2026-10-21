@@ -101,8 +101,10 @@ The first slice is implemented and verified on the Docker driver:
   proxy.
 - The engine's own refusals were extended past the address set: the control-plane
   ports `2379`, `2380`, `6443`, `10250`, `10255` are refused under their own rule
-  with the role named, and an IPv6-only destination is refused because the
-  canonical endpoint identifier cannot express it.
+  with the role named. IPv4 and IPv6 answers are both carried through the
+  canonical endpoint identifier and dialed; a CIDR host matches direct addresses
+  and, for a name, is checked against every resolved answer for an allowance and
+  any resolved answer for a denial.
 - `allow[].allowed_ips` was added with it, because a name without an address
   constraint is exactly the indirection the proxy would otherwise make
   trustworthy. The constraint travels in the normalized spec, the proto messages
