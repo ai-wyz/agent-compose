@@ -115,7 +115,7 @@ func TestPlanMicrosandboxNetwork(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			plan, err := planMicrosandboxNetwork(test.policy)
+			plan, err := planMicrosandboxNetwork(test.policy, true)
 			if test.wantErr {
 				if err == nil {
 					t.Fatalf("planMicrosandboxNetwork() error = nil, want an error; plan = %+v", plan)
@@ -155,7 +155,7 @@ func TestPlanMicrosandboxDenyPermitsEngineEndpointsAndBlocksOthers(t *testing.T)
 		t.Fatalf("SandboxNetworkPolicyFromDeclaration() error = %v", err)
 	}
 
-	plan, err := planMicrosandboxNetwork(&policy)
+	plan, err := planMicrosandboxNetwork(&policy, true)
 	if err != nil {
 		t.Fatalf("planMicrosandboxNetwork() error = %v", err)
 	}
@@ -175,5 +175,21 @@ func TestPlanMicrosandboxDenyPermitsEngineEndpointsAndBlocksOthers(t *testing.T)
 	}
 	if planAllows(plan, "api.example.com", "8080", "tcp") {
 		t.Fatalf("undeclared port is permitted by plan %+v", plan)
+	}
+}
+
+// TestPlanMicrosandboxNetworkRebindProtectionFollowsTheSetting pins that the
+// daemon-level switch reaches the rendered plan instead of being hard-coded on.
+// The default itself lives in pkg/config; this function must pass through
+// whatever the caller resolved.
+func TestPlanMicrosandboxNetworkRebindProtectionFollowsTheSetting(t *testing.T) {
+	for _, enabled := range []bool{true, false} {
+		plan, err := planMicrosandboxNetwork(nil, enabled)
+		if err != nil {
+			t.Fatalf("planMicrosandboxNetwork(nil, %v) error = %v", enabled, err)
+		}
+		if plan.RebindProtection != enabled {
+			t.Fatalf("plan.RebindProtection = %v, want %v", plan.RebindProtection, enabled)
+		}
 	}
 }

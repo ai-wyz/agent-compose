@@ -1159,6 +1159,7 @@ policy:
 该声明会被校验、进入 hash、经 API 往返，并编译进引擎统一的出网判定模型。它是否会限制流量取决于 runtime driver；driver 的能力报告会如实说明它实际执行的强度，而不会把部分机制呈现为完整机制：
 
 - 在 Microsandbox 上，SDK 的网络配置会应用该声明：`allow` 项成为有序放行规则，在 `default: deny` 下，任何既不命中引擎规则也不命中 `allow` 项的流量都会被拒绝。其能力报告中带有 `strength=allowlist` 以及仍然存在的限制，并注明真实 KVM 验证的结果：拒绝默认值与放行规则成立（未放行的名称无法解析，地址放行只对该地址和端口生效），`allowed_ips` 约束不会被应用，被放行的 HTTPS 目标未能完成 TLS 握手，因此当沙箱能访问守护进程时由引擎的正向代理承载 HTTPS 放行。
+- Microsandbox 的 VM 内 DNS 代理会拒绝解析到私有地址的回答，这正是用于阻断 DNS rebinding 的机制。该保护默认开启，对所有 sandbox 生效（无论是否声明了网络策略）。如果部署中的 guest 必须解析内网名称（例如位于 `10/8` 地址段的内网服务），可设置 `MICROSANDBOX_DNS_REBIND_PROTECTION=false`；此时 daemon 会在启动 sandbox 时输出一条 warning，而该部署内的 guest 可能被任意可解析的域名指向内网地址。该开关没有按域名豁免的能力，作用范围是整个部署。
 - 对于**任何 sandbox 能访问到 daemon 的 driver**（包括 Docker、Kubernetes 与 BoxLite），引擎会在**自己的正向代理中执行该声明**。sandbox 会拿到代理作为它的出网路径（`HTTP_PROXY`、`HTTPS_PROXY`、`NO_PROXY` 及其小写形式，项目无法覆盖），代理会认证该 sandbox，并对每个连接做判定：命中 `allow` 条目的连接被建立隧道，其余一律以 `403` 回复并附带拒绝它的规则。因此在 Docker 上，即使 driver 自身不安装任何过滤器，声明也具有真实强度。
 - **无论声明怎么写，代理都拒绝引擎永不转发的目标**：loopback、link-local（含 `169.254.169.254` 元数据地址）、unspecified、multicast 地址，以及集群暴露的控制面端口——`2379`/`2380`（etcd）、`6443`（API server）、`10250`/`10255`（kubelet）。每条拒绝都记录在各自的引擎规则名下（`engine.blocked-address`、`engine.blocked-port`），并写明它拒绝的角色。对 `default: deny` 的 sandbox 来说，这堵住了它本来能自己找到的一条路；对任何 sandbox 来说，这是防止代理变成通往 daemon 自身服务或承载它的平台的新通道。
 - 代理自行解析目标，并连接它做过判定的那个地址，因此名字无法在判定与建连之间被解析成别的东西。

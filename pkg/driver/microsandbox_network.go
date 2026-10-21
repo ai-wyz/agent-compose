@@ -40,10 +40,11 @@ type microsandboxNetworkPlan struct {
 	Rules []microsandboxNetworkRule
 	// DenyDomains are exact domains the in-VM DNS proxy refuses to resolve.
 	DenyDomains []string
-	// RebindProtection keeps the in-VM DNS rebind protection enabled. It is
-	// always true: the engine previously disabled it to let guests resolve
-	// names that point at private addresses, which is exactly the rebinding
-	// behavior the protection exists to stop.
+	// RebindProtection keeps the in-VM DNS rebind protection enabled. The
+	// caller supplies the daemon-level setting: it defaults to true because a
+	// guest that can resolve a name pointing at a private address can be
+	// steered at internal services. Deployments that must resolve internal
+	// names disable it explicitly.
 	RebindProtection bool
 }
 
@@ -64,17 +65,18 @@ const (
 )
 
 // planMicrosandboxNetwork maps a policy onto the Microsandbox network model. A
-// nil policy renders the undeclared behavior: egress allowed, no rules, rebind
-// protection on. A declared allow-all policy renders the same, because its
-// allow entries are no-ops, while a declared deny policy renders a deny default
-// with the engine-owned endpoints first and the declared allowances after them.
+// nil policy renders the undeclared behavior: egress allowed, no rules, and
+// rebindProtection verbatim. A declared allow-all policy renders the same,
+// because its allow entries are no-ops, while a declared deny policy renders a
+// deny default with the engine-owned endpoints first and the declared
+// allowances after them.
 //
 // The function is pure and returns an error instead of dropping a host pattern
 // it cannot express, so a declaration the mapping cannot honor fails closed.
-func planMicrosandboxNetwork(policy *SandboxNetworkPolicy) (microsandboxNetworkPlan, error) {
+func planMicrosandboxNetwork(policy *SandboxNetworkPolicy, rebindProtection bool) (microsandboxNetworkPlan, error) {
 	plan := microsandboxNetworkPlan{
 		DefaultEgress:    microsandboxPlanDefaultEgressAllow,
-		RebindProtection: true,
+		RebindProtection: rebindProtection,
 	}
 	if policy == nil {
 		return plan, nil

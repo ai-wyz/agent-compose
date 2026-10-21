@@ -32,6 +32,10 @@ type microsandboxRuntime struct {
 	lifecycleHandles map[string]*microsandbox.Sandbox
 	createLocks      microsandboxKeyedLocks
 	baseBuilds       singleflight.Group
+
+	// warnRebindDisabled keeps a deployment that turned DNS rebind protection
+	// off from logging the same warning for every sandbox it starts.
+	warnRebindDisabled sync.Once
 }
 
 type microsandboxExecCollector struct {
@@ -1110,10 +1114,18 @@ func (r *microsandboxRuntime) createSandbox(ctx context.Context, session *Sandbo
 	env["STATE_ROOT"] = r.config.GuestStateRoot
 	env["RUNTIME_ROOT"] = r.config.GuestRuntimeRoot
 	env["JUPYTER_TOKEN"] = proxyState.Token
-	// The declared network policy decides egress; DNS rebind protection stays
-	// enabled because the SDK's default protection is the correct behavior and
-	// disabling it let a guest resolve names pointing at private addresses.
-	network, err := microsandboxSDKNetworkConfig(session.NetworkPolicy)
+	// The declared network policy decides egress. DNS rebind protection is a
+	// daemon-level setting that defaults to on; a deployment that turns it off
+	// is allowed to resolve names pointing at private addresses, so say so once
+	// in the log instead of leaving the reduced isolation implicit.
+	if !r.config.MicrosandboxDNSRebindProtection {
+		r.warnRebindDisabled.Do(func() {
+			slog.Warn("agent-compose microsandbox DNS rebind protection is disabled",
+				"setting", "MICROSANDBOX_DNS_REBIND_PROTECTION",
+				"consequence", "guests can resolve names that point at private addresses")
+		})
+	}
+	network, err := microsandboxSDKNetworkConfig(session.NetworkPolicy, r.config.MicrosandboxDNSRebindProtection)
 	if err != nil {
 		return nil, err
 	}
