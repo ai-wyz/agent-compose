@@ -268,7 +268,7 @@ func reportUndeclaredEnforcement(mode config.EgressUnenforceablePolicy, sandboxI
 	slog.Warn("declared network policy is not enforced",
 		"sandbox_id", sandboxID,
 		"driver", enforcement.Driver,
-		"declared_default", "deny",
+		"declared_default", "deny-all",
 		"egress", string(gap),
 		"reason", reason,
 	)
