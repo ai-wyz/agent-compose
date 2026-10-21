@@ -2452,11 +2452,8 @@ func (x *AgentNetworkPolicyReport) GetWarning() string {
 // DeclaredNetworkAllowance is one declared allowance as it appears in a report.
 type DeclaredNetworkAllowance struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// The canonical host:port/protocol pattern.
+	// The canonical host:port/* pattern.
 	Endpoint string `protobuf:"bytes,1,opt,name=endpoint,proto3" json:"endpoint,omitempty"`
-	// False for an opaque allowance (protocol any/tcp/udp), which must not be
-	// presented as a checked one.
-	Inspectable bool `protobuf:"varint,2,opt,name=inspectable,proto3" json:"inspectable,omitempty"`
 	// The canonical CIDR ranges the name may resolve to. Empty when the
 	// declaration left the addresses unconstrained.
 	AllowedIps    []string `protobuf:"bytes,3,rep,name=allowed_ips,json=allowedIps,proto3" json:"allowed_ips,omitempty"`
@@ -2501,13 +2498,6 @@ func (x *DeclaredNetworkAllowance) GetEndpoint() string {
 	return ""
 }
 
-func (x *DeclaredNetworkAllowance) GetInspectable() bool {
-	if x != nil {
-		return x.Inspectable
-	}
-	return false
-}
-
 func (x *DeclaredNetworkAllowance) GetAllowedIps() []string {
 	if x != nil {
 		return x.AllowedIps
@@ -2518,11 +2508,8 @@ func (x *DeclaredNetworkAllowance) GetAllowedIps() []string {
 // DeclaredNetworkDenial is one declared refusal as it appears in a report.
 type DeclaredNetworkDenial struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// The canonical host:port/protocol pattern.
-	Endpoint string `protobuf:"bytes,1,opt,name=endpoint,proto3" json:"endpoint,omitempty"`
-	// False for an opaque denial (protocol any/tcp/udp), which must not be
-	// presented as a checked one.
-	Inspectable   bool `protobuf:"varint,2,opt,name=inspectable,proto3" json:"inspectable,omitempty"`
+	// The canonical host:port/* pattern.
+	Endpoint      string `protobuf:"bytes,1,opt,name=endpoint,proto3" json:"endpoint,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -2562,13 +2549,6 @@ func (x *DeclaredNetworkDenial) GetEndpoint() string {
 		return x.Endpoint
 	}
 	return ""
-}
-
-func (x *DeclaredNetworkDenial) GetInspectable() bool {
-	if x != nil {
-		return x.Inspectable
-	}
-	return false
 }
 
 type PatchProjectRequest struct {
@@ -6720,9 +6700,8 @@ func (x *SandboxSpec) GetNetwork() *SandboxNetworkSpec {
 type SandboxNetworkSpec struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// "allow-all" (the value an omitted default normalizes to) or "deny-all".
-	// "deny-all" is allowlist mode; "allow-all" is denylist mode. The historical
-	// spelling "deny" is accepted by the YAML loader and normalized to "deny-all".
-	// A denial wins over an allowance in either mode.
+	// "deny-all" is allowlist mode; "allow-all" is denylist mode. A denial wins
+	// over an allowance in either mode.
 	Default string `protobuf:"bytes,1,opt,name=default,proto3" json:"default,omitempty"`
 	// Explicit allowances. Host patterns separate labels with "." and use "*"
 	// to match exactly one label.
@@ -6786,17 +6765,13 @@ func (x *SandboxNetworkSpec) GetDeny() []*SandboxNetworkDenySpec {
 
 type SandboxNetworkAllowSpec struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// Required. A host, or a host pattern whose labels are separated by ".".
+	// Required. A host name, a label-wise host pattern whose labels are separated
+	// by ".", an IPv4 or IPv6 literal, or an IPv4 or IPv6 CIDR range.
 	Host string `protobuf:"bytes,1,opt,name=host,proto3" json:"host,omitempty"`
 	// The concrete destination port. A YAML declaration may use a "ports" list
 	// instead; normalization expands it into one message per port, so the wire
 	// representation always carries a single port here.
 	Port int32 `protobuf:"varint,2,opt,name=port,proto3" json:"port,omitempty"`
-	// Optional. "any" (the value an omitted protocol normalizes to), "http",
-	// "https", "tcp", or "udp". This is a matching and reporting label, not an
-	// L7 payload check; no L7 mediator is implemented. Microsandbox maps http
-	// and https to TCP.
-	Protocol string `protobuf:"bytes,3,opt,name=protocol,proto3" json:"protocol,omitempty"`
 	// Optional. The IP addresses or CIDR ranges this entry's host may resolve to,
 	// canonicalized as CIDRs. Empty leaves the addresses unconstrained. It is
 	// part of the normalized spec the client hashes, so it must travel with the
@@ -6850,13 +6825,6 @@ func (x *SandboxNetworkAllowSpec) GetPort() int32 {
 	return 0
 }
 
-func (x *SandboxNetworkAllowSpec) GetProtocol() string {
-	if x != nil {
-		return x.Protocol
-	}
-	return ""
-}
-
 func (x *SandboxNetworkAllowSpec) GetAllowedIps() []string {
 	if x != nil {
 		return x.AllowedIps
@@ -6868,14 +6836,12 @@ func (x *SandboxNetworkAllowSpec) GetAllowedIps() []string {
 // denial refuses the destination itself.
 type SandboxNetworkDenySpec struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// Required. A host, or a host pattern whose labels are separated by ".".
+	// Required. A host name, a label-wise host pattern whose labels are separated
+	// by ".", an IPv4 or IPv6 literal, or an IPv4 or IPv6 CIDR range.
 	Host string `protobuf:"bytes,1,opt,name=host,proto3" json:"host,omitempty"`
 	// The concrete destination port. A YAML declaration may use a "ports" list
 	// instead; normalization expands it into one message per port.
-	Port int32 `protobuf:"varint,2,opt,name=port,proto3" json:"port,omitempty"`
-	// Optional. "any" (the value an omitted protocol normalizes to), "http",
-	// "https", "tcp", or "udp".
-	Protocol      string `protobuf:"bytes,3,opt,name=protocol,proto3" json:"protocol,omitempty"`
+	Port          int32 `protobuf:"varint,2,opt,name=port,proto3" json:"port,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -6922,13 +6888,6 @@ func (x *SandboxNetworkDenySpec) GetPort() int32 {
 		return x.Port
 	}
 	return 0
-}
-
-func (x *SandboxNetworkDenySpec) GetProtocol() string {
-	if x != nil {
-		return x.Protocol
-	}
-	return ""
 }
 
 type MCPServerSpec struct {
@@ -21754,15 +21713,13 @@ const file_agentcompose_v2_agentcompose_proto_rawDesc = "" +
 	"\tmechanism\x18\n" +
 	" \x01(\tR\tmechanism\x12\x1c\n" +
 	"\tunapplied\x18\v \x03(\tR\tunapplied\x12\x18\n" +
-	"\awarning\x18\f \x01(\tR\awarning\"y\n" +
+	"\awarning\x18\f \x01(\tR\awarning\"j\n" +
 	"\x18DeclaredNetworkAllowance\x12\x1a\n" +
-	"\bendpoint\x18\x01 \x01(\tR\bendpoint\x12 \n" +
-	"\vinspectable\x18\x02 \x01(\bR\vinspectable\x12\x1f\n" +
+	"\bendpoint\x18\x01 \x01(\tR\bendpoint\x12\x1f\n" +
 	"\vallowed_ips\x18\x03 \x03(\tR\n" +
-	"allowedIps\"U\n" +
+	"allowedIpsJ\x04\b\x02\x10\x03R\vinspectable\"F\n" +
 	"\x15DeclaredNetworkDenial\x12\x1a\n" +
-	"\bendpoint\x18\x01 \x01(\tR\bendpoint\x12 \n" +
-	"\vinspectable\x18\x02 \x01(\bR\vinspectable\"\xd4\x01\n" +
+	"\bendpoint\x18\x01 \x01(\tR\bendpointJ\x04\b\x02\x10\x03R\vinspectable\"\xd4\x01\n" +
 	"\x13PatchProjectRequest\x125\n" +
 	"\aproject\x18\x01 \x01(\v2\x1b.agentcompose.v2.ProjectRefR\aproject\x12;\n" +
 	"\x1aexpected_current_spec_hash\x18\x02 \x01(\tR\x17expectedCurrentSpecHash\x120\n" +
@@ -22154,17 +22111,15 @@ const file_agentcompose_v2_agentcompose_proto_rawDesc = "" +
 	"\x12SandboxNetworkSpec\x12\x18\n" +
 	"\adefault\x18\x01 \x01(\tR\adefault\x12>\n" +
 	"\x05allow\x18\x02 \x03(\v2(.agentcompose.v2.SandboxNetworkAllowSpecR\x05allow\x12;\n" +
-	"\x04deny\x18\x03 \x03(\v2'.agentcompose.v2.SandboxNetworkDenySpecR\x04deny\"~\n" +
+	"\x04deny\x18\x03 \x03(\v2'.agentcompose.v2.SandboxNetworkDenySpecR\x04deny\"r\n" +
 	"\x17SandboxNetworkAllowSpec\x12\x12\n" +
 	"\x04host\x18\x01 \x01(\tR\x04host\x12\x12\n" +
-	"\x04port\x18\x02 \x01(\x05R\x04port\x12\x1a\n" +
-	"\bprotocol\x18\x03 \x01(\tR\bprotocol\x12\x1f\n" +
+	"\x04port\x18\x02 \x01(\x05R\x04port\x12\x1f\n" +
 	"\vallowed_ips\x18\x04 \x03(\tR\n" +
-	"allowedIps\"\\\n" +
+	"allowedIpsJ\x04\b\x03\x10\x04R\bprotocol\"P\n" +
 	"\x16SandboxNetworkDenySpec\x12\x12\n" +
 	"\x04host\x18\x01 \x01(\tR\x04host\x12\x12\n" +
-	"\x04port\x18\x02 \x01(\x05R\x04port\x12\x1a\n" +
-	"\bprotocol\x18\x03 \x01(\tR\bprotocol\"\xfb\x01\n" +
+	"\x04port\x18\x02 \x01(\x05R\x04portJ\x04\b\x03\x10\x04R\bprotocol\"\xfb\x01\n" +
 	"\rMCPServerSpec\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x12\n" +
 	"\x04type\x18\x02 \x01(\tR\x04type\x12\x1c\n" +

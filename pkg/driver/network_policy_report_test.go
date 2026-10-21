@@ -41,8 +41,8 @@ func TestReportAgentNetworkPolicyAllowListWithoutDenyDoesNotRestrict(t *testing.
 	if report.Warning != "" {
 		t.Fatalf("Warning = %q, want empty: the declaration is delivered, it just does not restrict", report.Warning)
 	}
-	if len(report.Allow) != 1 || report.Allow[0].Endpoint != "api.example.com:443/https" || !report.Allow[0].Inspectable {
-		t.Fatalf("Allow = %+v, want the declared https allowance reported as inspectable", report.Allow)
+	if len(report.Allow) != 1 || report.Allow[0].Endpoint != "api.example.com:443/https" {
+		t.Fatalf("Allow = %+v, want the declared https allowance", report.Allow)
 	}
 }
 

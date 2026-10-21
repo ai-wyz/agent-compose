@@ -36,8 +36,10 @@ type AgentNetworkPolicyReport struct {
 	Agent string
 	// Driver is the resolved runtime driver the report was computed for.
 	Driver string
-	// Declared is false when the agent declared no network policy. Undeclared is
-	// not deny (D3): egress stays unrestricted and there is nothing to enforce.
+	// Declared is false when neither the agent nor the daemon declared a network
+	// policy. Undeclared is not deny (D3): egress stays unrestricted and there
+	// is nothing to enforce. A daemon-wide policy sets it true for every agent,
+	// including one that declared nothing itself.
 	Declared bool
 	// Restricts is false when the declaration cannot refuse anything: an allow
 	// default with no denial. It is true for a deny default or any declared

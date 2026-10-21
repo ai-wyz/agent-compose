@@ -19,13 +19,11 @@ func TestNetworkPolicyReportsToProtoCarriesTheDeclaredAccount(t *testing.T) {
 		Restricts: true,
 		Default:   egress.Deny,
 		Allow: []egress.DeclaredAllowance{{
-			Endpoint:    "api.github.com:443/https",
-			Inspectable: true,
-			AllowedIPs:  []string{"203.0.113.0/24"},
+			Endpoint:   "api.github.com:443/*",
+			AllowedIPs: []string{"203.0.113.0/24"},
 		}},
 		Deny: []egress.DeclaredDenial{{
-			Endpoint:    "metadata.example.com:80/tcp",
-			Inspectable: false,
+			Endpoint: "metadata.example.com:80/*",
 		}},
 		Mediated:    true,
 		Enforced:    true,
@@ -45,15 +43,15 @@ func TestNetworkPolicyReportsToProtoCarriesTheDeclaredAccount(t *testing.T) {
 		t.Fatalf("mapped report = %+v, want the deny-all mode and the proxy mechanism", report)
 	}
 	allow := report.GetAllow()
-	if len(allow) != 1 || allow[0].GetEndpoint() != "api.github.com:443/https" || !allow[0].GetInspectable() {
-		t.Fatalf("allow = %+v, want the inspectable https allowance", allow)
+	if len(allow) != 1 || allow[0].GetEndpoint() != "api.github.com:443/*" || allow[0].GetAllowedIps()[0] != "203.0.113.0/24" {
+		t.Fatalf("allow = %+v, want the declared allowance and its range", allow)
 	}
 	if got := allow[0].GetAllowedIps(); len(got) != 1 || got[0] != "203.0.113.0/24" {
 		t.Fatalf("allowed_ips = %v, want the declared range", got)
 	}
 	deny := report.GetDeny()
-	if len(deny) != 1 || deny[0].GetEndpoint() != "metadata.example.com:80/tcp" || deny[0].GetInspectable() {
-		t.Fatalf("deny = %+v, want the opaque declared denial", deny)
+	if len(deny) != 1 || deny[0].GetEndpoint() != "metadata.example.com:80/*" {
+		t.Fatalf("deny = %+v, want the declared denial", deny)
 	}
 }
 

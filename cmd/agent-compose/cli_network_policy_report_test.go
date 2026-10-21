@@ -15,15 +15,15 @@ import (
 func TestWriteComposeNetworkPolicyReportSeparatesDeclaredFromEnforced(t *testing.T) {
 	policies := composeNetworkPoliciesFromProto([]*agentcomposev2.AgentNetworkPolicyReport{
 		{
-			Agent: "worker", Driver: "docker", Declared: true, Restricts: true, Default: "deny",
+			Agent: "worker", Driver: "docker", Declared: true, Restricts: true, Default: "deny-all",
 			Allow: []*agentcomposev2.DeclaredNetworkAllowance{{
-				Endpoint: "api.github.com:443/https", Inspectable: true, AllowedIps: []string{"203.0.113.0/24"},
+				Endpoint: "api.github.com:443/https", AllowedIps: []string{"203.0.113.0/24"},
 			}},
 			Mediated: true, Enforced: true, Strength: "allowlist", Mechanism: "forward_proxy",
 		},
 		{
-			Agent: "builder", Driver: "k8s", Declared: true, Restricts: true, Default: "deny",
-			Allow:    []*agentcomposev2.DeclaredNetworkAllowance{{Endpoint: "api.github.com:443/https", Inspectable: true}},
+			Agent: "builder", Driver: "k8s", Declared: true, Restricts: true, Default: "deny-all",
+			Allow:    []*agentcomposev2.DeclaredNetworkAllowance{{Endpoint: "api.github.com:443/https"}},
 			Enforced: false, Strength: "none", Mechanism: "not_configured",
 			Unapplied: []string{"the declared allowances"},
 			Warning:   "the engine will not enforce this declaration on driver \"k8s\": no egress filter is installed by this driver",
@@ -31,13 +31,13 @@ func TestWriteComposeNetworkPolicyReportSeparatesDeclaredFromEnforced(t *testing
 		{
 			Agent: "helper", Driver: "docker", Declared: true, Default: "allow-all",
 			Allow: []*agentcomposev2.DeclaredNetworkAllowance{{
-				Endpoint: "telemetry.example.com:4317/tcp", Inspectable: false,
+				Endpoint: "telemetry.example.com:4317/tcp",
 			}},
 		},
 		{
 			Agent: "guard", Driver: "docker", Declared: true, Restricts: true, Default: "allow-all",
 			Deny: []*agentcomposev2.DeclaredNetworkDenial{{
-				Endpoint: "10.2.16.21:443/https", Inspectable: true,
+				Endpoint: "10.2.16.21:443/https",
 			}},
 			Mediated: true, Enforced: true, Strength: "denylist", Mechanism: "forward_proxy",
 		},
@@ -52,17 +52,17 @@ func TestWriteComposeNetworkPolicyReportSeparatesDeclaredFromEnforced(t *testing
 		"Network policy",
 		"worker (driver docker)",
 		"declared  default deny-all, 1 allowance(s)",
-		"api.github.com:443/https (inspectable, addresses 203.0.113.0/24)",
+		"api.github.com:443/https (addresses 203.0.113.0/24)",
 		"enforced  forward_proxy (allowlist), the engine's forward proxy",
 		"builder (driver k8s)",
 		"enforced  no: the engine will not enforce this declaration",
 		"partial   the declared allowances",
 		"helper (driver docker)",
 		"egress is not restricted, because an allow list needs default: deny-all and no denial matches",
-		"telemetry.example.com:4317/tcp (not inspectable)",
+		"telemetry.example.com:4317/tcp",
 		"guard (driver docker)",
 		"declared  default allow-all, 0 allowance(s), 1 denial(s)",
-		"deny  10.2.16.21:443/https (inspectable)",
+		"deny  10.2.16.21:443/https",
 		"enforced  forward_proxy (denylist), the engine's forward proxy",
 	} {
 		if !strings.Contains(text, want) {
@@ -78,9 +78,9 @@ func TestWriteComposeDeclaredNetworkPolicyNotesIgnoresAgentsWithoutAPolicy(t *te
 	spec := &compose.NormalizedProjectSpec{Agents: []compose.NormalizedAgentSpec{
 		{Name: "plain"},
 		{Name: "declared", Policy: &compose.NormalizedSandboxSpec{Network: &compose.NormalizedSandboxNetworkSpec{
-			Default: "deny",
+			Default: "deny-all",
 			Allow: []compose.NormalizedSandboxNetworkAllowSpec{{
-				Host: "api.github.com", Port: 443, Protocol: "https", AllowedIPs: []string{"203.0.113.0/24"},
+				Host: "api.github.com", Port: 443, AllowedIPs: []string{"203.0.113.0/24"},
 			}},
 		}}},
 	}}
@@ -92,7 +92,7 @@ func TestWriteComposeDeclaredNetworkPolicyNotesIgnoresAgentsWithoutAPolicy(t *te
 	if strings.Contains(text, "plain") {
 		t.Fatalf("notes = %q, want the undeclared agent omitted", text)
 	}
-	for _, want := range []string{"declared", "default deny-all, 1 allowance(s)", "inspectable, addresses 203.0.113.0/24"} {
+	for _, want := range []string{"declared", "default deny-all, 1 allowance(s)", "addresses 203.0.113.0/24"} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("notes = %q, want it to contain %q", text, want)
 		}

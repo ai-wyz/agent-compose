@@ -32,14 +32,12 @@ type composeNetworkPolicyOutput struct {
 }
 
 type composeNetworkAllowOutput struct {
-	Endpoint    string   `json:"endpoint"`
-	Inspectable bool     `json:"inspectable"`
-	AllowedIPs  []string `json:"allowed_ips,omitempty"`
+	Endpoint   string   `json:"endpoint"`
+	AllowedIPs []string `json:"allowed_ips,omitempty"`
 }
 
 type composeNetworkDenyOutput struct {
-	Endpoint    string `json:"endpoint"`
-	Inspectable bool   `json:"inspectable"`
+	Endpoint string `json:"endpoint"`
 }
 
 func composeNetworkPoliciesFromProto(reports []*agentcomposev2.AgentNetworkPolicyReport) []composeNetworkPolicyOutput {
@@ -51,16 +49,14 @@ func composeNetworkPoliciesFromProto(reports []*agentcomposev2.AgentNetworkPolic
 		allow := make([]composeNetworkAllowOutput, 0, len(report.GetAllow()))
 		for _, entry := range report.GetAllow() {
 			allow = append(allow, composeNetworkAllowOutput{
-				Endpoint:    entry.GetEndpoint(),
-				Inspectable: entry.GetInspectable(),
-				AllowedIPs:  append([]string(nil), entry.GetAllowedIps()...),
+				Endpoint:   entry.GetEndpoint(),
+				AllowedIPs: append([]string(nil), entry.GetAllowedIps()...),
 			})
 		}
 		deny := make([]composeNetworkDenyOutput, 0, len(report.GetDeny()))
 		for _, entry := range report.GetDeny() {
 			deny = append(deny, composeNetworkDenyOutput{
-				Endpoint:    entry.GetEndpoint(),
-				Inspectable: entry.GetInspectable(),
+				Endpoint: entry.GetEndpoint(),
 			})
 		}
 		policies = append(policies, composeNetworkPolicyOutput{
@@ -149,11 +145,7 @@ func writeComposeAgentNetworkPolicy(out io.Writer, policy composeNetworkPolicyOu
 		return err
 	}
 	for _, entry := range policy.Deny {
-		detail := "not inspectable"
-		if entry.Inspectable {
-			detail = "inspectable"
-		}
-		if _, err := fmt.Fprintf(out, "      deny  %s (%s)\n", entry.Endpoint, detail); err != nil {
+		if _, err := fmt.Fprintf(out, "      deny  %s\n", entry.Endpoint); err != nil {
 			return err
 		}
 	}
@@ -186,14 +178,13 @@ func writeComposeAgentNetworkPolicy(out io.Writer, policy composeNetworkPolicyOu
 
 func writeComposeNetworkAllowances(out io.Writer, allow []composeNetworkAllowOutput) error {
 	for _, entry := range allow {
-		detail := "not inspectable"
-		if entry.Inspectable {
-			detail = "inspectable"
-		}
 		if len(entry.AllowedIPs) > 0 {
-			detail += ", addresses " + strings.Join(entry.AllowedIPs, " ")
+			if _, err := fmt.Fprintf(out, "      allow %s (addresses %s)\n", entry.Endpoint, strings.Join(entry.AllowedIPs, " ")); err != nil {
+				return err
+			}
+			continue
 		}
-		if _, err := fmt.Fprintf(out, "      allow %s (%s)\n", entry.Endpoint, detail); err != nil {
+		if _, err := fmt.Fprintf(out, "      allow %s\n", entry.Endpoint); err != nil {
 			return err
 		}
 	}
@@ -274,23 +265,18 @@ func writeDeclaredNetworkPolicy(out io.Writer, agent string, report egress.Netwo
 		}
 	}
 	for _, entry := range report.Allow {
-		detail := "not inspectable"
-		if entry.Inspectable {
-			detail = "inspectable"
-		}
 		if len(entry.AllowedIPs) > 0 {
-			detail += ", addresses " + strings.Join(entry.AllowedIPs, " ")
+			if _, err := fmt.Fprintf(out, "    allow %s (addresses %s)\n", entry.Endpoint, strings.Join(entry.AllowedIPs, " ")); err != nil {
+				return err
+			}
+			continue
 		}
-		if _, err := fmt.Fprintf(out, "    allow %s (%s)\n", entry.Endpoint, detail); err != nil {
+		if _, err := fmt.Fprintf(out, "    allow %s\n", entry.Endpoint); err != nil {
 			return err
 		}
 	}
 	for _, entry := range report.Deny {
-		detail := "not inspectable"
-		if entry.Inspectable {
-			detail = "inspectable"
-		}
-		if _, err := fmt.Fprintf(out, "    deny  %s (%s)\n", entry.Endpoint, detail); err != nil {
+		if _, err := fmt.Fprintf(out, "    deny  %s\n", entry.Endpoint); err != nil {
 			return err
 		}
 	}

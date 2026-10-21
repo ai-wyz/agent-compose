@@ -507,11 +507,10 @@ message AgentNetworkPolicyReport {
 
 // DeclaredNetworkAllowance is one declared allowance as it appears in a report.
 message DeclaredNetworkAllowance {
-  // The canonical host:port/protocol pattern.
+  // The canonical host:port/* pattern.
   string endpoint = 1;
-  // False for an opaque allowance (protocol any/tcp/udp), which must not be
-  // presented as a checked one.
-  bool inspectable = 2;
+  reserved 2;
+  reserved "inspectable";
   // The canonical CIDR ranges the name may resolve to. Empty when the
   // declaration left the addresses unconstrained.
   repeated string allowed_ips = 3;
@@ -519,11 +518,10 @@ message DeclaredNetworkAllowance {
 
 // DeclaredNetworkDenial is one declared refusal as it appears in a report.
 message DeclaredNetworkDenial {
-  // The canonical host:port/protocol pattern.
+  // The canonical host:port/* pattern.
   string endpoint = 1;
-  // False for an opaque denial (protocol any/tcp/udp), which must not be
-  // presented as a checked one.
-  bool inspectable = 2;
+  reserved 2;
+  reserved "inspectable";
 }
 
 message PatchProjectRequest {
@@ -1015,9 +1013,8 @@ message SandboxSpec {
 // engine-side policy entries and never appear here.
 message SandboxNetworkSpec {
   // "allow-all" (the value an omitted default normalizes to) or "deny-all".
-  // "deny-all" is allowlist mode; "allow-all" is denylist mode. The historical
-  // spelling "deny" is accepted by the YAML loader and normalized to "deny-all".
-  // A denial wins over an allowance in either mode.
+  // "deny-all" is allowlist mode; "allow-all" is denylist mode. A denial wins
+  // over an allowance in either mode.
   string default = 1;
   // Explicit allowances. Host patterns separate labels with "." and use "*"
   // to match exactly one label.
@@ -1027,17 +1024,15 @@ message SandboxNetworkSpec {
 }
 
 message SandboxNetworkAllowSpec {
-  // Required. A host, or a host pattern whose labels are separated by ".".
+  // Required. A host name, a label-wise host pattern whose labels are separated
+  // by ".", an IPv4 or IPv6 literal, or an IPv4 or IPv6 CIDR range.
   string host = 1;
   // The concrete destination port. A YAML declaration may use a "ports" list
   // instead; normalization expands it into one message per port, so the wire
   // representation always carries a single port here.
   int32 port = 2;
-  // Optional. "any" (the value an omitted protocol normalizes to), "http",
-  // "https", "tcp", or "udp". This is a matching and reporting label, not an
-  // L7 payload check; no L7 mediator is implemented. Microsandbox maps http
-  // and https to TCP.
-  string protocol = 3;
+  reserved 3;
+  reserved "protocol";
   // Optional. The IP addresses or CIDR ranges this entry's host may resolve to,
   // canonicalized as CIDRs. Empty leaves the addresses unconstrained. It is
   // part of the normalized spec the client hashes, so it must travel with the
@@ -1048,14 +1043,14 @@ message SandboxNetworkAllowSpec {
 // SandboxNetworkDenySpec is one declared refusal. It has no allowed_ips: a
 // denial refuses the destination itself.
 message SandboxNetworkDenySpec {
-  // Required. A host, or a host pattern whose labels are separated by ".".
+  // Required. A host name, a label-wise host pattern whose labels are separated
+  // by ".", an IPv4 or IPv6 literal, or an IPv4 or IPv6 CIDR range.
   string host = 1;
   // The concrete destination port. A YAML declaration may use a "ports" list
   // instead; normalization expands it into one message per port.
   int32 port = 2;
-  // Optional. "any" (the value an omitted protocol normalizes to), "http",
-  // "https", "tcp", or "udp".
-  string protocol = 3;
+  reserved 3;
+  reserved "protocol";
 }
 
 message MCPServerSpec {

@@ -18,11 +18,8 @@ type AutoAllowedEndpoint struct {
 
 // DeclaredAllowance is one declared allowance as it appears in a report.
 type DeclaredAllowance struct {
-	// Endpoint is the canonical host:port/protocol pattern.
+	// Endpoint is the canonical host:port/* pattern.
 	Endpoint string
-	// Inspectable is false for an opaque allowance (protocol any/tcp/udp),
-	// which the report must not present as a checked one.
-	Inspectable bool
 	// AllowedIPs lists the canonical CIDR ranges this entry's name may resolve
 	// to. It is empty when the declaration left the addresses unconstrained,
 	// which the report must state rather than imply a constraint that is not
@@ -32,11 +29,8 @@ type DeclaredAllowance struct {
 
 // DeclaredDenial is one declared refusal as it appears in a report.
 type DeclaredDenial struct {
-	// Endpoint is the canonical host:port/protocol pattern.
+	// Endpoint is the canonical host:port/* pattern.
 	Endpoint string
-	// Inspectable is false for an opaque denial (protocol any/tcp/udp), which
-	// the report must not present as a checked one.
-	Inspectable bool
 }
 
 // NetworkPolicyReport is the auditable account of one sandbox's declared
@@ -78,28 +72,14 @@ func ReportNetworkPolicy(declaration *NetworkDeclaration, engine []EngineEndpoin
 	}
 	report := NetworkPolicyReport{Declared: true, Restricts: declaration.Restricts(), Default: declaration.Default}
 	for _, entry := range declaration.Allow {
-		protocol, err := ParseProtocol(string(entry.Protocol))
-		if err != nil {
-			// CompileNetworkPolicy already rejected this; the guard keeps the
-			// report from claiming inspectability it could not verify.
-			protocol = ProtocolAny
-		}
 		report.Allow = append(report.Allow, DeclaredAllowance{
-			Endpoint:    FormatEndpointPattern(entry.Host, entry.Port, entry.Protocol),
-			Inspectable: protocol.Inspectable(),
-			AllowedIPs:  append([]string(nil), entry.AllowedIPs...),
+			Endpoint:   FormatEndpointPattern(entry.Host, entry.Port, entry.Protocol),
+			AllowedIPs: append([]string(nil), entry.AllowedIPs...),
 		})
 	}
 	for _, entry := range declaration.Deny {
-		protocol, err := ParseProtocol(string(entry.Protocol))
-		if err != nil {
-			// CompileNetworkPolicy already rejected this; the guard keeps the
-			// report from claiming inspectability it could not verify.
-			protocol = ProtocolAny
-		}
 		report.Deny = append(report.Deny, DeclaredDenial{
-			Endpoint:    FormatEndpointPattern(entry.Host, entry.Port, entry.Protocol),
-			Inspectable: protocol.Inspectable(),
+			Endpoint: FormatEndpointPattern(entry.Host, entry.Port, entry.Protocol),
 		})
 	}
 	if !report.Restricts {
