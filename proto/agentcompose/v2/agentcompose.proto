@@ -477,19 +477,21 @@ message AgentNetworkPolicyReport {
   // False when the agent declared no policy. Such an agent is omitted from the
   // response, so a consumer can rely on this being true.
   bool declared = 3;
-  // False when the declaration cannot refuse anything, because an allow list
-  // only restricts under default: deny.
+  // False when the declaration cannot refuse anything: an allow default with
+  // no denial. True for a deny default or any declared denial.
   bool restricts = 4;
   // The action applied to traffic no declared entry matches.
   string default = 5;
   // The declared allowances, in declaration order.
   repeated DeclaredNetworkAllowance allow = 6;
+  // The declared denials, in declaration order.
+  repeated DeclaredNetworkDenial deny = 13;
   // Whether the engine's own forward proxy will apply the declaration instead
   // of the driver.
   bool mediated = 7;
   // Whether the effective mechanism applies the declaration.
   bool enforced = 8;
-  // The mechanism's strength: "none" or "allowlist".
+  // The mechanism's strength: "none", "allowlist", or "denylist".
   string strength = 9;
   // The concrete mechanism, for example "forward_proxy".
   string mechanism = 10;
@@ -512,6 +514,15 @@ message DeclaredNetworkAllowance {
   // The canonical CIDR ranges the name may resolve to. Empty when the
   // declaration left the addresses unconstrained.
   repeated string allowed_ips = 3;
+}
+
+// DeclaredNetworkDenial is one declared refusal as it appears in a report.
+message DeclaredNetworkDenial {
+  // The canonical host:port/protocol pattern.
+  string endpoint = 1;
+  // False for an opaque denial (protocol any/tcp/udp), which must not be
+  // presented as a checked one.
+  bool inspectable = 2;
 }
 
 message PatchProjectRequest {
@@ -1003,13 +1014,16 @@ message SandboxSpec {
 // engine-side policy entries and never appear here.
 message SandboxNetworkSpec {
   // "allow-all" (the value an omitted default normalizes to) or "deny".
+  // "deny" is allowlist mode; "allow-all" is denylist mode. A denial wins over
+  // an allowance in either mode.
   string default = 1;
   // Explicit allowances. Host patterns separate labels with "." and use "*"
   // to match exactly one label.
   repeated SandboxNetworkAllowSpec allow = 2;
+  // Explicit denials. They are applied before allowances, so a denial wins.
+  repeated SandboxNetworkDenySpec deny = 3;
 }
 
-// SandboxNetworkAllowSpec is one declared allowance.
 message SandboxNetworkAllowSpec {
   // Required. A host, or a host pattern whose labels are separated by ".".
   string host = 1;
@@ -1024,6 +1038,18 @@ message SandboxNetworkAllowSpec {
   // part of the normalized spec the client hashes, so it must travel with the
   // declaration rather than being rederived from the host.
   repeated string allowed_ips = 4;
+}
+
+// SandboxNetworkDenySpec is one declared refusal. It has no allowed_ips: a
+// denial refuses the destination itself.
+message SandboxNetworkDenySpec {
+  // Required. A host, or a host pattern whose labels are separated by ".".
+  string host = 1;
+  // Required. The concrete destination port.
+  int32 port = 2;
+  // Optional. "any" (the value an omitted protocol normalizes to), "http",
+  // "https", "tcp", or "udp".
+  string protocol = 3;
 }
 
 message MCPServerSpec {

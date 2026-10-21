@@ -46,6 +46,26 @@ func TestReportAgentNetworkPolicyAllowListWithoutDenyDoesNotRestrict(t *testing.
 	}
 }
 
+func TestReportAgentNetworkPolicyDenyListIsReported(t *testing.T) {
+	declaration := &egress.NetworkDeclaration{
+		Default: egress.Allow,
+		Deny:    []egress.DenyEntry{{Host: "metadata.example.com", Port: 80, Protocol: egress.ProtocolTCP}},
+	}
+	report, err := ReportAgentNetworkPolicy("worker", RuntimeDriverDocker, declaration, true, config.EgressUnenforceableWarn)
+	if err != nil {
+		t.Fatalf("ReportAgentNetworkPolicy() error = %v", err)
+	}
+	if !report.Declared || !report.Restricts || !report.Enforced || !report.Mediated {
+		t.Fatalf("report = %+v, want a mediated denylist policy that restricts and is enforced", report)
+	}
+	if report.Enforcement.Mechanism != mechanismForwardProxy || report.Enforcement.Strength != SandboxEgressStrengthDenyList {
+		t.Fatalf("Enforcement = %+v, want the forward proxy at denylist strength", report.Enforcement)
+	}
+	if len(report.Deny) != 1 || report.Deny[0].Endpoint != "metadata.example.com:80/tcp" {
+		t.Fatalf("Deny = %+v, want the declared denial reported", report.Deny)
+	}
+}
+
 func TestReportAgentNetworkPolicyMediatedDenyIsEnforced(t *testing.T) {
 	declaration := &egress.NetworkDeclaration{
 		Default: egress.Deny,

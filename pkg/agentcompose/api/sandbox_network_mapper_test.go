@@ -94,3 +94,49 @@ func mustNormalizeNetworkCompose(t *testing.T, raw string) *compose.NormalizedPr
 	}
 	return normalized
 }
+
+func TestSandboxSpecDenialsRoundTripThroughProto(t *testing.T) {
+	spec := mustNormalizeNetworkCompose(t, `
+name: network-proto
+agents:
+  worker:
+    provider: codex
+    policy:
+      network:
+        deny:
+          - host: 10.2.16.21
+            port: 443
+            protocol: https
+          - host: "*.blocked.example"
+            port: 80
+`)
+	mapped := SandboxSpecToProto(spec.Agents[0].PolicyBlock())
+	encoded, err := proto.Marshal(mapped)
+	if err != nil {
+		t.Fatalf("proto.Marshal returned error: %v", err)
+	}
+	decoded := &agentcomposev2.SandboxSpec{}
+	if err := proto.Unmarshal(encoded, decoded); err != nil {
+		t.Fatalf("proto.Unmarshal returned error: %v", err)
+	}
+	deny := decoded.GetNetwork().GetDeny()
+	if len(deny) != 2 {
+		t.Fatalf("deny = %+v, want two entries", deny)
+	}
+	if deny[0].GetHost() != "*.blocked.example" || deny[0].GetPort() != 80 || deny[0].GetProtocol() != "any" {
+		t.Fatalf("deny[0] = %+v, want the sorted *.blocked.example:80/any entry", deny[0])
+	}
+	if deny[1].GetHost() != "10.2.16.21" || deny[1].GetPort() != 443 || deny[1].GetProtocol() != "https" {
+		t.Fatalf("deny[1] = %+v, want 10.2.16.21:443/https", deny[1])
+	}
+
+	shape := policyYAMLShape(decoded)
+	network, ok := shape["network"].(map[string]any)
+	if !ok {
+		t.Fatalf("network shape = %#v, want a mapping", shape["network"])
+	}
+	rendered, ok := network["deny"].([]map[string]any)
+	if !ok || len(rendered) != 2 {
+		t.Fatalf("deny shape = %#v, want two entries", network["deny"])
+	}
+}

@@ -88,12 +88,14 @@ type NormalizedSandboxSpec struct {
 }
 
 // NormalizedSandboxNetworkSpec is the validated declaration. Default is always
-// present ("allow-all" or "deny"); Allow is sorted so the canonical JSON and
-// hash do not depend on declaration order, and a duplicate entry is rejected
+// present ("allow-all" or "deny") and selects the mode: "deny" is allowlist
+// mode, "allow-all" is denylist mode. Allow and Deny are sorted so the canonical
+// JSON and hash do not depend on declaration order, and duplicates are rejected
 // during normalization rather than silently collapsed.
 type NormalizedSandboxNetworkSpec struct {
 	Default string                              `yaml:"default" json:"default"`
 	Allow   []NormalizedSandboxNetworkAllowSpec `yaml:"allow,omitempty" json:"allow,omitempty"`
+	Deny    []NormalizedSandboxNetworkDenySpec  `yaml:"deny,omitempty" json:"deny,omitempty"`
 }
 
 // NormalizedSandboxNetworkAllowSpec is one validated allowance. Protocol is
@@ -107,6 +109,14 @@ type NormalizedSandboxNetworkAllowSpec struct {
 	// allowance to apply. It is empty when the declaration left the addresses
 	// unconstrained, and it participates in the canonical JSON and spec hash.
 	AllowedIPs []string `yaml:"allowed_ips,omitempty" json:"allowed_ips,omitempty"`
+}
+
+// NormalizedSandboxNetworkDenySpec is one validated refusal. It carries no
+// address constraint: a denial refuses the destination itself.
+type NormalizedSandboxNetworkDenySpec struct {
+	Host     string `yaml:"host" json:"host"`
+	Port     int    `yaml:"port" json:"port"`
+	Protocol string `yaml:"protocol" json:"protocol"`
 }
 
 type NormalizedMCPServerSpec struct {

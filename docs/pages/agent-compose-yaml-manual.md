@@ -1154,8 +1154,9 @@ For `remove`, the daemon first persists `release_pending`, then confirms a drive
 
 | Field | Type | Default | Purpose |
 | --- | --- | --- | --- |
-| `default` | string | `allow-all` | Action for traffic no `allow` entry matches: `allow-all` or `deny`. |
-| `allow` | list | Empty | Explicit allowances. |
+| `default` | string | `allow-all` | Selects the mode and the action for traffic no entry matches: `deny` is allowlist mode, `allow-all` is denylist mode. A `deny` entry wins over an `allow` entry in either mode. |
+| `allow` | list | Empty | Explicit allowances. They restrict only in allowlist mode (`default: deny`), or as exceptions when no denial matches. |
+| `deny` | list | Empty | Explicit denials. They restrict in either mode and are applied before every allowance. |
 
 Each `allow` entry:
 
@@ -1165,6 +1166,8 @@ Each `allow` entry:
 | `port` | int | Required | Destination port, 1–65535. |
 | `protocol` | string | `any` | `http`, `https`, `tcp`, `udp`, or `any`. Only `http` and `https` are modelled as inspectable at L7, and an opaque allowance (`any`, `tcp`, `udp`) is never presented as a checked one. No L7 mediator is implemented, so nothing inspects payloads today: the distinction is a modelling and reporting property, not a filter. |
 | `allowed_ips` | list | Empty | Optional IP addresses or CIDR ranges this entry's `host` may resolve to. Every address the name resolves to must fall inside one of them, or the allowance does not apply. A bare address is its own single-address range (`10.0.0.5` means `10.0.0.5/32`); entries are canonicalized and sorted. |
+
+Each `deny` entry has `host`, `port`, and the optional `protocol` with the same validation and normalization as an allowance; it has no `allowed_ips` field, because a denial refuses the destination itself.
 
 `allowed_ips` is what ties a name to an address. Without it an allowance for `api.example.com` follows that name wherever it resolves, so a poisoned or compromised answer could send the sandbox to an address the declaration never named. With it, the engine refuses the connection unless the address it is about to use is inside the declared range, and a name that resolves to both an allowed and a disallowed address is refused rather than picked opportunistically. An address the engine never forwards to at all — loopback, link-local including the metadata address `169.254.169.254`, multicast, and the control-plane ports `2379`, `2380`, `6443`, `10250`, `10255` — stays refused whatever `allowed_ips` says.
 
@@ -1188,30 +1191,46 @@ policy:
         protocol: https
 ```
 
+```yaml
+policy:
+  network:
+    deny:
+      - host: 10.2.16.21
+        port: 443
+        protocol: https
+      - host: metadata.example.com
+        port: 80
+```
+
+The default field selects the mode:
+
+- `default: deny` is **allowlist mode**: only an `allow` entry can permit a destination. A `deny` entry can carve an exception out of a broad allowance.
+- `default: allow-all` is **denylist mode**: every destination is permitted unless a `deny` entry matches it. An `allow` entry under `allow-all` cannot narrow anything, because the default already permits it.
+
 Hosts are lowercased, duplicate entries are rejected, and entries are sorted, so the normalized declaration enters canonical JSON and the spec hash independently of declaration order. Declaring `network` changes the hash; leaving it out keeps the hash byte-identical to a spec written before the field existed.
 
-An `allow` list restricts traffic only together with `default: deny`. Under the default `allow-all` the entries are still validated, stored, and hashed, but nothing is denied, so an `allow` list without `default: deny` leaves outbound access unrestricted.
+An `allow` list restricts traffic only together with `default: deny`. A `deny` list restricts under either default, and a denial wins over an allowance that matches the same destination. A declaration with `default: allow-all` and no `deny` entries cannot restrict traffic; its `allow` entries are still validated, stored, and hashed, but they leave outbound access unrestricted.
 
-When `default: deny` applies, the engine automatically allows its own endpoints: the runtime LLM facade and the telemetry endpoint a guest exports to. These are engine-side entries, not user declarations: a project cannot declare, remove, or override them, they are as narrow as the exact endpoint the engine hands the guest, and every request they allow is recorded against an engine rule (`engine.llm-facade`, `engine.telemetry`) so the exemption is visible rather than hidden.
+When the declaration restricts — a `deny` default or at least one `deny` entry — the engine automatically allows its own endpoints before every declared rule: the runtime LLM facade and the telemetry endpoint a guest exports to. These are engine-side entries, not user declarations: a project cannot declare, remove, or override them, they are as narrow as the exact endpoint the engine hands the guest, and every request they allow is recorded against an engine rule (`engine.llm-facade`, `engine.telemetry`) so the exemption is visible rather than hidden.
 
 The declaration is validated, hashed, round-trips through the API, and compiles into the engine's single egress decision model. Whether it restricts traffic depends on the runtime driver, and the driver's capability report states the strength it actually applies instead of presenting a partial mechanism as a complete one:
 
-- On Microsandbox the SDK network configuration applies the declaration: `allow` entries become ordered allow rules and traffic no engine rule or `allow` entry matches is denied under `default: deny`. Its capability report carries `strength=allowlist` plus the remaining limits, and it states what a real KVM run verified: the deny default and the allow rules hold (a name without an allowance fails to resolve, and an address allowance is refused on every other address and port), an `allowed_ips` constraint is not applied, an allowed HTTPS destination did not complete a TLS handshake, and the engine's forward proxy carries an HTTPS allowance when the sandbox can reach the daemon.
+- On Microsandbox the SDK network configuration applies the declaration: engine endpoints come first, then `deny` entries, then `allow` entries; traffic no rule matches falls through to the default. Its capability report carries `strength=allowlist` for allowlist mode or `strength=denylist` for denylist mode, plus the remaining limits, and it states what a real KVM run verified: the deny default and the allow rules hold (a name without an allowance fails to resolve, and an address allowance is refused on every other address and port), an `allowed_ips` constraint is not applied, an allowed HTTPS destination did not complete a TLS handshake, and the engine's forward proxy carries an HTTPS allowance when the sandbox can reach the daemon.
 - Microsandbox's in-VM DNS proxy refuses answers that point at private addresses, which is what stops DNS rebinding. The protection applies to every sandbox, with or without a declaration, and is on by default. A deployment whose guests must resolve internal names — an intranet service on a `10/8` address, for example — sets `MICROSANDBOX_DNS_REBIND_PROTECTION=false`; the daemon logs one warning when it then starts a sandbox, and those guests can be steered at internal addresses by any name they resolve. There is no per-domain exemption: the switch is global to the deployment.
-- On every driver whose sandbox can reach the daemon — Docker, Kubernetes, and BoxLite included — **the engine enforces the declaration itself, in its own forward proxy**. The sandbox is given the proxy as its egress path (`HTTP_PROXY`, `HTTPS_PROXY`, `NO_PROXY`, and the lowercase forms, none of which a project can override), the proxy authenticates that sandbox, and it decides every connection: an `allow` entry is tunnelled, anything else is answered `403` with the rule that refused it. Docker therefore carries a real strength even though the driver installs no filter of its own.
-- **The proxy refuses destinations the engine never forwards to, whatever the declaration says**: loopback, link-local (including the `169.254.169.254` metadata address), unspecified, and multicast addresses, plus the control-plane ports a cluster exposes — `2379` and `2380` (etcd), `6443` (API server), `10250` and `10255` (kubelet). Each refusal is recorded under its own engine rule (`engine.blocked-address`, `engine.blocked-port`) with the role it refused. For a `default: deny` sandbox this closes a path the sandbox would otherwise find on its own; for any sandbox it is what keeps the proxy from becoming a new route into the daemon's services or the platform hosting it.
+- On every driver whose sandbox can reach the daemon — Docker, Kubernetes, and BoxLite included — **the engine enforces the declaration itself, in its own forward proxy**. The sandbox is given the proxy as its egress path (`HTTP_PROXY`, `HTTPS_PROXY`, `NO_PROXY`, and the lowercase forms, none of which a project can override), the proxy authenticates that sandbox, and it decides every connection: a `deny` entry is answered `403` with the rule that refused it, an `allow` entry is tunnelled in allowlist mode, and in denylist mode anything no denial matches is tunnelled under the allow default. Docker therefore carries a real strength even though the driver installs no filter of its own.
+- **The proxy refuses destinations the engine never forwards to, whatever the declaration says**: loopback, link-local (including the `169.254.169.254` metadata address), unspecified, and multicast addresses, plus the control-plane ports a cluster exposes — `2379` and `2380` (etcd), `6443` (API server), `10250` and `10255` (kubelet). Each refusal is recorded under its own engine rule (`engine.blocked-address`, `engine.blocked-port`) with the role it refused. For a restricting sandbox this closes a path it would otherwise find on its own; for any sandbox it is what keeps the proxy from becoming a new route into the daemon's services or the platform hosting it.
 - The proxy resolves the destination itself and dials the address it decided against, so a name cannot resolve to something else between the decision and the connection.
 - **The limits are stated rather than implied.** A process that ignores the proxy environment still dials the internet directly and is not decided, until transparent capture puts every connection through the proxy; `udp` allowances cannot be carried by a forward proxy at all; and an IPv6 destination is refused, because the canonical endpoint identifier cannot express one.
 - When the sandbox has no address for the proxy (a deployment where the daemon is not reachable from inside the sandbox), the declaration cannot be applied and the sandbox is **reported as unenforced and still runs** — a restriction the platform cannot deliver must not become an availability failure. The daemon logs `declared network policy is not enforced` with the sandbox, driver, and reason, and the capability report states the same limit, so an unenforced declaration is never presented as a control. Set `EGRESS_UNENFORCEABLE_POLICY=refuse` to reject the sandbox in that case instead; the refusal happens while the sandbox is created (inside a run or a scheduler tick), so a deployment that requires the constraint to be real should treat the project as invalid rather than relying on that error.
-- A declaration whose default is `allow-all` (including an `allow` list without `default: deny`) never restricts traffic, is never given the proxy environment, and never makes a sandbox fail to start.
+- A declaration with `default: allow-all` and no `deny` entries (including an `allow` list without `default: deny`) never restricts traffic, is never given the proxy environment, and never makes a sandbox fail to start. A `deny` entry is a restriction even under `allow-all`, so it is mediated and reported accordingly.
 
-**Admission reports this, so you do not have to guess.** `config` prints the declared policies (their allowances, whether each is inspectable, and any declared address ranges) to stderr while keeping the canonical spec on stdout. `up` and `apply` answer the question that matters at admission time — which mechanism will actually apply each declaration — from the daemon's own view:
+**Admission reports this, so you do not have to guess.** `config` prints the declared policies (their allowances and denials, whether each is inspectable, and any declared address ranges) to stderr while keeping the canonical spec on stdout. `up` and `apply` answer the question that matters at admission time — which mechanism will actually apply each declaration — from the daemon's own view:
 
 ```
 Network policy
   worker (driver docker)
-    declared  default deny, 1 allowance(s)
-      - api.github.com:443/https (inspectable, addresses 203.0.113.0/24)
+    declared  default deny, 1 allowance(s), 0 denial(s)
+      allow api.github.com:443/https (inspectable, addresses 203.0.113.0/24)
     enforced  forward_proxy (allowlist), the engine's forward proxy
 ```
 
@@ -1221,7 +1240,7 @@ A declaration the engine will not enforce is printed as `enforced  no:` with the
 
 - The engine's forward proxy reads the declaration **on every request**, so on a proxied sandbox an edit takes effect immediately, without recreating or restarting anything. A credential is issued once per sandbox creation; the policy behind it is re-read each time.
 - A driver that applies the network configuration itself (Microsandbox) reads it when it creates the sandbox: a sandbox created after an edit uses the new declaration, while an existing sandbox that is only resumed keeps the configuration it was created with. With the default `stopped_runtime_policy: remove` the runtime is discarded on stop, so the next start creates one and picks the declaration up; a retained runtime does not.
-- On a sandbox with no reachable proxy and a current `default: deny` declaration, the unenforced report (or the `EGRESS_UNENFORCEABLE_POLICY=refuse` refusal) applies at the next start.
+- On a sandbox with no reachable proxy and a current restricting declaration, the unenforced report (or the `EGRESS_UNENFORCEABLE_POLICY=refuse` refusal) applies at the next start.
 
 `stopped_runtime_policy` does not share this timing: it is snapshotted onto the sandbox when the sandbox is created, so editing it affects only new sandboxes.
 

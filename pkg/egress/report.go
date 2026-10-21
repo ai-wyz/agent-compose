@@ -30,6 +30,15 @@ type DeclaredAllowance struct {
 	AllowedIPs []string
 }
 
+// DeclaredDenial is one declared refusal as it appears in a report.
+type DeclaredDenial struct {
+	// Endpoint is the canonical host:port/protocol pattern.
+	Endpoint string
+	// Inspectable is false for an opaque denial (protocol any/tcp/udp), which
+	// the report must not present as a checked one.
+	Inspectable bool
+}
+
 // NetworkPolicyReport is the auditable account of one sandbox's declared
 // network policy. A caller renders it into a capability or audit surface; it
 // is derived from the same declaration the decision policy is compiled from, so
@@ -38,10 +47,16 @@ type NetworkPolicyReport struct {
 	// Declared is false when the sandbox declared no policy. In that case the
 	// engine is unrestricted and there is no exemption to report.
 	Declared bool
+	// Restricts reports whether the declaration can refuse a destination: a
+	// deny default or at least one denial. An allow default with no denial does
+	// not restrict anything.
+	Restricts bool
 	// Default is the action applied to traffic no entry matches.
 	Default Action
 	// Allow lists the declared allowances.
 	Allow []DeclaredAllowance
+	// Deny lists the declared refusals.
+	Deny []DeclaredDenial
 	// EngineAutoAllowed lists the engine-owned endpoints that the compiled
 	// policy allows ahead of every declared entry. It is empty unless the
 	// default is deny, because that is the only case where they exist as an
@@ -61,7 +76,7 @@ func ReportNetworkPolicy(declaration *NetworkDeclaration, engine []EngineEndpoin
 	if _, err := CompileNetworkPolicy(*declaration, engine); err != nil {
 		return NetworkPolicyReport{}, err
 	}
-	report := NetworkPolicyReport{Declared: true, Default: declaration.Default}
+	report := NetworkPolicyReport{Declared: true, Restricts: declaration.Restricts(), Default: declaration.Default}
 	for _, entry := range declaration.Allow {
 		protocol, err := ParseProtocol(string(entry.Protocol))
 		if err != nil {
@@ -75,7 +90,19 @@ func ReportNetworkPolicy(declaration *NetworkDeclaration, engine []EngineEndpoin
 			AllowedIPs:  append([]string(nil), entry.AllowedIPs...),
 		})
 	}
-	if declaration.Default != Deny {
+	for _, entry := range declaration.Deny {
+		protocol, err := ParseProtocol(string(entry.Protocol))
+		if err != nil {
+			// CompileNetworkPolicy already rejected this; the guard keeps the
+			// report from claiming inspectability it could not verify.
+			protocol = ProtocolAny
+		}
+		report.Deny = append(report.Deny, DeclaredDenial{
+			Endpoint:    FormatEndpointPattern(entry.Host, entry.Port, entry.Protocol),
+			Inspectable: protocol.Inspectable(),
+		})
+	}
+	if !report.Restricts {
 		return report, nil
 	}
 	// EngineAllowRules collapses endpoints that render to the same pattern, so

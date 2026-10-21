@@ -590,3 +590,173 @@ func TestNormalizeSandboxNetworkAllowBoundsTheList(t *testing.T) {
 		t.Fatal("normalizeSandboxNetworkAllow accepted more allowed addresses than the bound")
 	}
 }
+
+func TestNormalizeSandboxNetworkDenyList(t *testing.T) {
+	tests := []struct {
+		name    string
+		network string
+		want    *NormalizedSandboxNetworkSpec
+	}{
+		{
+			name: "allow default with denials is denylist mode",
+			network: `network:
+        deny:
+          - host: Metadata.Example.com
+            port: 80
+          - host: 10.2.16.21
+            port: 443
+            protocol: https`,
+			want: &NormalizedSandboxNetworkSpec{
+				Default: SandboxNetworkDefaultAllowAll,
+				Deny: []NormalizedSandboxNetworkDenySpec{
+					{Host: "10.2.16.21", Port: 443, Protocol: "https"},
+					{Host: "metadata.example.com", Port: 80, Protocol: "any"},
+				},
+			},
+		},
+		{
+			name: "deny default can carry both allowances and denials",
+			network: `network:
+        default: deny
+        allow:
+          - host: "*.example.com"
+            port: 443
+            protocol: https
+        deny:
+          - host: bad.example.com
+            port: 443
+            protocol: https`,
+			want: &NormalizedSandboxNetworkSpec{
+				Default: SandboxNetworkDefaultDeny,
+				Allow: []NormalizedSandboxNetworkAllowSpec{
+					{Host: "*.example.com", Port: 443, Protocol: "https"},
+				},
+				Deny: []NormalizedSandboxNetworkDenySpec{
+					{Host: "bad.example.com", Port: 443, Protocol: "https"},
+				},
+			},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			normalized := mustNormalizeCompose(t, "name: network\nagents:\n  worker:\n    provider: codex\n    policy:\n      "+tc.network+"\n", nil)
+			got := normalized.Agents[0].PolicyBlock().Network
+			if !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("network = %+v, want %+v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestNormalizeSandboxNetworkRejectsInvalidDenials(t *testing.T) {
+	tests := []struct {
+		name    string
+		body    string
+		wantErr string
+	}{
+		{
+			name:    "unknown field under deny entry",
+			body:    "deny:\n          - host: api.example.com\n            port: 443\n            allowed_ips: [10.0.0.0/8]",
+			wantErr: "unknown field",
+		},
+		{
+			name:    "missing host",
+			body:    "deny:\n          - port: 443",
+			wantErr: "host must not be empty",
+		},
+		{
+			name:    "port out of range",
+			body:    "deny:\n          - host: api.example.com\n            port: 0",
+			wantErr: "port must be between 1 and 65535",
+		},
+		{
+			name:    "duplicate deny entry",
+			body:    "deny:\n          - host: api.example.com\n            port: 443\n          - host: API.example.com\n            port: 443\n            protocol: any",
+			wantErr: "duplicate deny entry",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			raw := "name: network\nagents:\n  worker:\n    provider: codex\n    policy:\n      network:\n        " + tc.body + "\n"
+			spec, err := Parse([]byte(raw))
+			if err == nil {
+				_, err = Normalize(spec, NormalizeOptions{})
+			}
+			if err == nil {
+				t.Fatalf("declaration was accepted, want error %q", tc.wantErr)
+			}
+			if !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("error = %q, want it to contain %q", err.Error(), tc.wantErr)
+			}
+		})
+	}
+}
+
+func TestSandboxNetworkEgressDeclarationCarriesDenials(t *testing.T) {
+	spec := mustNormalizeCompose(t, `
+name: network-egress-deny
+agents:
+  worker:
+    provider: codex
+    policy:
+      network:
+        deny:
+          - host: metadata.example.com
+            port: 80
+            protocol: tcp
+`, nil)
+	declaration, err := spec.Agents[0].PolicyBlock().Network.EgressDeclaration()
+	if err != nil {
+		t.Fatalf("EgressDeclaration returned error: %v", err)
+	}
+	if declaration.Default != egress.Allow {
+		t.Fatalf("default = %q, want %q", declaration.Default, egress.Allow)
+	}
+	if !declaration.Restricts() {
+		t.Fatal("declaration with a denial does not restrict")
+	}
+	want := []egress.DenyEntry{{Host: "metadata.example.com", Port: 80, Protocol: egress.ProtocolTCP}}
+	if !reflect.DeepEqual(declaration.Deny, want) {
+		t.Fatalf("deny = %+v, want %+v", declaration.Deny, want)
+	}
+}
+
+func TestSandboxNetworkDenyChangesSpecHash(t *testing.T) {
+	base := mustNormalizeCompose(t, `
+name: network-hash-denylist
+agents:
+  worker:
+    provider: codex
+    policy:
+      network: {}
+`, nil)
+	withDeny := mustNormalizeCompose(t, `
+name: network-hash-denylist
+agents:
+  worker:
+    provider: codex
+    policy:
+      network:
+        deny:
+          - host: metadata.example.com
+            port: 80
+`, nil)
+	if mustHash(t, base) == mustHash(t, withDeny) {
+		t.Fatal("a deny entry did not change the spec hash")
+	}
+}
+
+func TestCloneNormalizedSandboxSpecCopiesDenials(t *testing.T) {
+	original := &NormalizedSandboxSpec{Network: &NormalizedSandboxNetworkSpec{
+		Default: SandboxNetworkDefaultAllowAll,
+		Deny:    []NormalizedSandboxNetworkDenySpec{{Host: "metadata.example.com", Port: 80, Protocol: "any"}},
+	}}
+	cloned := cloneNormalizedSandboxSpec(original)
+	if cloned.Network == original.Network {
+		t.Fatal("clone shared the network pointer")
+	}
+	cloned.Network.Deny[0].Host = "changed.example.com"
+	if original.Network.Deny[0].Host != "metadata.example.com" {
+		t.Fatalf("mutating the clone changed the original: %+v", original.Network.Deny)
+	}
+}

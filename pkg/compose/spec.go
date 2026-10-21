@@ -131,10 +131,16 @@ type SandboxSpec struct {
 // sandboxes. Declaring the block is what makes the policy exist; omitting it
 // leaves outbound access exactly as it is today.
 type SandboxNetworkSpec struct {
-	// Default is "allow-all" (the value an omitted default normalizes to) or
-	// "deny". It applies only because this block was declared.
+	// Default selects the mode and the action for traffic no entry matches. It
+	// is "allow-all" (the value an omitted default normalizes to) or "deny".
+	//
+	// "deny" is allowlist mode: only an Allow entry can permit a destination.
+	// "allow-all" is denylist mode: every destination is permitted unless a Deny
+	// entry refuses it. A Deny entry wins over an Allow entry in either mode, so
+	// allowlist mode can carve exceptions out of a broad allowance.
 	Default string                    `yaml:"default,omitempty" json:"default,omitempty"`
 	Allow   []SandboxNetworkAllowSpec `yaml:"allow,omitempty" json:"allow,omitempty"`
+	Deny    []SandboxNetworkDenySpec  `yaml:"deny,omitempty" json:"deny,omitempty"`
 }
 
 // SandboxNetworkAllowSpec is one declared allowance. Host may be a host
@@ -150,6 +156,16 @@ type SandboxNetworkAllowSpec struct {
 	// is not covered by this allowance, so a name the declaration trusts cannot
 	// be pointed at an address it does not.
 	AllowedIPs []string `yaml:"allowed_ips,omitempty" json:"allowed_ips,omitempty"`
+}
+
+// SandboxNetworkDenySpec is one declared refusal. It has the same destination
+// shape as an allowance but no AllowedIPs field: a denial refuses the
+// destination, and constraining it to selected addresses would turn a deny
+// entry into something the declaration cannot express unambiguously.
+type SandboxNetworkDenySpec struct {
+	Host     string `yaml:"host,omitempty" json:"host,omitempty"`
+	Port     int    `yaml:"port,omitempty" json:"port,omitempty"`
+	Protocol string `yaml:"protocol,omitempty" json:"protocol,omitempty"`
 }
 
 type AgentMCPEntriesSpec []AgentMCPEntrySpec
@@ -660,6 +676,7 @@ func validateSandboxNetwork(node *yaml.Node, path string) error {
 	return validateMapping(node, path, map[string]nodeValidator{
 		"default": validateScalar,
 		"allow":   validateSandboxNetworkAllowList,
+		"deny":    validateSandboxNetworkDenyList,
 	})
 }
 
@@ -674,6 +691,23 @@ func validateSandboxNetworkAllowList(node *yaml.Node, path string) error {
 			"port":        validateInt,
 			"protocol":    validateScalar,
 			"allowed_ips": validateStringList,
+		}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validateSandboxNetworkDenyList(node *yaml.Node, path string) error {
+	if err := requireKind(node, path, yaml.SequenceNode, "sequence"); err != nil {
+		return err
+	}
+	for index, item := range node.Content {
+		itemPath := fmt.Sprintf("%s[%d]", path, index)
+		if err := validateMapping(item, itemPath, map[string]nodeValidator{
+			"host":     validateScalar,
+			"port":     validateInt,
+			"protocol": validateScalar,
 		}); err != nil {
 			return err
 		}

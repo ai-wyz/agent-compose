@@ -89,6 +89,10 @@ func TestEnsureSandboxCarriesDeclaredNetworkPolicyToDriverBoundary(t *testing.T)
 		Allow:   []egress.AllowEntry{{Host: "api.github.com", Port: 443, Protocol: egress.ProtocolHTTPS}},
 	}
 	permissiveDeclaration := &egress.NetworkDeclaration{Default: egress.Allow}
+	denyListDeclaration := &egress.NetworkDeclaration{
+		Default: egress.Allow,
+		Deny:    []egress.DenyEntry{{Host: "metadata.example.com", Port: 80, Protocol: egress.ProtocolTCP}},
+	}
 
 	tests := []struct {
 		name           string
@@ -114,6 +118,13 @@ func TestEnsureSandboxCarriesDeclaredNetworkPolicyToDriverBoundary(t *testing.T)
 			resolver:      stubNetworkDeclarationResolver{declaration: permissiveDeclaration},
 			wantPolicy:    true,
 			wantDenyByDef: false,
+		},
+		{
+			name:           "declared denylist policy carries its denial to the driver",
+			resolver:       stubNetworkDeclarationResolver{declaration: denyListDeclaration},
+			wantPolicy:     true,
+			wantDenyByDef:  false,
+			wantEndpointOK: true,
 		},
 	}
 

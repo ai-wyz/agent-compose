@@ -203,6 +203,17 @@ func policyYAMLShape(policy *agentcomposev2.SandboxSpec) map[string]any {
 		}
 		networkShape["allow"] = allow
 	}
+	if entries := network.GetDeny(); len(entries) > 0 {
+		deny := make([]map[string]any, 0, len(entries))
+		for _, entry := range entries {
+			deny = append(deny, map[string]any{
+				"host":     entry.GetHost(),
+				"port":     entry.GetPort(),
+				"protocol": entry.GetProtocol(),
+			})
+		}
+		networkShape["deny"] = deny
+	}
 	shape["network"] = networkShape
 	return shape
 }

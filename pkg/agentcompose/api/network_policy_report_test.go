@@ -23,6 +23,10 @@ func TestNetworkPolicyReportsToProtoCarriesTheDeclaredAccount(t *testing.T) {
 			Inspectable: true,
 			AllowedIPs:  []string{"203.0.113.0/24"},
 		}},
+		Deny: []egress.DeclaredDenial{{
+			Endpoint:    "metadata.example.com:80/tcp",
+			Inspectable: false,
+		}},
 		Mediated:    true,
 		Enforced:    true,
 		Enforcement: driverpkg.SandboxEgressForwardProxyEnforcement("docker"),
@@ -46,6 +50,10 @@ func TestNetworkPolicyReportsToProtoCarriesTheDeclaredAccount(t *testing.T) {
 	}
 	if got := allow[0].GetAllowedIps(); len(got) != 1 || got[0] != "203.0.113.0/24" {
 		t.Fatalf("allowed_ips = %v, want the declared range", got)
+	}
+	deny := report.GetDeny()
+	if len(deny) != 1 || deny[0].GetEndpoint() != "metadata.example.com:80/tcp" || deny[0].GetInspectable() {
+		t.Fatalf("deny = %+v, want the opaque declared denial", deny)
 	}
 }
 

@@ -101,6 +101,13 @@ func SandboxSpecToProto(sandbox *compose.NormalizedSandboxSpec) *agentcomposev2.
 			AllowedIps: append([]string(nil), entry.AllowedIPs...),
 		})
 	}
+	for _, entry := range sandbox.Network.Deny {
+		network.Deny = append(network.Deny, &agentcomposev2.SandboxNetworkDenySpec{
+			Host:     entry.Host,
+			Port:     int32(entry.Port),
+			Protocol: entry.Protocol,
+		})
+	}
 	result.Network = network
 	return result
 }

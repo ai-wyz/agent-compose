@@ -13,15 +13,12 @@ import (
 // decision engine: enforcement belongs to the Microsandbox runtime, and the
 // engine's own allow/deny decision model lives in pkg/egress.
 func planAllows(plan microsandboxNetworkPlan, destination, port, protocol string) bool {
-	if plan.DefaultEgress != microsandboxPlanDefaultEgressDeny {
-		return plan.DefaultEgress == microsandboxPlanDefaultEgressAllow
-	}
 	for _, rule := range plan.Rules {
-		if rule.Action == "allow" && rule.Destination == destination && rule.Port == port && rule.Protocol == protocol {
-			return true
+		if rule.Destination == destination && rule.Port == port && rule.Protocol == protocol {
+			return rule.Action == "allow"
 		}
 	}
-	return false
+	return plan.DefaultEgress == microsandboxPlanDefaultEgressAllow
 }
 
 func TestPlanMicrosandboxNetwork(t *testing.T) {
@@ -104,6 +101,38 @@ func TestPlanMicrosandboxNetwork(t *testing.T) {
 			},
 		},
 		{
+			name: "allow default with a denial renders the denial ahead of the open default",
+			policy: &SandboxNetworkPolicy{
+				Default: egress.Allow,
+				Deny:    []egress.DenyEntry{{Host: "metadata.example.com", Port: 80, Protocol: egress.ProtocolTCP}},
+			},
+			want: microsandboxNetworkPlan{
+				DefaultEgress: microsandboxPlanDefaultEgressAllow,
+				Rules: []microsandboxNetworkRule{
+					{Action: "deny", Destination: "metadata.example.com", Port: "80", Protocol: "tcp"},
+				},
+				RebindProtection: true,
+			},
+		},
+		{
+			name: "allowlist with a denial keeps engine endpoints first and denials before allowances",
+			policy: &SandboxNetworkPolicy{
+				Default:         egress.Deny,
+				Allow:           []egress.AllowEntry{declaredAllow},
+				Deny:            []egress.DenyEntry{{Host: "api.example.com", Port: 443, Protocol: egress.ProtocolHTTPS}},
+				EngineEndpoints: []egress.EngineEndpoint{engineEndpoint},
+			},
+			want: microsandboxNetworkPlan{
+				DefaultEgress: microsandboxPlanDefaultEgressDeny,
+				Rules: []microsandboxNetworkRule{
+					{Action: "allow", Destination: "facade.internal", Port: "7410", Protocol: "tcp"},
+					{Action: "deny", Destination: "api.example.com", Port: "443", Protocol: "tcp"},
+					{Action: "allow", Destination: "api.example.com", Port: "443", Protocol: "tcp"},
+				},
+				RebindProtection: true,
+			},
+		},
+		{
 			name: "an inexpressible host pattern is rejected",
 			policy: &SandboxNetworkPolicy{
 				Default: egress.Deny,
@@ -175,6 +204,36 @@ func TestPlanMicrosandboxDenyPermitsEngineEndpointsAndBlocksOthers(t *testing.T)
 	}
 	if planAllows(plan, "api.example.com", "8080", "tcp") {
 		t.Fatalf("undeclared port is permitted by plan %+v", plan)
+	}
+}
+
+func TestPlanMicrosandboxDenyListBlocksOnlyDeclaredDestinations(t *testing.T) {
+	policy, err := SandboxNetworkPolicyFromDeclaration(
+		&egress.NetworkDeclaration{
+			Default: egress.Allow,
+			Deny:    []egress.DenyEntry{{Host: "metadata.example.com", Port: 80, Protocol: egress.ProtocolTCP}},
+		},
+		[]egress.EngineEndpoint{mustEngineEndpoint(t, egress.PurposeLLMFacade, "facade.internal", 7410, egress.ProtocolHTTPS)},
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("SandboxNetworkPolicyFromDeclaration() error = %v", err)
+	}
+	plan, err := planMicrosandboxNetwork(&policy, true)
+	if err != nil {
+		t.Fatalf("planMicrosandboxNetwork() error = %v", err)
+	}
+	if plan.DefaultEgress != microsandboxPlanDefaultEgressAllow {
+		t.Fatalf("DefaultEgress = %q, want %q", plan.DefaultEgress, microsandboxPlanDefaultEgressAllow)
+	}
+	if planAllows(plan, "metadata.example.com", "80", "tcp") {
+		t.Fatalf("declared denial is permitted by plan %+v", plan)
+	}
+	if !planAllows(plan, "public.example.com", "443", "tcp") {
+		t.Fatalf("undeclared destination is denied by plan %+v", plan)
+	}
+	if !planAllows(plan, "facade.internal", "7410", "tcp") {
+		t.Fatalf("engine endpoint is not permitted by plan %+v", plan)
 	}
 }
 

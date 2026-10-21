@@ -22,6 +22,7 @@ type composeNetworkPolicyOutput struct {
 	Restricts bool                        `json:"restricts"`
 	Default   string                      `json:"default"`
 	Allow     []composeNetworkAllowOutput `json:"allow"`
+	Deny      []composeNetworkDenyOutput  `json:"deny"`
 	Mediated  bool                        `json:"mediated"`
 	Enforced  bool                        `json:"enforced"`
 	Strength  string                      `json:"strength"`
@@ -34,6 +35,11 @@ type composeNetworkAllowOutput struct {
 	Endpoint    string   `json:"endpoint"`
 	Inspectable bool     `json:"inspectable"`
 	AllowedIPs  []string `json:"allowed_ips,omitempty"`
+}
+
+type composeNetworkDenyOutput struct {
+	Endpoint    string `json:"endpoint"`
+	Inspectable bool   `json:"inspectable"`
 }
 
 func composeNetworkPoliciesFromProto(reports []*agentcomposev2.AgentNetworkPolicyReport) []composeNetworkPolicyOutput {
@@ -50,12 +56,20 @@ func composeNetworkPoliciesFromProto(reports []*agentcomposev2.AgentNetworkPolic
 				AllowedIPs:  append([]string(nil), entry.GetAllowedIps()...),
 			})
 		}
+		deny := make([]composeNetworkDenyOutput, 0, len(report.GetDeny()))
+		for _, entry := range report.GetDeny() {
+			deny = append(deny, composeNetworkDenyOutput{
+				Endpoint:    entry.GetEndpoint(),
+				Inspectable: entry.GetInspectable(),
+			})
+		}
 		policies = append(policies, composeNetworkPolicyOutput{
 			Agent:     report.GetAgent(),
 			Driver:    report.GetDriver(),
 			Restricts: report.GetRestricts(),
 			Default:   report.GetDefault(),
 			Allow:     allow,
+			Deny:      deny,
 			Mediated:  report.GetMediated(),
 			Enforced:  report.GetEnforced(),
 			Strength:  report.GetStrength(),
@@ -125,13 +139,22 @@ func writeComposeAgentNetworkPolicy(out io.Writer, policy composeNetworkPolicyOu
 		// An undeclared policy cannot reach here, so this is a declared policy
 		// that refuses nothing: the documented behavior of an allow list without
 		// a deny default.
-		if _, err := fmt.Fprintf(out, "    declared  default %s with %d allowance(s): egress is not restricted, because an allow list only restricts under default: deny\n", policy.Default, len(policy.Allow)); err != nil {
+		if _, err := fmt.Fprintf(out, "    declared  default %s with %d allowance(s): egress is not restricted, because an allow list needs default: deny and no denial matches\n", policy.Default, len(policy.Allow)); err != nil {
 			return err
 		}
 		return writeComposeNetworkAllowances(out, policy.Allow)
 	}
-	if _, err := fmt.Fprintf(out, "    declared  default %s, %d allowance(s)\n", policy.Default, len(policy.Allow)); err != nil {
+	if _, err := fmt.Fprintf(out, "    declared  default %s, %d allowance(s), %d denial(s)\n", policy.Default, len(policy.Allow), len(policy.Deny)); err != nil {
 		return err
+	}
+	for _, entry := range policy.Deny {
+		detail := "not inspectable"
+		if entry.Inspectable {
+			detail = "inspectable"
+		}
+		if _, err := fmt.Fprintf(out, "      deny  %s (%s)\n", entry.Endpoint, detail); err != nil {
+			return err
+		}
 	}
 	if err := writeComposeNetworkAllowances(out, policy.Allow); err != nil {
 		return err
@@ -169,7 +192,7 @@ func writeComposeNetworkAllowances(out io.Writer, allow []composeNetworkAllowOut
 		if len(entry.AllowedIPs) > 0 {
 			detail += ", addresses " + strings.Join(entry.AllowedIPs, " ")
 		}
-		if _, err := fmt.Fprintf(out, "      - %s (%s)\n", entry.Endpoint, detail); err != nil {
+		if _, err := fmt.Fprintf(out, "      allow %s (%s)\n", entry.Endpoint, detail); err != nil {
 			return err
 		}
 	}
@@ -226,11 +249,11 @@ func writeComposeDeclaredNetworkPolicyNotes(out io.Writer, spec *compose.Normali
 }
 
 func writeDeclaredNetworkPolicy(out io.Writer, agent string, report egress.NetworkPolicyReport) error {
-	if _, err := fmt.Fprintf(out, "  %s  default %s, %d allowance(s)\n", agent, report.Default, len(report.Allow)); err != nil {
+	if _, err := fmt.Fprintf(out, "  %s  default %s, %d allowance(s), %d denial(s)\n", agent, report.Default, len(report.Allow), len(report.Deny)); err != nil {
 		return err
 	}
-	if report.Default != egress.Deny && len(report.Allow) > 0 {
-		if _, err := fmt.Fprintln(out, "    egress is not restricted: an allow list only restricts under default: deny"); err != nil {
+	if !report.Restricts && len(report.Allow) > 0 {
+		if _, err := fmt.Fprintln(out, "    egress is not restricted: an allow list alone does not restrict; add default: deny or a deny entry"); err != nil {
 			return err
 		}
 	}
@@ -242,7 +265,16 @@ func writeDeclaredNetworkPolicy(out io.Writer, agent string, report egress.Netwo
 		if len(entry.AllowedIPs) > 0 {
 			detail += ", addresses " + strings.Join(entry.AllowedIPs, " ")
 		}
-		if _, err := fmt.Fprintf(out, "    - %s (%s)\n", entry.Endpoint, detail); err != nil {
+		if _, err := fmt.Fprintf(out, "    allow %s (%s)\n", entry.Endpoint, detail); err != nil {
+			return err
+		}
+	}
+	for _, entry := range report.Deny {
+		detail := "not inspectable"
+		if entry.Inspectable {
+			detail = "inspectable"
+		}
+		if _, err := fmt.Fprintf(out, "    deny  %s (%s)\n", entry.Endpoint, detail); err != nil {
 			return err
 		}
 	}

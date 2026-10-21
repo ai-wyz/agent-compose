@@ -23,6 +23,13 @@ func NetworkPolicyReportsToProto(reports []driverpkg.AgentNetworkPolicyReport) [
 				AllowedIps:  append([]string(nil), entry.AllowedIPs...),
 			})
 		}
+		deny := make([]*agentcomposev2.DeclaredNetworkDenial, 0, len(report.Deny))
+		for _, entry := range report.Deny {
+			deny = append(deny, &agentcomposev2.DeclaredNetworkDenial{
+				Endpoint:    entry.Endpoint,
+				Inspectable: entry.Inspectable,
+			})
+		}
 		mapped = append(mapped, &agentcomposev2.AgentNetworkPolicyReport{
 			Agent:     report.Agent,
 			Driver:    report.Driver,
@@ -30,6 +37,7 @@ func NetworkPolicyReportsToProto(reports []driverpkg.AgentNetworkPolicyReport) [
 			Restricts: report.Restricts,
 			Default:   string(report.Default),
 			Allow:     allow,
+			Deny:      deny,
 			Mediated:  report.Mediated,
 			Enforced:  report.Enforced,
 			Strength:  string(report.Enforcement.Strength),

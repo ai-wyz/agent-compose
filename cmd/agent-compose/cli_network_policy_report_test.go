@@ -34,6 +34,13 @@ func TestWriteComposeNetworkPolicyReportSeparatesDeclaredFromEnforced(t *testing
 				Endpoint: "telemetry.example.com:4317/tcp", Inspectable: false,
 			}},
 		},
+		{
+			Agent: "guard", Driver: "docker", Declared: true, Restricts: true, Default: "allow-all",
+			Deny: []*agentcomposev2.DeclaredNetworkDenial{{
+				Endpoint: "10.2.16.21:443/https", Inspectable: true,
+			}},
+			Mediated: true, Enforced: true, Strength: "denylist", Mechanism: "forward_proxy",
+		},
 	})
 
 	var out bytes.Buffer
@@ -51,8 +58,12 @@ func TestWriteComposeNetworkPolicyReportSeparatesDeclaredFromEnforced(t *testing
 		"enforced  no: the engine will not enforce this declaration",
 		"partial   the declared allowances",
 		"helper (driver docker)",
-		"egress is not restricted, because an allow list only restricts under default: deny",
+		"egress is not restricted, because an allow list needs default: deny and no denial matches",
 		"telemetry.example.com:4317/tcp (not inspectable)",
+		"guard (driver docker)",
+		"declared  default allow-all, 0 allowance(s), 1 denial(s)",
+		"deny  10.2.16.21:443/https (inspectable)",
+		"enforced  forward_proxy (denylist), the engine's forward proxy",
 	} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("report text =\n%s\nwant it to contain %q", text, want)
