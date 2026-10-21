@@ -445,14 +445,33 @@ func TestFollowDetachedCommandTerminatesTreeWhenStopDoesNotLand(t *testing.T) {
 }
 
 // startFakeRuntime reports a fixed exit code for any exec, so
-// startDetachedCommand can be exercised without a real driver.
+// startDetachedCommand can be exercised without a real driver. It also records
+// marker termination so the orphan-prevention path can be asserted.
 type startFakeRuntime struct {
 	exitCode int
 	stderr   string
+
+	mu               sync.Mutex
+	terminated       bool
+	terminatedMarker string
 }
 
 func (r *startFakeRuntime) ExecStream(_ context.Context, _ *domain.Sandbox, _ domain.VMState, _ domain.ExecSpec, _ domain.ExecStreamWriter) (domain.ExecResult, error) {
 	return domain.ExecResult{ExitCode: r.exitCode, Stderr: r.stderr}, nil
+}
+
+func (r *startFakeRuntime) TerminateProcessTree(_ context.Context, _ *domain.Sandbox, _ domain.VMState, marker string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.terminated = true
+	r.terminatedMarker = marker
+	return nil
+}
+
+func (r *startFakeRuntime) termination() (bool, string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.terminated, r.terminatedMarker
 }
 
 func TestStartDetachedCommandSurfacesNonZeroExit(t *testing.T) {
@@ -476,5 +495,53 @@ func TestStartDetachedCommandSurfacesNonZeroExit(t *testing.T) {
 	}
 	if !strings.Contains(result.Err.Error(), "spawn supervisor: EACCES") {
 		t.Fatalf("err = %v, want guest stderr surfaced", result.Err)
+	}
+}
+
+func TestStartDetachedCommandTerminatesTreeOnFailure(t *testing.T) {
+	// A non-zero start exit after the guest spawned the detached supervisor
+	// (ready timeout, a crash after spawn) must not leave an untracked tree:
+	// the daemon terminates it by marker before giving up.
+	rt := &startFakeRuntime{exitCode: 1, stderr: "timed out waiting for ready"}
+	result := startDetachedCommand(context.Background(), DetachedTask{
+		Config:      &config.Config{},
+		Runtime:     rt,
+		Sandbox:     &domain.Sandbox{},
+		VMState:     domain.VMState{},
+		ExecutionID: "exec-2",
+		TaskArgs:    []string{"exec", "--request-file", "/tmp/req.json"},
+	})
+	if result.Err == nil {
+		t.Fatal("start exited non-zero but reported no error")
+	}
+	terminated, marker := rt.termination()
+	if !terminated {
+		t.Fatal("TerminateProcessTree was not called after start failed")
+	}
+	if marker != "exec-2" {
+		t.Fatalf("termination marker = %q, want %q", marker, "exec-2")
+	}
+}
+
+func TestStartDetachedCommandDoesNotTerminateTreeOnShutdown(t *testing.T) {
+	// A daemon shutdown during the start window must leave the (possibly
+	// spawned) task running for re-attach instead of terminating it, even when
+	// the start exec failed.
+	shutdown := make(chan struct{})
+	close(shutdown)
+	rt := &startFakeRuntime{exitCode: 1, stderr: "killed"}
+	result := startDetachedCommand(WithDaemonShutdown(context.Background(), shutdown), DetachedTask{
+		Config:      &config.Config{},
+		Runtime:     rt,
+		Sandbox:     &domain.Sandbox{},
+		VMState:     domain.VMState{},
+		ExecutionID: "exec-3",
+		TaskArgs:    []string{"exec", "--request-file", "/tmp/req.json"},
+	})
+	if !errors.Is(result.Err, ErrRunDisconnected) {
+		t.Fatalf("err = %v, want ErrRunDisconnected", result.Err)
+	}
+	if terminated, _ := rt.termination(); terminated {
+		t.Fatal("TerminateProcessTree was called on daemon shutdown; the task must survive")
 	}
 }

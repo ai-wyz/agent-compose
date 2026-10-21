@@ -571,7 +571,7 @@ func (r *dockerRuntime) execWithStream(ctx context.Context, request dockerExecRe
 	}
 	attachResp, err := dockerClient.ContainerExecAttach(ctx, execResp.ID, containerapi.ExecAttachOptions{})
 	if err != nil {
-		terminationErr := r.terminateDockerExec(ctx, dockerClient, dockerExecTarget{ContainerID: containerInfo.ID, ExecID: execResp.ID, Marker: execMarker})
+		terminationErr := r.terminateDockerExecOnFailure(ctx, dockerClient, spec, containerInfo.ID, execResp.ID, execMarker)
 		attachErr := fmt.Errorf("attach docker exec for sandbox %s: %w", sandbox.Summary.ID, err)
 		if ctx.Err() != nil {
 			attachErr = ctx.Err()
@@ -595,27 +595,19 @@ func (r *dockerRuntime) execWithStream(ctx context.Context, request dockerExecRe
 	collector.finish()
 	if ctx.Err() != nil {
 		attachResp.Close()
-		var terminationErr error
-		if spec.KillOnlyOnCancel {
-			// A control-plane exec (detach start/attach) whose marker is shared
-			// with the detached task tree: kill only the exec leader so the
-			// supervisor and task survive a daemon disconnect.
-			terminationErr = r.terminateDockerExecLeader(ctx, dockerClient, containerInfo.ID, execResp.ID)
-		} else {
-			terminationErr = r.terminateDockerExec(ctx, dockerClient, dockerExecTarget{ContainerID: containerInfo.ID, ExecID: execResp.ID, Marker: execMarker})
-		}
+		terminationErr := r.terminateDockerExecOnFailure(ctx, dockerClient, spec, containerInfo.ID, execResp.ID, execMarker)
 		return ExecResult{}, execTerminationResultError(RuntimeDriverDocker, execResp.ID, ctx.Err(), terminationErr)
 	}
 	if copyErr != nil && !isDockerStreamClosed(copyErr) {
 		attachResp.Close()
-		terminationErr := r.terminateDockerExec(ctx, dockerClient, dockerExecTarget{ContainerID: containerInfo.ID, ExecID: execResp.ID, Marker: execMarker})
+		terminationErr := r.terminateDockerExecOnFailure(ctx, dockerClient, spec, containerInfo.ID, execResp.ID, execMarker)
 		return ExecResult{}, execTerminationResultError(RuntimeDriverDocker, execResp.ID, copyErr, terminationErr)
 	}
 
 	execInfo, err := r.waitForExecExit(ctx, dockerClient, execResp.ID)
 	if err != nil {
 		attachResp.Close()
-		terminationErr := r.terminateDockerExec(ctx, dockerClient, dockerExecTarget{ContainerID: containerInfo.ID, ExecID: execResp.ID, Marker: execMarker})
+		terminationErr := r.terminateDockerExecOnFailure(ctx, dockerClient, spec, containerInfo.ID, execResp.ID, execMarker)
 		return ExecResult{}, execTerminationResultError(RuntimeDriverDocker, execResp.ID, err, terminationErr)
 	}
 	result := ExecResult{

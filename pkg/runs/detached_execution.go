@@ -94,10 +94,23 @@ func startDetachedCommand(ctx context.Context, opts DetachedTask) detachedExecut
 			// reconciliation rather than recorded as a terminal failure.
 			return detachedExecutionResult{Err: ErrRunDisconnected}
 		}
-		if ctx.Err() != nil {
-			return detachedExecutionResult{Err: ctx.Err()}
+		// The start exec failed (non-zero exit or transport error) after it may
+		// already have spawned the detached supervisor: the guest spawns the
+		// supervisor before waiting for ready, so a ready timeout or a crash
+		// after spawn leaves a tree the daemon is about to stop tracking. End it
+		// by marker so it cannot linger as an orphan. The shutdown branch above
+		// deliberately skips this so the task survives for re-attach.
+		startErr := detachControlExecErr(result, err, "start detached execution")
+		terminateCtx, cancelTerminate := context.WithTimeout(context.WithoutCancel(ctx), detachStopTimeout)
+		terminateErr := terminateDetachedProcessTree(terminateCtx, opts)
+		cancelTerminate()
+		if terminateErr != nil {
+			startErr = errors.Join(startErr, terminateErr)
 		}
-		return detachedExecutionResult{Err: detachControlExecErr(result, err, "start detached execution")}
+		if ctx.Err() != nil {
+			startErr = errors.Join(ctx.Err(), startErr)
+		}
+		return detachedExecutionResult{Err: startErr}
 	}
 	return detachedExecutionResult{}
 }

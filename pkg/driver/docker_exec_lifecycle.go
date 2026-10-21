@@ -60,25 +60,38 @@ func (r *dockerRuntime) terminateDockerExec(ctx context.Context, dockerClient *c
 	return nil
 }
 
+// terminateDockerExecOnFailure terminates an exec whose stream ended in error.
+// KillOnlyOnCancel kills only the exec leader (the exec shares its marker with
+// the detached tree that must survive); otherwise the whole marker tree is
+// terminated.
+func (r *dockerRuntime) terminateDockerExecOnFailure(ctx context.Context, dockerClient *client.Client, spec ExecSpec, containerID, execID, marker string) error {
+	if spec.KillOnlyOnCancel {
+		return r.terminateDockerExecLeader(ctx, dockerClient, containerID, execID, marker)
+	}
+	return r.terminateDockerExec(ctx, dockerClient, dockerExecTarget{ContainerID: containerID, ExecID: execID, Marker: marker})
+}
+
 // terminateDockerExecLeader kills only the exec's own process (the leader),
 // leaving any detached descendants running. It backs KillOnlyOnCancel, where
 // the exec is a control-plane process (detach start/attach) whose detached
 // tree must survive a daemon disconnect. Unlike terminateDockerExec it must
-// not match the marker environment: the start exec shares its marker (the
-// execution id) with the supervisor and task, so a marker termination would
-// take the whole tree down with the exec.
-func (r *dockerRuntime) terminateDockerExecLeader(ctx context.Context, dockerClient *client.Client, containerID, execID string) error {
+// not match the whole marker tree: the start exec shares its marker (the
+// execution id) with the supervisor and task, so a full marker termination
+// would take them down with the exec. The leader is found by container-side
+// process inspection (ContainerExecInspect.Pid is the host-namespace pid, which
+// is not addressable from inside the container's private pid namespace).
+func (r *dockerRuntime) terminateDockerExecLeader(ctx context.Context, dockerClient *client.Client, containerID, execID, marker string) error {
 	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), execTerminationTimeout)
 	defer cancel()
 	info, err := dockerClient.ContainerExecInspect(cleanupCtx, execID)
 	if err != nil {
 		return fmt.Errorf("inspect docker exec %s to terminate: %w", execID, err)
 	}
-	if info.Running && info.Pid > 0 {
+	if info.Running {
 		control, err := dockerClient.ContainerExecCreate(cleanupCtx, containerID, containerapi.ExecOptions{
 			AttachStdout: true,
 			AttachStderr: true,
-			Cmd:          []string{"sh", "-c", fmt.Sprintf("kill -KILL %d 2>/dev/null || true", info.Pid)},
+			Cmd:          markedExecLeaderTerminationCommand(dockerExecMarkerEnv, marker),
 			User:         "0",
 			WorkingDir:   "/",
 		})
