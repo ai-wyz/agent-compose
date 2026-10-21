@@ -564,10 +564,10 @@ func TestEgressProxyAppliesADeclaredAddressRange(t *testing.T) {
 	}
 }
 
-// TestEgressProxyRefusesADestinationWithNoIPv4Address pins the transport limit
-// the manual states: an IPv6-only destination is refused because the engine's
-// endpoint identifier cannot express it.
-func TestEgressProxyRefusesADestinationWithNoIPv4Address(t *testing.T) {
+// TestEgressProxyForwardsAnIPv6OnlyDestination pins that the proxy and the
+// canonical endpoint identifier carry IPv6 answers instead of refusing a name
+// that has no IPv4 address.
+func TestEgressProxyForwardsAnIPv6OnlyDestination(t *testing.T) {
 	policies := &proxyTestPolicies{policies: []egress.Policy{egress.NewPolicy(egress.Allow)}}
 	proxyServer, recorder := newTestEgressProxy(t, policies, func(options *EgressProxyOptions) {
 		options.LookupIP = func(context.Context, string) ([]net.IP, error) {
@@ -585,14 +585,14 @@ func TestEgressProxyRefusesADestinationWithNoIPv4Address(t *testing.T) {
 		t.Fatalf("reading the deny response: %v", err)
 	}
 	defer func() { _ = response.Body.Close() }()
-	if response.StatusCode != http.StatusForbidden {
-		t.Fatalf("CONNECT status = %d, want 403", response.StatusCode)
+	// The test proxy has no dialer, so the upstream attempt fails after the
+	// policy allows the IPv6 destination. A 502 proves the request got past the
+	// policy instead of being refused for lacking an IPv4 answer.
+	if response.StatusCode != http.StatusBadGateway {
+		t.Fatalf("CONNECT status = %d, want 502", response.StatusCode)
 	}
-	if rule := response.Header.Get("X-Agent-Compose-Egress-Rule"); rule != EgressRuleBlockedAddress {
-		t.Fatalf("deny rule = %q, want %q", rule, EgressRuleBlockedAddress)
-	}
-	if records := recorder.collected(); len(records) != 1 || records[0].Allowed() {
-		t.Fatalf("records = %+v, want one deny", records)
+	if records := recorder.collected(); len(records) != 1 || !records[0].Allowed() {
+		t.Fatalf("records = %+v, want one allow", records)
 	}
 }
 

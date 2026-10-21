@@ -283,11 +283,6 @@
       "optional": true
     },
     {
-      "path": "agents.*.policy.network.allow[].protocol",
-      "go_type": "string",
-      "optional": true
-    },
-    {
       "path": "agents.*.policy.network.default",
       "go_type": "string",
       "optional": true
@@ -310,11 +305,6 @@
     {
       "path": "agents.*.policy.network.deny[].ports",
       "go_type": "sequence\u003cint\u003e",
-      "optional": true
-    },
-    {
-      "path": "agents.*.policy.network.deny[].protocol",
-      "go_type": "string",
       "optional": true
     },
     {
@@ -363,11 +353,6 @@
       "optional": true
     },
     {
-      "path": "agents.*.sandbox.network.allow[].protocol",
-      "go_type": "string",
-      "optional": true
-    },
-    {
       "path": "agents.*.sandbox.network.default",
       "go_type": "string",
       "optional": true
@@ -390,11 +375,6 @@
     {
       "path": "agents.*.sandbox.network.deny[].ports",
       "go_type": "sequence\u003cint\u003e",
-      "optional": true
-    },
-    {
-      "path": "agents.*.sandbox.network.deny[].protocol",
-      "go_type": "string",
       "optional": true
     },
     {
@@ -768,11 +748,6 @@
       "optional": true
     },
     {
-      "path": "policies.*.network.allow[].protocol",
-      "go_type": "string",
-      "optional": true
-    },
-    {
       "path": "policies.*.network.default",
       "go_type": "string",
       "optional": true
@@ -795,11 +770,6 @@
     {
       "path": "policies.*.network.deny[].ports",
       "go_type": "sequence\u003cint\u003e",
-      "optional": true
-    },
-    {
-      "path": "policies.*.network.deny[].protocol",
-      "go_type": "string",
       "optional": true
     },
     {

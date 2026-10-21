@@ -33,7 +33,7 @@ func TestHostPatternMatches(t *testing.T) {
 }
 
 func TestValidateHostPattern(t *testing.T) {
-	valid := []string{"api.github.com", "*.example.com", "*", "10.0.0.1", "a-b.example.com"}
+	valid := []string{"api.github.com", "*.example.com", "*", "10.0.0.1", "2001:db8::1", "10.0.0.0/8", "2001:db8::/32", "a-b.example.com"}
 	for _, pattern := range valid {
 		if err := ValidateHostPattern(pattern); err != nil {
 			t.Fatalf("ValidateHostPattern(%q) = %v, want nil", pattern, err)
@@ -46,7 +46,8 @@ func TestValidateHostPattern(t *testing.T) {
 		"*.example..com":      "empty label",
 		"foo*bar.example.com": "wildcard inside a label",
 		"exa mple.com":        "space",
-		"2001:db8::1":         "ipv6 separator",
+		"2001:db8::zz":        "invalid ipv6",
+		"10.0.0.0/33":         "invalid cidr",
 		"-bad.example.com":    "leading dash",
 	}
 	for pattern, reason := range invalid {
@@ -81,6 +82,27 @@ func TestEndpointNameRoundTrip(t *testing.T) {
 	}
 	if _, err := ParseEndpoint(anyEndpoint.Name()); err != nil {
 		t.Fatalf("ParseEndpoint(Name(any)) returned error: %v", err)
+	}
+
+	ipv6Endpoint, err := NewEndpoint("2001:0db8::1", 443, ProtocolHTTPS)
+	if err != nil {
+		t.Fatalf("NewEndpoint(ipv6) returned error: %v", err)
+	}
+	if got := ipv6Endpoint.Name(); got != "[2001:db8::1]:443/https" {
+		t.Fatalf("Name(ipv6) = %q, want [2001:db8::1]:443/https", got)
+	}
+	if parsed, err := ParseEndpoint(ipv6Endpoint.Name()); err != nil || parsed != ipv6Endpoint {
+		t.Fatalf("ParseEndpoint(ipv6) = %+v, %v, want %+v", parsed, err, ipv6Endpoint)
+	}
+	cidrEndpoint, err := NewEndpoint("10.2.16.21/8", 443, ProtocolHTTPS)
+	if err != nil {
+		t.Fatalf("NewEndpoint(cidr) returned error: %v", err)
+	}
+	if got := cidrEndpoint.Name(); got != "10.0.0.0/8:443/https" {
+		t.Fatalf("Name(cidr) = %q, want 10.0.0.0/8:443/https", got)
+	}
+	if parsed, err := ParseEndpoint(cidrEndpoint.Name()); err != nil || parsed != cidrEndpoint {
+		t.Fatalf("ParseEndpoint(cidr) = %+v, %v, want %+v", parsed, err, cidrEndpoint)
 	}
 
 	for _, raw := range []string{"api.github.com", "api.github.com:443", "api.github.com:443/", ":443/tcp", "api.github.com:abc/tcp"} {

@@ -20,7 +20,6 @@ func TestDeprecatedSandboxKeyNormalizesIdenticallyToPolicy(t *testing.T) {
         allow:
           - host: api.github.com
             port: 443
-            protocol: https
 `
 	policySpec := mustNormalizeCompose(t, `
 name: policy-alias
@@ -188,7 +187,6 @@ func TestProjectPolicyReferenceMatchesAnInlineDeclaration(t *testing.T) {
         allow:
           - host: api.github.com
             port: 443
-            protocol: https
 `
 	referenced := mustNormalizeCompose(t, `
 name: policy-reference

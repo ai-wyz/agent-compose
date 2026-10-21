@@ -188,9 +188,8 @@ func policyYAMLShape(policy *agentcomposev2.SandboxSpec) map[string]any {
 		allow := make([]map[string]any, 0, len(entries))
 		for _, entry := range entries {
 			rendered := map[string]any{
-				"host":     entry.GetHost(),
-				"port":     entry.GetPort(),
-				"protocol": entry.GetProtocol(),
+				"host": entry.GetHost(),
+				"port": entry.GetPort(),
 			}
 			// The allowed addresses are part of the declaration the client
 			// hashed, so they have to survive the round trip: dropping them
@@ -207,9 +206,8 @@ func policyYAMLShape(policy *agentcomposev2.SandboxSpec) map[string]any {
 		deny := make([]map[string]any, 0, len(entries))
 		for _, entry := range entries {
 			deny = append(deny, map[string]any{
-				"host":     entry.GetHost(),
-				"port":     entry.GetPort(),
-				"protocol": entry.GetProtocol(),
+				"host": entry.GetHost(),
+				"port": entry.GetPort(),
 			})
 		}
 		networkShape["deny"] = deny

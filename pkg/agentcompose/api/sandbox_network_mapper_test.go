@@ -21,10 +21,8 @@ agents:
         allow:
           - host: "*.example.com"
             port: 8443
-            protocol: tcp
           - host: api.github.com
             port: 443
-            protocol: https
 `)
 
 	mapped := SandboxSpecToProto(spec.Agents[0].PolicyBlock())
@@ -48,11 +46,11 @@ agents:
 	if len(allow) != 2 {
 		t.Fatalf("allow = %+v, want two entries", allow)
 	}
-	if allow[0].GetHost() != "*.example.com" || allow[0].GetPort() != 8443 || allow[0].GetProtocol() != "tcp" {
-		t.Fatalf("allow[0] = %+v, want *.example.com:8443/tcp", allow[0])
+	if allow[0].GetHost() != "*.example.com" || allow[0].GetPort() != 8443 {
+		t.Fatalf("allow[0] = %+v, want *.example.com:8443", allow[0])
 	}
-	if allow[1].GetHost() != "api.github.com" || allow[1].GetPort() != 443 || allow[1].GetProtocol() != "https" {
-		t.Fatalf("allow[1] = %+v, want api.github.com:443/https", allow[1])
+	if allow[1].GetHost() != "api.github.com" || allow[1].GetPort() != 443 {
+		t.Fatalf("allow[1] = %+v, want api.github.com:443", allow[1])
 	}
 }
 
@@ -106,7 +104,6 @@ agents:
         deny:
           - host: 10.2.16.21
             port: 443
-            protocol: https
           - host: "*.blocked.example"
             port: 80
 `)
@@ -123,11 +120,11 @@ agents:
 	if len(deny) != 2 {
 		t.Fatalf("deny = %+v, want two entries", deny)
 	}
-	if deny[0].GetHost() != "*.blocked.example" || deny[0].GetPort() != 80 || deny[0].GetProtocol() != "any" {
-		t.Fatalf("deny[0] = %+v, want the sorted *.blocked.example:80/any entry", deny[0])
+	if deny[0].GetHost() != "*.blocked.example" || deny[0].GetPort() != 80 {
+		t.Fatalf("deny[0] = %+v, want the sorted *.blocked.example:80 entry", deny[0])
 	}
-	if deny[1].GetHost() != "10.2.16.21" || deny[1].GetPort() != 443 || deny[1].GetProtocol() != "https" {
-		t.Fatalf("deny[1] = %+v, want 10.2.16.21:443/https", deny[1])
+	if deny[1].GetHost() != "10.2.16.21" || deny[1].GetPort() != 443 {
+		t.Fatalf("deny[1] = %+v, want 10.2.16.21:443", deny[1])
 	}
 
 	shape := policyYAMLShape(decoded)

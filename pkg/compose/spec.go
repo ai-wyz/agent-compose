@@ -133,7 +133,6 @@ type SandboxSpec struct {
 type SandboxNetworkSpec struct {
 	// Default selects the mode and the action for traffic no entry matches. It
 	// is "allow-all" (the value an omitted default normalizes to) or "deny-all".
-	// The historical value "deny" is accepted and normalized to "deny-all".
 	//
 	// "deny-all" is allowlist mode: only an Allow entry can permit a destination.
 	// "allow-all" is denylist mode: every destination is permitted unless a Deny
@@ -144,8 +143,9 @@ type SandboxNetworkSpec struct {
 	Deny    []SandboxNetworkDenySpec  `yaml:"deny,omitempty" json:"deny,omitempty"`
 }
 
-// SandboxNetworkAllowSpec is one declared allowance. Host may be a host
-// pattern whose labels are separated by "."; "*" matches exactly one label.
+// SandboxNetworkAllowSpec is one declared allowance. Host may be a host name,
+// a label-wise pattern whose labels are separated by ".", an IP literal, or a
+// CIDR range; "*" matches exactly one label in a pattern.
 type SandboxNetworkAllowSpec struct {
 	Host string `yaml:"host,omitempty" json:"host,omitempty"`
 	// Port and Ports are alternatives: exactly one destination port, or a list
@@ -153,11 +153,6 @@ type SandboxNetworkAllowSpec struct {
 	// Specifying both is rejected so the declaration has no ambiguous meaning.
 	Port  int   `yaml:"port,omitempty" json:"port,omitempty"`
 	Ports []int `yaml:"ports,omitempty" json:"ports,omitempty"`
-	// Protocol is optional. An omitted protocol normalizes to "any". It is a
-	// matching and reporting label, not an L7 payload check: no L7 mediator is
-	// implemented, and Microsandbox maps http/https to TCP. Omit it for a plain
-	// host-and-port rule.
-	Protocol string `yaml:"protocol,omitempty" json:"protocol,omitempty"`
 	// AllowedIPs optionally restricts which addresses Host may resolve to. Each
 	// entry is an IP address or a CIDR range; a name that resolves outside them
 	// is not covered by this allowance, so a name the declaration trusts cannot
@@ -175,9 +170,6 @@ type SandboxNetworkDenySpec struct {
 	// expands each listed port into its own canonical denial.
 	Port  int   `yaml:"port,omitempty" json:"port,omitempty"`
 	Ports []int `yaml:"ports,omitempty" json:"ports,omitempty"`
-	// Protocol has the same matching and reporting meaning as on an allowance;
-	// it is not an L7 check.
-	Protocol string `yaml:"protocol,omitempty" json:"protocol,omitempty"`
 }
 
 type AgentMCPEntriesSpec []AgentMCPEntrySpec
@@ -702,7 +694,6 @@ func validateSandboxNetworkAllowList(node *yaml.Node, path string) error {
 			"host":        validateScalar,
 			"port":        validateInt,
 			"ports":       validateIntSequence,
-			"protocol":    validateScalar,
 			"allowed_ips": validateStringList,
 		}); err != nil {
 			return err
@@ -718,10 +709,9 @@ func validateSandboxNetworkDenyList(node *yaml.Node, path string) error {
 	for index, item := range node.Content {
 		itemPath := fmt.Sprintf("%s[%d]", path, index)
 		if err := validateMapping(item, itemPath, map[string]nodeValidator{
-			"host":     validateScalar,
-			"port":     validateInt,
-			"ports":    validateIntSequence,
-			"protocol": validateScalar,
+			"host":  validateScalar,
+			"port":  validateInt,
+			"ports": validateIntSequence,
 		}); err != nil {
 			return err
 		}
