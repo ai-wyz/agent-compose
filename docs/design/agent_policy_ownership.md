@@ -110,7 +110,7 @@ The composition rule has to follow ownership, not convenience.
   layer decided.
 
 The second case is not reachable by adding a key to `agent-compose.yml`. Today a
-project author can delete `network: default: deny` and re-apply; the only thing
+project author can delete `network: default: deny-all` and re-apply; the only thing
 preventing an unenforced containment claim from being removed is that the project
 file itself is trusted. Genuine operator ownership needs a policy authority
 outside the project, its own persistence, an intersection rule, and provenance in
@@ -143,7 +143,7 @@ together:
    unchanged.
 
 Doing (3) last is what breaks silently. A project that adds
-`network: {default: deny}` while the policy is outside the hash produces an
+`network: {default: deny-all}` while the policy is outside the hash produces an
 unchanged revision, no stored declaration, and an unrestricted sandbox: the
 tightening never existed. A field that disappears from the hash without its own
 synchronization path is worse than a field that dirties an agent definition.
@@ -216,7 +216,7 @@ answerable.
 ## An unenforceable declaration must not make an agent unrunnable
 
 The interim behavior is wrong and must not become the end state. When a project
-declares `default: deny` and the selected driver has no enforcement surface, the
+declares `default: deny-all` and the selected driver has no enforcement surface, the
 engine refuses to create the sandbox (`ErrSandboxNetworkEnforcementUnavailable`,
 raised inside each driver's `EnsureSandbox`). That conflates two different
 things: "the platform cannot deliver this restriction" and "this agent must not

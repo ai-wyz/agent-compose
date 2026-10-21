@@ -87,11 +87,10 @@ policies:
   locked-down:
     stopped_runtime_policy: retain
     network:
-      default: deny
+      default: deny-all
       allow:
         - host: api.github.com
           port: 443
-          protocol: https
 
 agents:
   reviewer:
@@ -525,11 +524,10 @@ policies:
   locked-down:
     stopped_runtime_policy: retain
     network:
-      default: deny
+      default: deny-all
       allow:
         - host: api.github.com
           port: 443
-          protocol: https
 
 agents:
   reviewer:
@@ -1150,12 +1148,12 @@ For `remove`, the daemon first persists `release_pending`, then confirms a drive
 
 ### `policy.network`: declared outbound network policy
 
-`network` declares what this agent's sandboxes may reach. **It is optional, and an undeclared policy is not deny**: when `policy.network` is absent the engine keeps its existing behavior exactly, and outbound access stays unrestricted. `default: deny` is a policy that takes effect only because the block was declared; it is not an engine default.
+`network` declares what this agent's sandboxes may reach. **It is optional, and an undeclared policy is not deny**: when `policy.network` is absent the engine keeps its existing behavior exactly, and outbound access stays unrestricted. `default: deny-all` is a policy that takes effect only because the block was declared; it is not an engine default.
 
 | Field | Type | Default | Purpose |
 | --- | --- | --- | --- |
-| `default` | string | `allow-all` | Selects the mode and the action for traffic no entry matches: `deny` is allowlist mode, `allow-all` is denylist mode. A `deny` entry wins over an `allow` entry in either mode. |
-| `allow` | list | Empty | Explicit allowances. They restrict only in allowlist mode (`default: deny`), or as exceptions when no denial matches. |
+| `default` | string | `allow-all` | Selects the mode and the action for traffic no entry matches: `deny-all` is allowlist mode, `allow-all` is denylist mode. The historical spelling `deny` is accepted and normalized to `deny-all`. A `deny` entry wins over an `allow` entry in either mode. |
+| `allow` | list | Empty | Explicit allowances. They restrict only in allowlist mode (`default: deny-all`), or as exceptions when no denial matches. |
 | `deny` | list | Empty | Explicit denials. They restrict in either mode and are applied before every allowance. |
 
 Each `allow` entry:
@@ -1163,32 +1161,30 @@ Each `allow` entry:
 | Field | Type | Default | Purpose |
 | --- | --- | --- | --- |
 | `host` | string | Required | A host or host pattern. Labels are separated by `.`, and `*` matches exactly one label: `*.example.com` matches `api.example.com` but neither `example.com` nor `a.b.example.com`. IPv6 literals are not supported. |
-| `port` | int | Required | Destination port, 1–65535. |
-| `protocol` | string | `any` | `http`, `https`, `tcp`, `udp`, or `any`. Only `http` and `https` are modelled as inspectable at L7, and an opaque allowance (`any`, `tcp`, `udp`) is never presented as a checked one. No L7 mediator is implemented, so nothing inspects payloads today: the distinction is a modelling and reporting property, not a filter. |
-| `allowed_ips` | list | Empty | Optional IP addresses or CIDR ranges this entry's `host` may resolve to. Every address the name resolves to must fall inside one of them, or the allowance does not apply. A bare address is its own single-address range (`10.0.0.5` means `10.0.0.5/32`); entries are canonicalized and sorted. |
+| `port` | int | One of `port`/`ports` | A single destination port, 1–65535. |
+| `ports` | list of int | One of `port`/`ports` | A shorthand for several destination ports on the same host and protocol, for example `[80, 443]`. Normalization expands each port into its own canonical entry; `port` and `ports` are alternatives and must not be combined. |
+| `protocol` | string | `any` | `http`, `https`, `tcp`, `udp`, or `any`. This is a matching and reporting label, not an L7 check. No L7 mediator inspects payloads today, and Microsandbox collapses `http`/`https` to TCP. Omit it for a plain host-and-port rule; use `udp` only where the driver can carry UDP (the forward proxy cannot). |
+| `allowed_ips` | list | Empty | Optional IP addresses or CIDR ranges this entry's `host` may resolve to. Every address the name resolves to must fall inside one of them, or the allowance does not apply. A bare address is its own single-address range (`10.0.0.5` means `10.0.0.5/32`); entries are canonicalized and sorted. This constrains a hostname; it is not a subnet destination and is not accepted on a `deny` entry. |
 
-Each `deny` entry has `host`, `port`, and the optional `protocol` with the same validation and normalization as an allowance; it has no `allowed_ips` field, because a denial refuses the destination itself.
+Each `deny` entry has `host`, `port` or `ports`, and the optional `protocol` with the same validation and normalization as an allowance; it has no `allowed_ips` field, because a denial refuses the destination itself. Each `ports` value is expanded into one canonical entry per port, so the spec hash and the admission report are the same as if each port had been written as its own `port` entry.
 
 `allowed_ips` is what ties a name to an address. Without it an allowance for `api.example.com` follows that name wherever it resolves, so a poisoned or compromised answer could send the sandbox to an address the declaration never named. With it, the engine refuses the connection unless the address it is about to use is inside the declared range, and a name that resolves to both an allowed and a disallowed address is refused rather than picked opportunistically. An address the engine never forwards to at all — loopback, link-local including the metadata address `169.254.169.254`, multicast, and the control-plane ports `2379`, `2380`, `6443`, `10250`, `10255` — stays refused whatever `allowed_ips` says.
 
-A destination that names an address (`host: 10.0.0.5`) is matched by that same address and never by a pattern: a wildcard allowance cannot reach an address the declaration did not name.
+A destination that names an IPv4 address (`host: 10.0.0.5`) is matched by that same address and never by a pattern: a wildcard allowance cannot reach an address the declaration did not name. IPv6 literals and CIDR ranges are not accepted in `host`; a CIDR range is currently meaningful only inside `allowed_ips`, as a constraint on a hostname. There is no subnet-wide allow or deny target yet.
 
 ```yaml
 policy:
   network:
-    default: deny
+    default: deny-all
     allow:
       - host: api.github.com
-        port: 443
-        protocol: https
+        ports: [80, 443]
         allowed_ips:
           - 140.82.112.0/20
       - host: "*.internal.example.com"
         port: 8080
-        protocol: tcp
       - host: 203.0.113.7
         port: 443
-        protocol: https
 ```
 
 ```yaml
@@ -1196,20 +1192,19 @@ policy:
   network:
     deny:
       - host: 10.2.16.21
-        port: 443
-        protocol: https
+        ports: [80, 443]
       - host: metadata.example.com
         port: 80
 ```
 
 The default field selects the mode:
 
-- `default: deny` is **allowlist mode**: only an `allow` entry can permit a destination. A `deny` entry can carve an exception out of a broad allowance.
+- `default: deny-all` is **allowlist mode**: only an `allow` entry can permit a destination. A `deny` entry can carve an exception out of a broad allowance.
 - `default: allow-all` is **denylist mode**: every destination is permitted unless a `deny` entry matches it. An `allow` entry under `allow-all` cannot narrow anything, because the default already permits it.
 
 Hosts are lowercased, duplicate entries are rejected, and entries are sorted, so the normalized declaration enters canonical JSON and the spec hash independently of declaration order. Declaring `network` changes the hash; leaving it out keeps the hash byte-identical to a spec written before the field existed.
 
-An `allow` list restricts traffic only together with `default: deny`. A `deny` list restricts under either default, and a denial wins over an allowance that matches the same destination. A declaration with `default: allow-all` and no `deny` entries cannot restrict traffic; its `allow` entries are still validated, stored, and hashed, but they leave outbound access unrestricted.
+An `allow` list restricts traffic only together with `default: deny-all`. A `deny` list restricts under either default, and a denial wins over an allowance that matches the same destination. A declaration with `default: allow-all` and no `deny` entries cannot restrict traffic; its `allow` entries are still validated, stored, and hashed, but they leave outbound access unrestricted.
 
 When the declaration restricts — a `deny` default or at least one `deny` entry — the engine automatically allows its own endpoints before every declared rule: the runtime LLM facade and the telemetry endpoint a guest exports to. These are engine-side entries, not user declarations: a project cannot declare, remove, or override them, they are as narrow as the exact endpoint the engine hands the guest, and every request they allow is recorded against an engine rule (`engine.llm-facade`, `engine.telemetry`) so the exemption is visible rather than hidden.
 
@@ -1222,14 +1217,14 @@ The declaration is validated, hashed, round-trips through the API, and compiles 
 - The proxy resolves the destination itself and dials the address it decided against, so a name cannot resolve to something else between the decision and the connection.
 - **The limits are stated rather than implied.** A process that ignores the proxy environment still dials the internet directly and is not decided, until transparent capture puts every connection through the proxy; `udp` allowances cannot be carried by a forward proxy at all; and an IPv6 destination is refused, because the canonical endpoint identifier cannot express one.
 - When the sandbox has no address for the proxy (a deployment where the daemon is not reachable from inside the sandbox), the declaration cannot be applied and the sandbox is **reported as unenforced and still runs** — a restriction the platform cannot deliver must not become an availability failure. The daemon logs `declared network policy is not enforced` with the sandbox, driver, and reason, and the capability report states the same limit, so an unenforced declaration is never presented as a control. Set `EGRESS_UNENFORCEABLE_POLICY=refuse` to reject the sandbox in that case instead; the refusal happens while the sandbox is created (inside a run or a scheduler tick), so a deployment that requires the constraint to be real should treat the project as invalid rather than relying on that error.
-- A declaration with `default: allow-all` and no `deny` entries (including an `allow` list without `default: deny`) never restricts traffic, is never given the proxy environment, and never makes a sandbox fail to start. A `deny` entry is a restriction even under `allow-all`, so it is mediated and reported accordingly.
+- A declaration with `default: allow-all` and no `deny` entries (including an `allow` list without `default: deny-all`) never restricts traffic, is never given the proxy environment, and never makes a sandbox fail to start. A `deny` entry is a restriction even under `allow-all`, so it is mediated and reported accordingly.
 
 **Admission reports this, so you do not have to guess.** `config` prints the declared policies (their allowances and denials, whether each is inspectable, and any declared address ranges) to stderr while keeping the canonical spec on stdout. `up` and `apply` answer the question that matters at admission time — which mechanism will actually apply each declaration — from the daemon's own view:
 
 ```
 Network policy
   worker (driver docker)
-    declared  default deny, 1 allowance(s), 0 denial(s)
+    declared  default deny-all, 1 allowance(s), 0 denial(s)
       allow api.github.com:443/https (inspectable, addresses 203.0.113.0/24)
     enforced  forward_proxy (allowlist), the engine's forward proxy
 ```

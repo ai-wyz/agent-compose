@@ -14,7 +14,7 @@ import (
 // the hand-written egress constants in the other tests could not catch: the
 // schema normalizes an omitted (or explicit) permissive default to "allow-all",
 // which is not an egress.Action, so a declaration that did not spell out
-// default: deny used to fail compilation and refuse to start the sandbox.
+// default: deny-all used to fail compilation and refuse to start the sandbox.
 func TestSandboxNetworkPolicyFromComposeDeclaration(t *testing.T) {
 	tests := []struct {
 		name            string

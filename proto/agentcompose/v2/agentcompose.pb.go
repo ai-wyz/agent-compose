@@ -6718,9 +6718,10 @@ func (x *SandboxSpec) GetNetwork() *SandboxNetworkSpec {
 // engine-side policy entries and never appear here.
 type SandboxNetworkSpec struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// "allow-all" (the value an omitted default normalizes to) or "deny".
-	// "deny" is allowlist mode; "allow-all" is denylist mode. A denial wins over
-	// an allowance in either mode.
+	// "allow-all" (the value an omitted default normalizes to) or "deny-all".
+	// "deny-all" is allowlist mode; "allow-all" is denylist mode. The historical
+	// spelling "deny" is accepted by the YAML loader and normalized to "deny-all".
+	// A denial wins over an allowance in either mode.
 	Default string `protobuf:"bytes,1,opt,name=default,proto3" json:"default,omitempty"`
 	// Explicit allowances. Host patterns separate labels with "." and use "*"
 	// to match exactly one label.
@@ -6786,11 +6787,14 @@ type SandboxNetworkAllowSpec struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Required. A host, or a host pattern whose labels are separated by ".".
 	Host string `protobuf:"bytes,1,opt,name=host,proto3" json:"host,omitempty"`
-	// Required. The concrete destination port.
+	// The concrete destination port. A YAML declaration may use a "ports" list
+	// instead; normalization expands it into one message per port, so the wire
+	// representation always carries a single port here.
 	Port int32 `protobuf:"varint,2,opt,name=port,proto3" json:"port,omitempty"`
 	// Optional. "any" (the value an omitted protocol normalizes to), "http",
-	// "https", "tcp", or "udp". Only "http" and "https" are L7-inspectable;
-	// "any", "tcp", and "udp" are opaque allowances, not checked ones.
+	// "https", "tcp", or "udp". This is a matching and reporting label, not an
+	// L7 payload check; no L7 mediator is implemented. Microsandbox maps http
+	// and https to TCP.
 	Protocol string `protobuf:"bytes,3,opt,name=protocol,proto3" json:"protocol,omitempty"`
 	// Optional. The IP addresses or CIDR ranges this entry's host may resolve to,
 	// canonicalized as CIDRs. Empty leaves the addresses unconstrained. It is
@@ -6865,7 +6869,8 @@ type SandboxNetworkDenySpec struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Required. A host, or a host pattern whose labels are separated by ".".
 	Host string `protobuf:"bytes,1,opt,name=host,proto3" json:"host,omitempty"`
-	// Required. The concrete destination port.
+	// The concrete destination port. A YAML declaration may use a "ports" list
+	// instead; normalization expands it into one message per port.
 	Port int32 `protobuf:"varint,2,opt,name=port,proto3" json:"port,omitempty"`
 	// Optional. "any" (the value an omitted protocol normalizes to), "http",
 	// "https", "tcp", or "udp".

@@ -128,7 +128,7 @@ func (p SandboxNetworkPolicy) DenyByDefault() bool {
 // Restricts reports whether the policy can refuse any destination: a deny
 // default, or at least one declared denial. An allow default with no denial
 // cannot narrow egress, which is the legacy behavior of an allow list without
-// default: deny.
+// default: deny-all.
 func (p SandboxNetworkPolicy) Restricts() bool {
 	return p.DenyByDefault() || len(p.Deny) > 0
 }

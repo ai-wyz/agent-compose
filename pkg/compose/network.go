@@ -8,18 +8,26 @@ import (
 	"github.com/chaitin/agent-compose/pkg/egress"
 )
 
-// Sandbox network policy defaults. DefaultAllowAll is the value an omitted
+// Sandbox network policy modes. DefaultAllowAll is the value an omitted
 // default normalizes to; it is not an engine default, because the whole block
-// has to be declared before any of this applies (D3).
+// has to be declared before any of this applies (D3). The "-all" suffix keeps
+// the mode distinct from the allow and deny entries inside the block.
 const (
 	SandboxNetworkDefaultAllowAll = "allow-all"
-	SandboxNetworkDefaultDeny     = "deny"
+	SandboxNetworkDefaultDenyAll  = "deny-all"
+	// SandboxNetworkDefaultDeny is the historical spelling. It stays as an
+	// alias for source compatibility and still normalizes to deny-all.
+	SandboxNetworkDefaultDeny = SandboxNetworkDefaultDenyAll
 )
+
+// sandboxNetworkDefaultDenyLegacy is the pre-rename spelling accepted on
+// input. It is not canonical and never appears in normalized output.
+const sandboxNetworkDefaultDenyLegacy = "deny"
 
 // NormalizeSandboxNetworkSpec validates a declared sandbox network policy and
 // returns its normalized form, or nil when the block was not declared. The
-// default selects the mode: deny is allowlist mode and allow-all is denylist
-// mode; a deny entry wins over an allow entry in either mode.
+// default selects the mode: deny-all is allowlist mode and allow-all is
+// denylist mode; a deny entry wins over an allow entry in either mode.
 //
 // The normalized types stay in pkg/compose so the compose schema owns its own
 // declaration; converting to the decision model is a separate, explicit step
@@ -92,7 +100,7 @@ func egressActionForSandboxNetworkDefault(value string) (egress.Action, error) {
 	if err != nil {
 		return "", err
 	}
-	if normalized == SandboxNetworkDefaultDeny {
+	if normalized == SandboxNetworkDefaultDenyAll {
 		return egress.Deny, nil
 	}
 	return egress.Allow, nil
@@ -102,17 +110,20 @@ func normalizeSandboxNetworkDefault(value string) (string, error) {
 	switch normalized := strings.ToLower(strings.TrimSpace(value)); normalized {
 	case "":
 		return SandboxNetworkDefaultAllowAll, nil
-	case SandboxNetworkDefaultAllowAll, SandboxNetworkDefaultDeny:
+	case SandboxNetworkDefaultAllowAll:
 		return normalized, nil
+	case SandboxNetworkDefaultDenyAll, sandboxNetworkDefaultDenyLegacy:
+		return SandboxNetworkDefaultDenyAll, nil
 	default:
-		return "", fmt.Errorf("network default must be %q or %q", SandboxNetworkDefaultAllowAll, SandboxNetworkDefaultDeny)
+		return "", fmt.Errorf("network default must be %q or %q", SandboxNetworkDefaultAllowAll, SandboxNetworkDefaultDenyAll)
 	}
 }
 
-// Bounds on one declared allowance list. Every entry and every allowed address
-// is validated, deduplicated, and compiled before the declaration can be
-// refused, so an unbounded list is work a request makes the daemon do. The
-// limits are far above any real declaration and exist only to bound that work.
+// Bounds on one declared allow or deny list and its port expansion. Every entry
+// and every allowed address is validated, deduplicated, and compiled before the
+// declaration can be refused, so an unbounded list is work a request makes the
+// daemon do. The limits are far above any real declaration and exist only to
+// bound that work; a ports list is capped by the same entry limit.
 const (
 	maxSandboxNetworkAllowEntries    = 256
 	maxSandboxNetworkAllowAllowedIPs = 256
@@ -134,23 +145,29 @@ func normalizeSandboxNetworkDeny(path string, values []SandboxNetworkDenySpec) (
 		if err := egress.ValidateHostPattern(host); err != nil {
 			return nil, &ValidationError{Path: entryPath + ".host", Message: err.Error()}
 		}
-		if value.Port < 1 || value.Port > 65535 {
-			return nil, &ValidationError{Path: entryPath + ".port", Message: fmt.Sprintf("port must be between 1 and 65535, got %d", value.Port)}
-		}
 		protocol, err := egress.ParseProtocol(value.Protocol)
 		if err != nil {
 			return nil, &ValidationError{Path: entryPath + ".protocol", Message: err.Error()}
 		}
-		dedupeKey := fmt.Sprintf("%s\x00%d\x00%s", host, value.Port, protocol)
-		if _, duplicate := seen[dedupeKey]; duplicate {
-			return nil, &ValidationError{Path: entryPath, Message: fmt.Sprintf("duplicate deny entry for %q port %d protocol %q", host, value.Port, protocol)}
+		ports, err := normalizeSandboxNetworkPorts(entryPath, value.Port, value.Ports, maxSandboxNetworkDenyEntries)
+		if err != nil {
+			return nil, err
 		}
-		seen[dedupeKey] = struct{}{}
-		normalized = append(normalized, NormalizedSandboxNetworkDenySpec{
-			Host:     host,
-			Port:     value.Port,
-			Protocol: string(protocol),
-		})
+		for _, port := range ports {
+			dedupeKey := fmt.Sprintf("%s\x00%d\x00%s", host, port, protocol)
+			if _, duplicate := seen[dedupeKey]; duplicate {
+				return nil, &ValidationError{Path: entryPath, Message: fmt.Sprintf("duplicate deny entry for %q port %d protocol %q", host, port, protocol)}
+			}
+			seen[dedupeKey] = struct{}{}
+			normalized = append(normalized, NormalizedSandboxNetworkDenySpec{
+				Host:     host,
+				Port:     port,
+				Protocol: string(protocol),
+			})
+		}
+		if len(normalized) > maxSandboxNetworkDenyEntries {
+			return nil, &ValidationError{Path: path, Message: fmt.Sprintf("at most %d deny entries are supported after expanding ports", maxSandboxNetworkDenyEntries)}
+		}
 	}
 	// Deny entries are a set like allowances: declaration order carries no
 	// meaning because any matching denial refuses the destination.
@@ -181,9 +198,6 @@ func normalizeSandboxNetworkAllow(path string, values []SandboxNetworkAllowSpec)
 		if err := egress.ValidateHostPattern(host); err != nil {
 			return nil, &ValidationError{Path: entryPath + ".host", Message: err.Error()}
 		}
-		if value.Port < 1 || value.Port > 65535 {
-			return nil, &ValidationError{Path: entryPath + ".port", Message: fmt.Sprintf("port must be between 1 and 65535, got %d", value.Port)}
-		}
 		protocol, err := egress.ParseProtocol(value.Protocol)
 		if err != nil {
 			return nil, &ValidationError{Path: entryPath + ".protocol", Message: err.Error()}
@@ -191,21 +205,30 @@ func normalizeSandboxNetworkAllow(path string, values []SandboxNetworkAllowSpec)
 		if len(value.AllowedIPs) > maxSandboxNetworkAllowAllowedIPs {
 			return nil, &ValidationError{Path: entryPath + ".allowed_ips", Message: fmt.Sprintf("at most %d allowed addresses are supported per entry, got %d", maxSandboxNetworkAllowAllowedIPs, len(value.AllowedIPs))}
 		}
-		dedupeKey := fmt.Sprintf("%s\x00%d\x00%s", host, value.Port, protocol)
-		if _, duplicate := seen[dedupeKey]; duplicate {
-			return nil, &ValidationError{Path: entryPath, Message: fmt.Sprintf("duplicate allow entry for %q port %d protocol %q", host, value.Port, protocol)}
-		}
-		seen[dedupeKey] = struct{}{}
 		allowedIPs, err := egress.NormalizeAllowedIPs(value.AllowedIPs)
 		if err != nil {
 			return nil, &ValidationError{Path: entryPath + ".allowed_ips", Message: err.Error()}
 		}
-		normalized = append(normalized, NormalizedSandboxNetworkAllowSpec{
-			Host:       host,
-			Port:       value.Port,
-			Protocol:   string(protocol),
-			AllowedIPs: allowedIPs,
-		})
+		ports, err := normalizeSandboxNetworkPorts(entryPath, value.Port, value.Ports, maxSandboxNetworkAllowEntries)
+		if err != nil {
+			return nil, err
+		}
+		for _, port := range ports {
+			dedupeKey := fmt.Sprintf("%s\x00%d\x00%s", host, port, protocol)
+			if _, duplicate := seen[dedupeKey]; duplicate {
+				return nil, &ValidationError{Path: entryPath, Message: fmt.Sprintf("duplicate allow entry for %q port %d protocol %q", host, port, protocol)}
+			}
+			seen[dedupeKey] = struct{}{}
+			normalized = append(normalized, NormalizedSandboxNetworkAllowSpec{
+				Host:       host,
+				Port:       port,
+				Protocol:   string(protocol),
+				AllowedIPs: append([]string(nil), allowedIPs...),
+			})
+		}
+		if len(normalized) > maxSandboxNetworkAllowEntries {
+			return nil, &ValidationError{Path: path, Message: fmt.Sprintf("at most %d allow entries are supported after expanding ports", maxSandboxNetworkAllowEntries)}
+		}
 	}
 	// Order in the source carries no meaning because every entry allows, so
 	// sort for a declaration-order-independent canonical JSON and hash.
@@ -218,5 +241,39 @@ func normalizeSandboxNetworkAllow(path string, values []SandboxNetworkAllowSpec)
 		}
 		return strings.Compare(a.Protocol, b.Protocol)
 	})
+	return normalized, nil
+}
+
+// normalizeSandboxNetworkPorts resolves the single-port and multi-port forms
+// into the list normalization expands. Exactly one form may be used; a port
+// list is deduplicated and bounded before any entry is emitted.
+func normalizeSandboxNetworkPorts(path string, port int, ports []int, max int) ([]int, error) {
+	if port != 0 && len(ports) > 0 {
+		return nil, &ValidationError{Path: path, Message: "specify port or ports, not both"}
+	}
+	if len(ports) == 0 {
+		if port == 0 {
+			return nil, &ValidationError{Path: path + ".port", Message: "port must be between 1 and 65535, got 0"}
+		}
+		if port < 1 || port > 65535 {
+			return nil, &ValidationError{Path: path + ".port", Message: fmt.Sprintf("port must be between 1 and 65535, got %d", port)}
+		}
+		return []int{port}, nil
+	}
+	if len(ports) > max {
+		return nil, &ValidationError{Path: path + ".ports", Message: fmt.Sprintf("at most %d ports are supported per entry, got %d", max, len(ports))}
+	}
+	normalized := make([]int, 0, len(ports))
+	seen := make(map[int]struct{}, len(ports))
+	for index, candidate := range ports {
+		if candidate < 1 || candidate > 65535 {
+			return nil, &ValidationError{Path: fmt.Sprintf("%s.ports[%d]", path, index), Message: fmt.Sprintf("port must be between 1 and 65535, got %d", candidate)}
+		}
+		if _, duplicate := seen[candidate]; duplicate {
+			return nil, &ValidationError{Path: path + ".ports", Message: fmt.Sprintf("duplicate port %d", candidate)}
+		}
+		seen[candidate] = struct{}{}
+		normalized = append(normalized, candidate)
+	}
 	return normalized, nil
 }

@@ -175,7 +175,7 @@ func egressPolicyFacts(driver string) RuntimeCapabilityDimensionFacts {
 	facts := RuntimeCapabilityDimensionFacts{
 		Dimension:       dimensionEgressPolicy,
 		Observed:        fmt.Sprintf("strength=%s; %s", enforcement.Strength, enforcement.Notes),
-		DefaultBehavior: "an undeclared network policy is not deny, so egress stays unrestricted (D3); when a sandbox declares default: deny or a deny entry the engine auto-allows its own runtime LLM facade and telemetry endpoints as non-overridable engine-side rules; when the sandbox can reach the daemon the engine enforces the declaration itself in its forward proxy, and the driver's own strength above does not apply; on a driver that cannot apply the declaration and a sandbox that cannot reach the proxy, the sandbox reports the declaration as unenforced and runs, unless the deployment sets EGRESS_UNENFORCEABLE_POLICY=refuse, in which case the sandbox is refused instead",
+		DefaultBehavior: "an undeclared network policy is not deny, so egress stays unrestricted (D3); when a sandbox declares default: deny-all or a deny entry the engine auto-allows its own runtime LLM facade and telemetry endpoints as non-overridable engine-side rules; when the sandbox can reach the daemon the engine enforces the declaration itself in its forward proxy, and the driver's own strength above does not apply; on a driver that cannot apply the declaration and a sandbox that cannot reach the proxy, the sandbox reports the declaration as unenforced and runs, unless the deployment sets EGRESS_UNENFORCEABLE_POLICY=refuse, in which case the sandbox is refused instead",
 	}
 	if enforcement.Strength == SandboxEgressStrengthNone {
 		facts.Mechanism = reasonNotConfigured

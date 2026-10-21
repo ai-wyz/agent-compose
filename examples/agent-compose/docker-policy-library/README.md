@@ -23,11 +23,10 @@ name: docker-policy-library
 policies:
   locked-down:
     network:
-      default: deny
+      default: deny-all
       allow:
         - host: api.github.com
           port: 443
-          protocol: https
   retained-runtime:
     stopped_runtime_policy: retain
 
@@ -150,16 +149,15 @@ agents:
       policy:
         stopped_runtime_policy: remove
         network:
-            default: deny
+            default: deny-all
             allow:
                 - host: api.github.com
                   port: 443
-                  protocol: https
 ```
 
-## Docker driver and `default: deny`
+## Docker driver and `default: deny-all`
 
-`reviewer` declares `default: deny`. The Docker driver cannot express the
+`reviewer` declares `default: deny-all`. The Docker driver cannot express the
 declared allowances while keeping the engine's own LLM facade and telemetry
 endpoint reachable, so the engine **refuses to create** that sandbox with an
 error naming the driver instead of silently running it with unrestricted egress.

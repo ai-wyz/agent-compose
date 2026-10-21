@@ -49,7 +49,7 @@ const networkPolicyE2EFixtureHostEnv = "AGENT_COMPOSE_E2E_NETWORK_POLICY_FIXTURE
 //     range does not cover the destination is refused;
 //   - the metadata address is refused even when the declaration names it and
 //     covers its range;
-//   - an allow list without `default: deny` restricts nothing;
+//   - an allow list without `default: deny-all` restricts nothing;
 //   - editing the declaration reaches a sandbox that is already running, because
 //     the proxy re-reads the declaration per request;
 //   - the daemon records the refusals, and each refusal names the engine rule
@@ -385,24 +385,24 @@ func (p networkPolicyE2EProject) write(t *testing.T, projectRoot string, liveUpd
 		liveUpdateAllow += p.allow("example.com", 443, "https", nil)
 	}
 	project := "name: netpol-e2e\nagents:\n" +
-		p.agent("matrix", "        default: deny\n        allow:\n"+
+		p.agent("matrix", "        default: deny-all\n        allow:\n"+
 			p.allow("api.github.com", 443, "https", nil)) +
 		p.agent("open", "") +
 		p.agent("allow-list-only", "        default: allow-all\n        allow:\n"+
 			p.allow("api.github.com", 443, "https", nil)) +
-		p.agent("port-blocked", "        default: deny\n        allow:\n"+
+		p.agent("port-blocked", "        default: deny-all\n        allow:\n"+
 			p.allow("api.github.com", 6443, "https", nil)) +
-		p.agent("address-literal", "        default: deny\n        allow:\n"+
+		p.agent("address-literal", "        default: deny-all\n        allow:\n"+
 			p.allow(p.fixtureHost, p.fixturePort, "http", nil)) +
-		p.agent("address-constrained", "        default: deny\n        allow:\n"+
+		p.agent("address-constrained", "        default: deny-all\n        allow:\n"+
 			p.allow(p.fixtureHost, p.fixturePort, "http", []string{p.fixtureHost + "/32"})) +
-		p.agent("address-out-of-range", "        default: deny\n        allow:\n"+
+		p.agent("address-out-of-range", "        default: deny-all\n        allow:\n"+
 			p.allow(p.fixtureHost, p.fixturePort, "http", []string{"203.0.113.0/24"})) +
-		p.agent("name-out-of-range", "        default: deny\n        allow:\n"+
+		p.agent("name-out-of-range", "        default: deny-all\n        allow:\n"+
 			p.allow("api.github.com", 443, "https", []string{"203.0.113.0/24"})) +
-		p.agent("metadata-allowed", "        default: deny\n        allow:\n"+
+		p.agent("metadata-allowed", "        default: deny-all\n        allow:\n"+
 			p.allow("169.254.169.254", 80, "http", []string{"169.254.0.0/16"})) +
-		p.agent("live-update", "        default: deny\n        allow:\n"+liveUpdateAllow)
+		p.agent("live-update", "        default: deny-all\n        allow:\n"+liveUpdateAllow)
 	if err := os.WriteFile(filepath.Join(projectRoot, "agent-compose.yml"), []byte(project), 0o644); err != nil {
 		t.Fatalf("write the network policy project: %v", err)
 	}

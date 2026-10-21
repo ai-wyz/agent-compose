@@ -132,9 +132,10 @@ type SandboxSpec struct {
 // leaves outbound access exactly as it is today.
 type SandboxNetworkSpec struct {
 	// Default selects the mode and the action for traffic no entry matches. It
-	// is "allow-all" (the value an omitted default normalizes to) or "deny".
+	// is "allow-all" (the value an omitted default normalizes to) or "deny-all".
+	// The historical value "deny" is accepted and normalized to "deny-all".
 	//
-	// "deny" is allowlist mode: only an Allow entry can permit a destination.
+	// "deny-all" is allowlist mode: only an Allow entry can permit a destination.
 	// "allow-all" is denylist mode: every destination is permitted unless a Deny
 	// entry refuses it. A Deny entry wins over an Allow entry in either mode, so
 	// allowlist mode can carve exceptions out of a broad allowance.
@@ -147,9 +148,15 @@ type SandboxNetworkSpec struct {
 // pattern whose labels are separated by "."; "*" matches exactly one label.
 type SandboxNetworkAllowSpec struct {
 	Host string `yaml:"host,omitempty" json:"host,omitempty"`
-	Port int    `yaml:"port,omitempty" json:"port,omitempty"`
-	// Protocol is optional. An omitted protocol normalizes to "any", which is
-	// an opaque allowance: the engine does not claim it can inspect it.
+	// Port and Ports are alternatives: exactly one destination port, or a list
+	// of ports that normalization expands into one canonical entry per port.
+	// Specifying both is rejected so the declaration has no ambiguous meaning.
+	Port  int   `yaml:"port,omitempty" json:"port,omitempty"`
+	Ports []int `yaml:"ports,omitempty" json:"ports,omitempty"`
+	// Protocol is optional. An omitted protocol normalizes to "any". It is a
+	// matching and reporting label, not an L7 payload check: no L7 mediator is
+	// implemented, and Microsandbox maps http/https to TCP. Omit it for a plain
+	// host-and-port rule.
 	Protocol string `yaml:"protocol,omitempty" json:"protocol,omitempty"`
 	// AllowedIPs optionally restricts which addresses Host may resolve to. Each
 	// entry is an IP address or a CIDR range; a name that resolves outside them
@@ -163,8 +170,13 @@ type SandboxNetworkAllowSpec struct {
 // destination, and constraining it to selected addresses would turn a deny
 // entry into something the declaration cannot express unambiguously.
 type SandboxNetworkDenySpec struct {
-	Host     string `yaml:"host,omitempty" json:"host,omitempty"`
-	Port     int    `yaml:"port,omitempty" json:"port,omitempty"`
+	Host string `yaml:"host,omitempty" json:"host,omitempty"`
+	// Port and Ports are alternatives, as on an allowance; normalization
+	// expands each listed port into its own canonical denial.
+	Port  int   `yaml:"port,omitempty" json:"port,omitempty"`
+	Ports []int `yaml:"ports,omitempty" json:"ports,omitempty"`
+	// Protocol has the same matching and reporting meaning as on an allowance;
+	// it is not an L7 check.
 	Protocol string `yaml:"protocol,omitempty" json:"protocol,omitempty"`
 }
 
@@ -689,6 +701,7 @@ func validateSandboxNetworkAllowList(node *yaml.Node, path string) error {
 		if err := validateMapping(item, itemPath, map[string]nodeValidator{
 			"host":        validateScalar,
 			"port":        validateInt,
+			"ports":       validateIntSequence,
 			"protocol":    validateScalar,
 			"allowed_ips": validateStringList,
 		}); err != nil {
@@ -707,6 +720,7 @@ func validateSandboxNetworkDenyList(node *yaml.Node, path string) error {
 		if err := validateMapping(item, itemPath, map[string]nodeValidator{
 			"host":     validateScalar,
 			"port":     validateInt,
+			"ports":    validateIntSequence,
 			"protocol": validateScalar,
 		}); err != nil {
 			return err
@@ -1099,6 +1113,18 @@ func validateInt(node *yaml.Node, path string) error {
 	var value int
 	if err := node.Decode(&value); err != nil {
 		return newParseError(node, path, "expected int")
+	}
+	return nil
+}
+
+func validateIntSequence(node *yaml.Node, path string) error {
+	if err := requireKind(node, path, yaml.SequenceNode, "sequence"); err != nil {
+		return err
+	}
+	for index, item := range node.Content {
+		if err := validateInt(item, fmt.Sprintf("%s[%d]", path, index)); err != nil {
+			return err
+		}
 	}
 	return nil
 }

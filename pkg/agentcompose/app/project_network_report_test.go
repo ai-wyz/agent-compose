@@ -33,7 +33,7 @@ func normalizedAgentWithNetwork(name, driver string, network *compose.Normalized
 // rather than being presented as a control.
 func TestAgentNetworkPolicyReportsNameTheMechanismAndTheGap(t *testing.T) {
 	deny := &compose.NormalizedSandboxNetworkSpec{
-		Default: compose.SandboxNetworkDefaultDeny,
+		Default: compose.SandboxNetworkDefaultDenyAll,
 		Allow: []compose.NormalizedSandboxNetworkAllowSpec{{
 			Host: "api.github.com", Port: 443, Protocol: "https",
 			AllowedIPs: []string{"203.0.113.0/24"},
@@ -97,7 +97,7 @@ func TestAgentNetworkPolicyReportsNameTheMechanismAndTheGap(t *testing.T) {
 // that admission answers "and then what": the report names the deployment's own
 // EGRESS_UNENFORCEABLE_POLICY rather than leaving it to be looked up.
 func TestAgentNetworkPolicyReportsStateTheOutcomeOfAnUnenforceableDeclaration(t *testing.T) {
-	deny := &compose.NormalizedSandboxNetworkSpec{Default: compose.SandboxNetworkDefaultDeny}
+	deny := &compose.NormalizedSandboxNetworkSpec{Default: compose.SandboxNetworkDefaultDenyAll}
 	spec := &compose.NormalizedProjectSpec{Agents: []compose.NormalizedAgentSpec{
 		normalizedAgentWithNetwork("worker", "k8s", deny),
 	}}

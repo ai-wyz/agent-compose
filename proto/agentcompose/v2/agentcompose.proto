@@ -1013,9 +1013,10 @@ message SandboxSpec {
 // sandboxes. User-declarable only; the engine's own auto-allowed endpoints are
 // engine-side policy entries and never appear here.
 message SandboxNetworkSpec {
-  // "allow-all" (the value an omitted default normalizes to) or "deny".
-  // "deny" is allowlist mode; "allow-all" is denylist mode. A denial wins over
-  // an allowance in either mode.
+  // "allow-all" (the value an omitted default normalizes to) or "deny-all".
+  // "deny-all" is allowlist mode; "allow-all" is denylist mode. The historical
+  // spelling "deny" is accepted by the YAML loader and normalized to "deny-all".
+  // A denial wins over an allowance in either mode.
   string default = 1;
   // Explicit allowances. Host patterns separate labels with "." and use "*"
   // to match exactly one label.
@@ -1027,11 +1028,14 @@ message SandboxNetworkSpec {
 message SandboxNetworkAllowSpec {
   // Required. A host, or a host pattern whose labels are separated by ".".
   string host = 1;
-  // Required. The concrete destination port.
+  // The concrete destination port. A YAML declaration may use a "ports" list
+  // instead; normalization expands it into one message per port, so the wire
+  // representation always carries a single port here.
   int32 port = 2;
   // Optional. "any" (the value an omitted protocol normalizes to), "http",
-  // "https", "tcp", or "udp". Only "http" and "https" are L7-inspectable;
-  // "any", "tcp", and "udp" are opaque allowances, not checked ones.
+  // "https", "tcp", or "udp". This is a matching and reporting label, not an
+  // L7 payload check; no L7 mediator is implemented. Microsandbox maps http
+  // and https to TCP.
   string protocol = 3;
   // Optional. The IP addresses or CIDR ranges this entry's host may resolve to,
   // canonicalized as CIDRs. Empty leaves the addresses unconstrained. It is
@@ -1045,7 +1049,8 @@ message SandboxNetworkAllowSpec {
 message SandboxNetworkDenySpec {
   // Required. A host, or a host pattern whose labels are separated by ".".
   string host = 1;
-  // Required. The concrete destination port.
+  // The concrete destination port. A YAML declaration may use a "ports" list
+  // instead; normalization expands it into one message per port.
   int32 port = 2;
   // Optional. "any" (the value an omitted protocol normalizes to), "http",
   // "https", "tcp", or "udp".

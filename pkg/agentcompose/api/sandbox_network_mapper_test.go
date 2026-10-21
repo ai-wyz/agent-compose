@@ -17,7 +17,7 @@ agents:
     provider: codex
     policy:
       network:
-        default: deny
+        default: deny-all
         allow:
           - host: "*.example.com"
             port: 8443
@@ -41,8 +41,8 @@ agents:
 	}
 
 	network := decoded.GetNetwork()
-	if network.GetDefault() != compose.SandboxNetworkDefaultDeny {
-		t.Fatalf("default = %q, want %q", network.GetDefault(), compose.SandboxNetworkDefaultDeny)
+	if network.GetDefault() != compose.SandboxNetworkDefaultDenyAll {
+		t.Fatalf("default = %q, want %q", network.GetDefault(), compose.SandboxNetworkDefaultDenyAll)
 	}
 	allow := network.GetAllow()
 	if len(allow) != 2 {

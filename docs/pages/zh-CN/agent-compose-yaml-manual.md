@@ -86,11 +86,10 @@ policies:
   locked-down:
     stopped_runtime_policy: retain
     network:
-      default: deny
+      default: deny-all
       allow:
         - host: api.github.com
           port: 443
-          protocol: https
 
 agents:
   reviewer:
@@ -521,11 +520,10 @@ policies:
   locked-down:
     stopped_runtime_policy: retain
     network:
-      default: deny
+      default: deny-all
       allow:
         - host: api.github.com
           port: 443
-          protocol: https
 
 agents:
   reviewer:
@@ -1112,12 +1110,12 @@ Daemon 还会记录每个 runtime 创建时所依据的出网策略。启动 san
 
 ### `policy.network`：出网策略声明
 
-`network` 用于声明该 Agent 的 sandbox 可以访问什么。**它是可选的，且“未声明”不等于拒绝**：未声明 `policy.network` 时，引擎行为与今天完全一致，出网不受限制。`default: deny` 是因为声明了这个块才生效的策略，**不是引擎的新默认值**（D3）。
+`network` 用于声明该 Agent 的 sandbox 可以访问什么。**它是可选的，且“未声明”不等于拒绝**：未声明 `policy.network` 时，引擎行为与今天完全一致，出网不受限制。`default: deny-all` 是因为声明了这个块才生效的策略，**不是引擎的新默认值**（D3）。
 
 | 字段 | 类型 | 默认值 | 作用 |
 | --- | --- | --- | --- |
-| `default` | string | `allow-all` | 同时选择模式与未命中任何条目时的动作：`deny` 是白名单模式，`allow-all` 是黑名单模式。两种模式下 `deny` 项都优先于 `allow` 项。 |
-| `allow` | list | 空 | 显式放行项。只在白名单模式（`default: deny`）下起限制作用，或作为未被拒绝时的例外。 |
+| `default` | string | `allow-all` | 同时选择模式与未命中任何条目时的动作：`deny-all` 是白名单模式，`allow-all` 是黑名单模式。历史写法 `deny` 仍被接受并规范化为 `deny-all`。两种模式下 `deny` 项都优先于 `allow` 项。 |
+| `allow` | list | 空 | 显式放行项。只在白名单模式（`default: deny-all`）下起限制作用，或作为未被拒绝时的例外。 |
 | `deny` | list | 空 | 显式拒绝项。在两种模式下都起限制作用，并在所有放行项之前应用。 |
 
 每个 `allow` 项：
@@ -1125,32 +1123,30 @@ Daemon 还会记录每个 runtime 创建时所依据的出网策略。启动 san
 | 字段 | 类型 | 默认值 | 作用 |
 | --- | --- | --- | --- |
 | `host` | string | 必填 | 主机或主机模式。各段以 `.` 分隔，`*` 只匹配一段：`*.example.com` 匹配 `api.example.com`，但不匹配 `example.com`，也不匹配 `a.b.example.com`。不支持 IPv6 字面量。 |
-| `port` | int | 必填 | 目标端口，取值 1–65535。 |
-| `protocol` | string | `any` | `http`、`https`、`tcp`、`udp` 或 `any`。只有 `http` 与 `https` 在模型中被标记为可在 L7 检查，`any`、`tcp`、`udp` 属于不透明放行，永远不会被呈现为“已检查”。当前没有实现 L7 中间层，因此引擎今天不会检查任何载荷：这个区分是建模与报告属性，不是过滤器。 |
-| `allowed_ips` | list | 空 | 该条目的 `host` 允许解析到的 IP 地址或 CIDR 范围（可选）。名字解析出的每个地址都必须落在其中，否则该放行项不适用。裸地址就是它自身的单地址范围（`10.0.0.5` 即 `10.0.0.5/32`）；条目会被规范化并排序。 |
+| `port` | int | 与 `ports` 二选一 | 单个目标端口，取值 1–65535。 |
+| `ports` | int 列表 | 与 `port` 二选一 | 同一主机和协议上多个端口的简写，例如 `[80, 443]`。规范化会把每个端口展开成独立的规范条目；`port` 与 `ports` 不能同时使用。 |
+| `protocol` | string | `any` | `http`、`https`、`tcp`、`udp` 或 `any`。它只是匹配与报告标签，不是 L7 检查：当前没有 L7 中间层检查载荷，Microsandbox 还会把 `http`/`https` 归并为 TCP。普通“主机 + 端口”规则可以省略；只有 driver 能承载 UDP 时才使用 `udp`（正向代理不能承载 UDP）。 |
+| `allowed_ips` | list | 空 | 该条目的 `host` 允许解析到的 IP 地址或 CIDR 范围（可选）。名字解析出的每个地址都必须落在其中，否则该放行项不适用。裸地址就是它自身的单地址范围（`10.0.0.5` 即 `10.0.0.5/32`）；条目会被规范化并排序。它约束的是主机名，不是子网目标，也不能用在 `deny` 项上。 |
 
-每个 `deny` 项包含 `host`、`port` 与可选的 `protocol`，校验和规范化规则与放行项相同；它没有 `allowed_ips` 字段，因为拒绝的是目标本身。
+每个 `deny` 项包含 `host`、`port` 或 `ports`，以及可选的 `protocol`，校验和规范化规则与放行项相同；它没有 `allowed_ips` 字段，因为拒绝的是目标本身。 `ports` 中的每个端口都会展开成独立的规范条目，因此 spec hash 与准入报告和逐条写 `port` 完全等价。
 
 `allowed_ips` 的作用是把名字与地址绑定起来。没有它时，对 `api.example.com` 的放行会跟随该名字解析到的任何地方，因此被污染或被攻陷的解析结果可以把 sandbox 引到声明从未指定的地址。有了它，引擎只有在即将使用的地址落在声明范围内时才建立连接；如果一个名字同时解析出允许与不允许的地址，会被拒绝而不是被择优采用。引擎永不转发的地址——loopback、link-local（含元数据地址 `169.254.169.254`）、multicast，以及控制面端口 `2379`、`2380`、`6443`、`10250`、`10255`——无论 `allowed_ips` 怎么写都保持被拒绝。
 
-以地址命名的目标（`host: 10.0.0.5`）只由同一地址匹配，永远不会由模式匹配：通配符放行项无法到达声明未点名的地址。
+以 IPv4 地址命名的目标（`host: 10.0.0.5`）只由同一地址匹配，永远不会由模式匹配：通配符放行项无法到达声明未点名的地址。`host` 不接受 IPv6 字面量或 CIDR 范围；CIDR 目前只在 `allowed_ips` 中有意义，作为主机名的地址约束。当前没有“按子网放行/拒绝”的目标写法。
 
 ```yaml
 policy:
   network:
-    default: deny
+    default: deny-all
     allow:
       - host: api.github.com
-        port: 443
-        protocol: https
+        ports: [80, 443]
         allowed_ips:
           - 140.82.112.0/20
       - host: "*.internal.example.com"
         port: 8080
-        protocol: tcp
       - host: 203.0.113.7
         port: 443
-        protocol: https
 ```
 
 ```yaml
@@ -1158,22 +1154,21 @@ policy:
   network:
     deny:
       - host: 10.2.16.21
-        port: 443
-        protocol: https
+        ports: [80, 443]
       - host: metadata.example.com
         port: 80
 ```
 
 `default` 字段选择模式：
 
-- `default: deny` 是**白名单模式**：只有 `allow` 项能放行目标；`deny` 项可以从宽泛的放行中挖掉例外。
+- `default: deny-all` 是**白名单模式**：只有 `allow` 项能放行目标；`deny` 项可以从宽泛的放行中挖掉例外。
 - `default: allow-all` 是**黑名单模式**：除命中 `deny` 项外，所有目标都被放行。`allow-all` 下的 `allow` 项无法收窄任何东西，因为默认已经放行。
 
 主机名会被转为小写，重复项会被拒绝，条目会被排序，因此规范化后的声明进入 canonical JSON 与 spec hash，且与声明顺序无关。声明 `network` 会改变 hash；不声明则与引入该字段之前的 spec 逐字节一致。
 
-`allow` 列表只有在配合 `default: deny` 时才能限制流量。`deny` 列表在两种默认值下都能限制流量，且同一目标上 `deny` 优先于 `allow`。`default: allow-all` 且没有 `deny` 项的声明无法限制流量；其中的 `allow` 项仍会被校验、存储并参与 hash，但出网不受限制。
+`allow` 列表只有在配合 `default: deny-all` 时才能限制流量。`deny` 列表在两种默认值下都能限制流量，且同一目标上 `deny` 优先于 `allow`。`default: allow-all` 且没有 `deny` 项的声明无法限制流量；其中的 `allow` 项仍会被校验、存储并参与 hash，但出网不受限制。
 
-当声明具有限制性（`default: deny` 或至少一个 `deny` 项）时，引擎会在所有用户规则之前自动放行自身的端点：runtime LLM facade 与 guest 上报使用的遥测端点。这些是**引擎侧**条目，不是用户声明：项目无法声明、删除或覆盖它们；放行范围就是引擎交给 guest 的那个精确端点；每一次放行都会记录在引擎规则（`engine.llm-facade`、`engine.telemetry`）名下，使这条例外可见而非隐藏。
+当声明具有限制性（`default: deny-all` 或至少一个 `deny` 项）时，引擎会在所有用户规则之前自动放行自身的端点：runtime LLM facade 与 guest 上报使用的遥测端点。这些是**引擎侧**条目，不是用户声明：项目无法声明、删除或覆盖它们；放行范围就是引擎交给 guest 的那个精确端点；每一次放行都会记录在引擎规则（`engine.llm-facade`、`engine.telemetry`）名下，使这条例外可见而非隐藏。
 
 该声明会被校验、进入 hash、经 API 往返，并编译进引擎统一的出网判定模型。它是否会限制流量取决于 runtime driver；driver 的能力报告会如实说明它实际执行的强度，而不会把部分机制呈现为完整机制：
 
@@ -1184,14 +1179,14 @@ policy:
 - 代理自行解析目标，并连接它做过判定的那个地址，因此名字无法在判定与建连之间被解析成别的东西。
 - **限制是明说的，而不是暗示的。** 忽略代理环境变量的进程仍会直连外网、不被判定，直到透明捕获把所有连接都纳入代理；`udp` 放行项无法由正向代理承载；IPv6 目标会被拒绝，因为规范化端点标识无法表达它。
 - 当 sandbox 没有任何可达的代理地址时（例如 daemon 在 sandbox 内部不可达的部署），声明无法被执行，此时会**报告该声明未被执行，sandbox 照常运行**——平台无法交付的限制不应该变成可用性故障。daemon 会记录一条 `declared network policy is not enforced` 日志，包含 sandbox、driver 与原因；能力报告也写明同样的限制，因此未执行的声明不会被呈现为一项控制。设置 `EGRESS_UNENFORCEABLE_POLICY=refuse` 可在这种情况下改为拒绝 sandbox；此时拒绝发生在创建 sandbox 时（一次运行中或一个 scheduler tick 中），因此要求约束必须为真的部署应把项目视为非法，而不是依赖这条报错。
-- `default: allow-all` 且没有 `deny` 项的声明（包括只写 `allow` 列表而不写 `default: deny`）不会限制流量，不会被注入代理环境变量，也不会导致 sandbox 启动失败。`allow-all` 下的 `deny` 项仍是限制，因此会进入代理并如实报告。
+- `default: allow-all` 且没有 `deny` 项的声明（包括只写 `allow` 列表而不写 `default: deny-all`）不会限制流量，不会被注入代理环境变量，也不会导致 sandbox 启动失败。`allow-all` 下的 `deny` 项仍是限制，因此会进入代理并如实报告。
 
 **准入阶段会报告这些信息，你不必自行推断。**`config` 会把声明的策略（各条 allow 与 deny、是否可检视、以及声明的地址范围）打印到 stderr，同时保持 stdout 上的规范化 spec 不变。`up` 与 `apply` 则从 daemon 自身的视角回答准入阶段真正重要的问题——每条声明最终由哪种机制执行：
 
 ```
 Network policy
   worker (driver docker)
-    declared  default deny, 1 allowance(s), 0 denial(s)
+    declared  default deny-all, 1 allowance(s), 0 denial(s)
       allow api.github.com:443/https (inspectable, addresses 203.0.113.0/24)
     enforced  forward_proxy (allowlist), the engine's forward proxy
 ```

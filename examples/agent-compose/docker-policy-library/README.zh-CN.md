@@ -20,11 +20,10 @@ name: docker-policy-library
 policies:
   locked-down:
     network:
-      default: deny
+      default: deny-all
       allow:
         - host: api.github.com
           port: 443
-          protocol: https
   retained-runtime:
     stopped_runtime_policy: retain
 
@@ -97,9 +96,9 @@ go run ./cmd/agent-compose --file examples/agent-compose/docker-policy-library/a
 
 规范化输出中 `policies` 已被解析掉，每个 Agent 直接携带它选中的块（完整输出见英文文档）。
 
-## Docker 驱动与 `default: deny`
+## Docker 驱动与 `default: deny-all`
 
-`reviewer` 声明了 `default: deny`。Docker 驱动无法在保持引擎自身 LLM facade 和 telemetry 端点可达的同时表达这些 allow 规则，因此引擎会**拒绝创建**这个 sandbox，并给出带驱动名的错误，而不是静默地以不受限出网运行。`config` 和 `up` 不会创建 sandbox，所以可以成功；真正 `run` `reviewer` 时会 fail closed。
+`reviewer` 声明了 `default: deny-all`。Docker 驱动无法在保持引擎自身 LLM facade 和 telemetry 端点可达的同时表达这些 allow 规则，因此引擎会**拒绝创建**这个 sandbox，并给出带驱动名的错误，而不是静默地以不受限出网运行。`config` 和 `up` 不会创建 sandbox，所以可以成功；真正 `run` `reviewer` 时会 fail closed。
 
 如需真正运行，请使用 `builder` 或 `adhoc`，或把 `locked-down` 改成 `default: allow-all`（声明仍会被校验、哈希和保存，只是不会拒绝任何流量）。
 

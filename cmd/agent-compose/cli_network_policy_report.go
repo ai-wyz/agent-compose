@@ -135,16 +135,17 @@ func writeComposeAgentNetworkPolicy(out io.Writer, policy composeNetworkPolicyOu
 	if _, err := fmt.Fprintf(out, "  %s (driver %s)\n", policy.Agent, policy.Driver); err != nil {
 		return err
 	}
+	defaultLabel := networkPolicyDefaultLabel(policy.Default)
 	if !policy.Restricts {
 		// An undeclared policy cannot reach here, so this is a declared policy
 		// that refuses nothing: the documented behavior of an allow list without
 		// a deny default.
-		if _, err := fmt.Fprintf(out, "    declared  default %s with %d allowance(s): egress is not restricted, because an allow list needs default: deny and no denial matches\n", policy.Default, len(policy.Allow)); err != nil {
+		if _, err := fmt.Fprintf(out, "    declared  default %s with %d allowance(s): egress is not restricted, because an allow list needs default: deny-all and no denial matches\n", defaultLabel, len(policy.Allow)); err != nil {
 			return err
 		}
 		return writeComposeNetworkAllowances(out, policy.Allow)
 	}
-	if _, err := fmt.Fprintf(out, "    declared  default %s, %d allowance(s), %d denial(s)\n", policy.Default, len(policy.Allow), len(policy.Deny)); err != nil {
+	if _, err := fmt.Fprintf(out, "    declared  default %s, %d allowance(s), %d denial(s)\n", defaultLabel, len(policy.Allow), len(policy.Deny)); err != nil {
 		return err
 	}
 	for _, entry := range policy.Deny {
@@ -248,12 +249,27 @@ func writeComposeDeclaredNetworkPolicyNotes(out io.Writer, spec *compose.Normali
 	return nil
 }
 
+// networkPolicyDefaultLabel renders a policy action using the compose mode
+// vocabulary a reader sees in the YAML. The internal action remains allow or
+// deny; the "-all" suffix is what distinguishes the mode from an allow or deny
+// entry in the same block.
+func networkPolicyDefaultLabel(action string) string {
+	switch action {
+	case string(egress.Deny):
+		return "deny-all"
+	case string(egress.Allow):
+		return "allow-all"
+	default:
+		return action
+	}
+}
+
 func writeDeclaredNetworkPolicy(out io.Writer, agent string, report egress.NetworkPolicyReport) error {
-	if _, err := fmt.Fprintf(out, "  %s  default %s, %d allowance(s), %d denial(s)\n", agent, report.Default, len(report.Allow), len(report.Deny)); err != nil {
+	if _, err := fmt.Fprintf(out, "  %s  default %s, %d allowance(s), %d denial(s)\n", agent, networkPolicyDefaultLabel(string(report.Default)), len(report.Allow), len(report.Deny)); err != nil {
 		return err
 	}
 	if !report.Restricts && len(report.Allow) > 0 {
-		if _, err := fmt.Fprintln(out, "    egress is not restricted: an allow list alone does not restrict; add default: deny or a deny entry"); err != nil {
+		if _, err := fmt.Fprintln(out, "    egress is not restricted: an allow list alone does not restrict; add default: deny-all or a deny entry"); err != nil {
 			return err
 		}
 	}

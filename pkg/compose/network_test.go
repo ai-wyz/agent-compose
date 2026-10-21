@@ -86,7 +86,7 @@ agents:
     provider: codex
     sandbox:
       network:
-        default: deny
+        default: deny-all
 `, nil)
 	withAllow := mustNormalizeCompose(t, `
 name: network-hash
@@ -95,7 +95,7 @@ agents:
     provider: codex
     sandbox:
       network:
-        default: deny
+        default: deny-all
         allow:
           - host: api.github.com
             port: 443
@@ -108,7 +108,7 @@ agents:
     provider: codex
     sandbox:
       network:
-        default: deny
+        default: deny-all
         allow:
           - host: registry.npmjs.org
             port: 443
@@ -124,7 +124,7 @@ agents:
     provider: codex
     sandbox:
       network:
-        default: deny
+        default: deny-all
         allow:
           - host: api.github.com
             port: 443
@@ -132,6 +132,35 @@ agents:
           - host: registry.npmjs.org
             port: 443
             protocol: https
+`, nil)
+	withPorts := mustNormalizeCompose(t, `
+name: network-hash
+agents:
+  worker:
+    provider: codex
+    sandbox:
+      network:
+        default: deny-all
+        allow:
+          - host: api.github.com
+            ports: [443, 80]
+            protocol: tcp
+`, nil)
+	withSplitPorts := mustNormalizeCompose(t, `
+name: network-hash
+agents:
+  worker:
+    provider: codex
+    sandbox:
+      network:
+        default: deny-all
+        allow:
+          - host: api.github.com
+            port: 80
+            protocol: tcp
+          - host: api.github.com
+            port: 443
+            protocol: tcp
 `, nil)
 
 	base := mustHash(t, undeclared)
@@ -150,6 +179,9 @@ agents:
 	if mustHash(t, reorderedAllow) != mustHash(t, reorderedAllowAgain) {
 		t.Fatal("allow entry order changed the spec hash; normalization must sort the list")
 	}
+	if mustHash(t, withPorts) != mustHash(t, withSplitPorts) {
+		t.Fatal("ports expansion changed the spec hash; it must normalize to the same entries")
+	}
 }
 
 func TestNormalizeSandboxNetwork(t *testing.T) {
@@ -166,13 +198,13 @@ func TestNormalizeSandboxNetwork(t *testing.T) {
 		{
 			name: "deny with a patterned allow entry",
 			network: `network:
-        default: deny
+        default: deny-all
         allow:
           - host: "*.example.com"
             port: 8443
             protocol: tcp`,
 			want: &NormalizedSandboxNetworkSpec{
-				Default: SandboxNetworkDefaultDeny,
+				Default: SandboxNetworkDefaultDenyAll,
 				Allow: []NormalizedSandboxNetworkAllowSpec{
 					{Host: "*.example.com", Port: 8443, Protocol: "tcp"},
 				},
@@ -194,7 +226,7 @@ func TestNormalizeSandboxNetwork(t *testing.T) {
 		{
 			name: "allow entries are sorted and hosts lowercased",
 			network: `network:
-        default: deny
+        default: deny-all
         allow:
           - host: Registry.NPMJS.org
             port: 443
@@ -203,10 +235,52 @@ func TestNormalizeSandboxNetwork(t *testing.T) {
             port: 443
             protocol: https`,
 			want: &NormalizedSandboxNetworkSpec{
-				Default: SandboxNetworkDefaultDeny,
+				Default: SandboxNetworkDefaultDenyAll,
 				Allow: []NormalizedSandboxNetworkAllowSpec{
 					{Host: "api.github.com", Port: 443, Protocol: "https"},
 					{Host: "registry.npmjs.org", Port: 443, Protocol: "https"},
+				},
+			},
+		},
+		{
+			name: "deny-all is the canonical spelling",
+			network: `network:
+        default: deny-all`,
+			want: &NormalizedSandboxNetworkSpec{Default: SandboxNetworkDefaultDenyAll},
+		},
+		{
+			name: "historical deny spelling normalizes to deny-all",
+			network: `network:
+        default: deny`,
+			want: &NormalizedSandboxNetworkSpec{Default: SandboxNetworkDefaultDenyAll},
+		},
+		{
+			name: "allow ports expand into canonical entries",
+			network: `network:
+        default: deny-all
+        allow:
+          - host: API.github.com
+            ports: [443, 80]
+            protocol: tcp`,
+			want: &NormalizedSandboxNetworkSpec{
+				Default: SandboxNetworkDefaultDenyAll,
+				Allow: []NormalizedSandboxNetworkAllowSpec{
+					{Host: "api.github.com", Port: 80, Protocol: "tcp"},
+					{Host: "api.github.com", Port: 443, Protocol: "tcp"},
+				},
+			},
+		},
+		{
+			name: "deny ports expand into canonical entries",
+			network: `network:
+        deny:
+          - host: blocked.example.com
+            ports: [8443, 443]`,
+			want: &NormalizedSandboxNetworkSpec{
+				Default: SandboxNetworkDefaultAllowAll,
+				Deny: []NormalizedSandboxNetworkDenySpec{
+					{Host: "blocked.example.com", Port: 443, Protocol: "any"},
+					{Host: "blocked.example.com", Port: 8443, Protocol: "any"},
 				},
 			},
 		},
@@ -295,6 +369,31 @@ func TestSandboxNetworkRejectsInvalidDeclarations(t *testing.T) {
 			body:    "sandbox:\n      network:\n        allow:\n          host: api.github.com",
 			wantErr: "expected sequence",
 		},
+		{
+			name:    "port and ports together",
+			body:    "sandbox:\n      network:\n        allow:\n          - host: api.github.com\n            port: 443\n            ports: [80]",
+			wantErr: "specify port or ports, not both",
+		},
+		{
+			name:    "ports is not a sequence",
+			body:    "sandbox:\n      network:\n        allow:\n          - host: api.github.com\n            ports: 443",
+			wantErr: "expected sequence",
+		},
+		{
+			name:    "ports entry out of range",
+			body:    "sandbox:\n      network:\n        allow:\n          - host: api.github.com\n            ports: [443, 70000]",
+			wantErr: "port must be between 1 and 65535",
+		},
+		{
+			name:    "duplicate port in ports",
+			body:    "sandbox:\n      network:\n        allow:\n          - host: api.github.com\n            ports: [443, 443]",
+			wantErr: "duplicate port",
+		},
+		{
+			name:    "empty ports",
+			body:    "sandbox:\n      network:\n        deny:\n          - host: blocked.example.com\n            ports: []",
+			wantErr: "port must be between 1 and 65535",
+		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -325,7 +424,7 @@ func TestSandboxNetworkEgressDeclaration(t *testing.T) {
 		{
 			name: "declared deny with an allowance",
 			network: `network:
-        default: deny
+        default: deny-all
         allow:
           - host: api.github.com
             port: 443
@@ -457,12 +556,19 @@ func TestEgressActionForSandboxNetworkDefaultFailsClosed(t *testing.T) {
 	if got != egress.Allow {
 		t.Fatalf("allow-all mapped to %q, want %q", got, egress.Allow)
 	}
-	denied, err := egressActionForSandboxNetworkDefault(SandboxNetworkDefaultDeny)
+	denied, err := egressActionForSandboxNetworkDefault(SandboxNetworkDefaultDenyAll)
 	if err != nil {
 		t.Fatalf("egressActionForSandboxNetworkDefault(deny) error = %v", err)
 	}
 	if denied != egress.Deny {
-		t.Fatalf("deny mapped to %q, want %q", denied, egress.Deny)
+		t.Fatalf("deny-all mapped to %q, want %q", denied, egress.Deny)
+	}
+	legacyDeny, err := egressActionForSandboxNetworkDefault("deny")
+	if err != nil {
+		t.Fatalf("egressActionForSandboxNetworkDefault(deny) error = %v", err)
+	}
+	if legacyDeny != egress.Deny {
+		t.Fatalf("legacy deny mapped to %q, want %q", legacyDeny, egress.Deny)
 	}
 	// An omitted default is not an unknown value: normalization maps it to
 	// allow-all, so it keeps the declared default instead of being rejected.
@@ -490,7 +596,7 @@ agents:
     provider: codex
     sandbox:
       network:
-        default: deny
+        default: deny-all
         allow:
           - host: api.github.com
             port: 443
@@ -519,7 +625,7 @@ agents:
 // range participates in the spec hash.
 func TestNormalizeSandboxNetworkAllowedIPs(t *testing.T) {
 	raw := func(allowedIPs string) string {
-		return "name: network-egress\nagents:\n  worker:\n    provider: codex\n    sandbox:\n      network:\n        default: deny\n        allow:\n          - host: api.example.com\n            port: 443\n            protocol: https\n" + allowedIPs
+		return "name: network-egress\nagents:\n  worker:\n    provider: codex\n    sandbox:\n      network:\n        default: deny-all\n        allow:\n          - host: api.example.com\n            port: 443\n            protocol: https\n" + allowedIPs
 	}
 
 	spec := mustNormalizeCompose(t, raw("            allowed_ips:\n              - 203.0.113.7\n              - 10.0.0.5/8\n              - 10.1.2.3/8\n"), nil)
@@ -617,7 +723,7 @@ func TestNormalizeSandboxNetworkDenyList(t *testing.T) {
 		{
 			name: "deny default can carry both allowances and denials",
 			network: `network:
-        default: deny
+        default: deny-all
         allow:
           - host: "*.example.com"
             port: 443
@@ -627,7 +733,7 @@ func TestNormalizeSandboxNetworkDenyList(t *testing.T) {
             port: 443
             protocol: https`,
 			want: &NormalizedSandboxNetworkSpec{
-				Default: SandboxNetworkDefaultDeny,
+				Default: SandboxNetworkDefaultDenyAll,
 				Allow: []NormalizedSandboxNetworkAllowSpec{
 					{Host: "*.example.com", Port: 443, Protocol: "https"},
 				},

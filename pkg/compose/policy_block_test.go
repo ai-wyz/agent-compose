@@ -16,7 +16,7 @@ func TestDeprecatedSandboxKeyNormalizesIdenticallyToPolicy(t *testing.T) {
 	const declaration = `
       stopped_runtime_policy: retain
       network:
-        default: deny
+        default: deny-all
         allow:
           - host: api.github.com
             port: 443
@@ -140,7 +140,7 @@ agents:
   alpha:
     sandbox:
       network:
-        default: deny
+        default: deny-all
   current:
     policy:
       stopped_runtime_policy: remove
@@ -184,7 +184,7 @@ agents:
 func TestProjectPolicyReferenceMatchesAnInlineDeclaration(t *testing.T) {
 	const network = `
       network:
-        default: deny
+        default: deny-all
         allow:
           - host: api.github.com
             port: 443
@@ -223,7 +223,7 @@ agents:
 		t.Fatalf("hash = %s, want %s for the same effective policy", got, want)
 	}
 	selected := referenced.Agents[0].PolicyBlock()
-	if selected == nil || selected.Network == nil || selected.Network.Default != SandboxNetworkDefaultDeny {
+	if selected == nil || selected.Network == nil || selected.Network.Default != SandboxNetworkDefaultDenyAll {
 		t.Fatalf("selected policy = %#v, want the declared deny policy", selected)
 	}
 	// The library itself is an authoring convenience; the agent carries the

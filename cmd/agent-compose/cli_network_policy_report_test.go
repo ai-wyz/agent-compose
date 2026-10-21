@@ -51,14 +51,14 @@ func TestWriteComposeNetworkPolicyReportSeparatesDeclaredFromEnforced(t *testing
 	for _, want := range []string{
 		"Network policy",
 		"worker (driver docker)",
-		"declared  default deny, 1 allowance(s)",
+		"declared  default deny-all, 1 allowance(s)",
 		"api.github.com:443/https (inspectable, addresses 203.0.113.0/24)",
 		"enforced  forward_proxy (allowlist), the engine's forward proxy",
 		"builder (driver k8s)",
 		"enforced  no: the engine will not enforce this declaration",
 		"partial   the declared allowances",
 		"helper (driver docker)",
-		"egress is not restricted, because an allow list needs default: deny and no denial matches",
+		"egress is not restricted, because an allow list needs default: deny-all and no denial matches",
 		"telemetry.example.com:4317/tcp (not inspectable)",
 		"guard (driver docker)",
 		"declared  default allow-all, 0 allowance(s), 1 denial(s)",
@@ -92,7 +92,7 @@ func TestWriteComposeDeclaredNetworkPolicyNotesIgnoresAgentsWithoutAPolicy(t *te
 	if strings.Contains(text, "plain") {
 		t.Fatalf("notes = %q, want the undeclared agent omitted", text)
 	}
-	for _, want := range []string{"declared", "default deny, 1 allowance(s)", "inspectable, addresses 203.0.113.0/24"} {
+	for _, want := range []string{"declared", "default deny-all, 1 allowance(s)", "inspectable, addresses 203.0.113.0/24"} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("notes = %q, want it to contain %q", text, want)
 		}
