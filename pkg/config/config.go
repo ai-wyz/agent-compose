@@ -134,6 +134,11 @@ type Config struct {
 	CapGRPCListen              string
 	CapGRPCTarget              string
 	Version                    string
+
+	// MicrosandboxDNSRebindProtection keeps the in-VM DNS proxy from returning
+	// answers that point at private addresses. It defaults to true; deployments
+	// that must resolve internal names turn it off explicitly.
+	MicrosandboxDNSRebindProtection bool
 }
 
 func NewConfig(di do.Injector) (*Config, error) {
@@ -371,6 +376,8 @@ func buildConfig(sources configSources, normalized configPathsToNormalize) *Conf
 		CapGRPCListen:              strings.TrimSpace(os.Getenv("CAP_GRPC_LISTEN")),
 		CapGRPCTarget:              strings.TrimSpace(os.Getenv("CAP_GRPC_TARGET")),
 		Version:                    BuildVersion,
+
+		MicrosandboxDNSRebindProtection: drivers.MicrosandboxDNSRebindProtection,
 	}
 }
 
@@ -616,6 +623,10 @@ type driverHomesConfig struct {
 	K8sKubeconfigPath     string
 	K8sNamespace          string
 	K8sRuntimeBaseURL     string
+
+	// MicrosandboxDNSRebindProtection is the daemon-level default for the
+	// in-VM DNS rebind protection.
+	MicrosandboxDNSRebindProtection bool
 }
 
 func loadDriverHomesConfig(logger *slog.Logger, dataRoot string) (driverHomesConfig, error) {
@@ -660,6 +671,12 @@ func loadDriverHomesConfig(logger *slog.Logger, dataRoot string) (driverHomesCon
 	if microsandboxLibPath == "" {
 		microsandboxLibPath = filepath.Join(".", "build", "microsandbox", "lib", "libmicrosandbox_go_ffi.so")
 	}
+	// The in-VM DNS proxy refuses answers that point at private addresses,
+	// which is what stops DNS rebinding. It stays on by default because guests
+	// run untrusted agent-generated code; a deployment that must resolve
+	// internal names (for example an intranet GitLab on a 10/8 address) turns
+	// it off explicitly and takes on that SSRF surface.
+	microsandboxDNSRebindProtection := loadMicrosandboxDNSRebindProtection(logger)
 
 	k8sHome := os.Getenv("K8S_HOME")
 	if k8sHome == "" {
@@ -702,7 +719,27 @@ func loadDriverHomesConfig(logger *slog.Logger, dataRoot string) (driverHomesCon
 		K8sHome:               k8sHome,
 		K8sKubeconfigPath:     k8sKubeconfigPath,
 		K8sNamespace:          k8sNamespace,
+
+		MicrosandboxDNSRebindProtection: microsandboxDNSRebindProtection,
 	}, nil
+}
+
+// loadMicrosandboxDNSRebindProtection reads MICROSANDBOX_DNS_REBIND_PROTECTION.
+// An unset or unparseable value keeps the protection on: a deployment that
+// needs internal names must opt out explicitly, and a typo must not silently
+// weaken every sandbox. The parse failure is still logged.
+func loadMicrosandboxDNSRebindProtection(logger *slog.Logger) bool {
+	rebindProtection := true
+	raw := strings.TrimSpace(os.Getenv("MICROSANDBOX_DNS_REBIND_PROTECTION"))
+	if raw == "" {
+		return rebindProtection
+	}
+	parsed, err := strconv.ParseBool(raw)
+	if err != nil {
+		logger.Warn("failed to parse MICROSANDBOX_DNS_REBIND_PROTECTION", "value", raw, "error", err)
+		return rebindProtection
+	}
+	return parsed
 }
 
 // imageEnvConfig holds the default guest images and image cache/registry

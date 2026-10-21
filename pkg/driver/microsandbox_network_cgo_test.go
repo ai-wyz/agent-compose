@@ -29,7 +29,7 @@ func TestMicrosandboxSDKNetworkConfigBindsThePlan(t *testing.T) {
 		t.Fatalf("SandboxNetworkPolicyFromDeclaration() error = %v", err)
 	}
 
-	config, err := microsandboxSDKNetworkConfig(&policy)
+	config, err := microsandboxSDKNetworkConfig(&policy, true)
 	if err != nil {
 		t.Fatalf("microsandboxSDKNetworkConfig() error = %v", err)
 	}
@@ -60,7 +60,7 @@ func TestMicrosandboxSDKNetworkConfigBindsThePlan(t *testing.T) {
 }
 
 func TestMicrosandboxSDKNetworkConfigKeepsUndeclaredPermissive(t *testing.T) {
-	config, err := microsandboxSDKNetworkConfig(nil)
+	config, err := microsandboxSDKNetworkConfig(nil, true)
 	if err != nil {
 		t.Fatalf("microsandboxSDKNetworkConfig(nil) error = %v", err)
 	}
@@ -72,5 +72,17 @@ func TestMicrosandboxSDKNetworkConfigKeepsUndeclaredPermissive(t *testing.T) {
 	}
 	if config.DNS == nil || config.DNS.RebindProtection == nil || !*config.DNS.RebindProtection {
 		t.Fatalf("DNS.RebindProtection = %+v, want enabled", config.DNS)
+	}
+}
+
+// TestMicrosandboxSDKNetworkConfigAppliesRebindProtectionSetting pins that a
+// deployment opt-out reaches the SDK config instead of being ignored.
+func TestMicrosandboxSDKNetworkConfigAppliesRebindProtectionSetting(t *testing.T) {
+	config, err := microsandboxSDKNetworkConfig(nil, false)
+	if err != nil {
+		t.Fatalf("microsandboxSDKNetworkConfig(nil, false) error = %v", err)
+	}
+	if config.DNS == nil || config.DNS.RebindProtection == nil || *config.DNS.RebindProtection {
+		t.Fatalf("DNS.RebindProtection = %+v, want disabled", config.DNS)
 	}
 }

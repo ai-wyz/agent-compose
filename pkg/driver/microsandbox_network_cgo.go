@@ -11,18 +11,18 @@ import (
 // untagged mapping does not pull the SDK into the docker-only macOS build.
 //
 // Ingress stays allowed, matching the previous NetworkPolicy.AllowAll()
-// behavior for inbound traffic: this change only tightens egress and restores
-// the DNS rebind protection the driver had disabled.
-func microsandboxSDKNetworkConfig(policy *SandboxNetworkPolicy) (*microsandbox.NetworkConfig, error) {
-	plan, err := planMicrosandboxNetwork(policy)
+// behavior for inbound traffic: this change only tightens egress and applies
+// the daemon-level DNS rebind protection setting.
+func microsandboxSDKNetworkConfig(policy *SandboxNetworkPolicy, rebindProtection bool) (*microsandbox.NetworkConfig, error) {
+	plan, err := planMicrosandboxNetwork(policy, rebindProtection)
 	if err != nil {
 		return nil, err
 	}
-	rebindProtection := plan.RebindProtection
+	rebindProtectionValue := plan.RebindProtection
 	config := &microsandbox.NetworkConfig{
 		DefaultEgress:  microsandbox.PolicyAction(plan.DefaultEgress),
 		DefaultIngress: microsandbox.PolicyActionAllow,
-		DNS:            &microsandbox.DNSConfig{RebindProtection: &rebindProtection},
+		DNS:            &microsandbox.DNSConfig{RebindProtection: &rebindProtectionValue},
 		DenyDomains:    append([]string(nil), plan.DenyDomains...),
 	}
 	for _, rule := range plan.Rules {
