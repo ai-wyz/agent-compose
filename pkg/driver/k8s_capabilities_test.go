@@ -37,10 +37,20 @@ func TestK8sCapabilitiesMatchPodSpec(t *testing.T) {
 		t.Fatalf("resource_limits declaration = %+v, want not enforced", resources)
 	}
 
-	if pod.Spec.SecurityContext != nil || container.SecurityContext != nil {
-		t.Fatalf("pod security context = %+v / %+v; the security-context declarations are stale", pod.Spec.SecurityContext, container.SecurityContext)
+	if pod.Spec.SecurityContext != nil {
+		t.Fatalf("pod security context = %+v, want unset; only the container drops capabilities", pod.Spec.SecurityContext)
 	}
-	for _, dimension := range []string{dimensionCapabilityDrop, dimensionReadOnlyRootfs, dimensionNonRootUser, dimensionUserNamespaces} {
+	if container.SecurityContext == nil || container.SecurityContext.Capabilities == nil {
+		t.Fatalf("container security context = %+v, want NET_RAW dropped", container.SecurityContext)
+	}
+	drop := container.SecurityContext.Capabilities.Drop
+	if len(drop) != 1 || drop[0] != "NET_RAW" {
+		t.Fatalf("container capability drop = %v, want exactly NET_RAW", drop)
+	}
+	if capabilityDrop := capabilityDimensionForTest(t, facts, dimensionCapabilityDrop); !capabilityDrop.Enforced || capabilityDrop.Mechanism != mechanismK8sSecurityContext {
+		t.Fatalf("capability_drop declaration = %+v, want enforced via %q", capabilityDrop, mechanismK8sSecurityContext)
+	}
+	for _, dimension := range []string{dimensionReadOnlyRootfs, dimensionNonRootUser, dimensionUserNamespaces} {
 		if capability := capabilityDimensionForTest(t, facts, dimension); capability.Enforced {
 			t.Fatalf("%s declaration = %+v, want not enforced", dimension, capability)
 		}
