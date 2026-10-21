@@ -2,6 +2,7 @@ package api
 
 import (
 	driverpkg "github.com/chaitin/agent-compose/pkg/driver"
+	"github.com/chaitin/agent-compose/pkg/egress"
 	agentcomposev2 "github.com/chaitin/agent-compose/proto/agentcompose/v2"
 )
 
@@ -35,7 +36,7 @@ func NetworkPolicyReportsToProto(reports []driverpkg.AgentNetworkPolicyReport) [
 			Driver:    report.Driver,
 			Declared:  report.Declared,
 			Restricts: report.Restricts,
-			Default:   string(report.Default),
+			Default:   networkPolicyDefaultMode(report.Default),
 			Allow:     allow,
 			Deny:      deny,
 			Mediated:  report.Mediated,
@@ -47,4 +48,18 @@ func NetworkPolicyReportsToProto(reports []driverpkg.AgentNetworkPolicyReport) [
 		})
 	}
 	return mapped
+}
+
+// networkPolicyDefaultMode renders the internal allow/deny action with the
+// compose mode vocabulary a consumer sees in the declaration. The "-all"
+// suffix keeps the mode distinct from an allow or deny entry.
+func networkPolicyDefaultMode(action egress.Action) string {
+	switch action {
+	case egress.Deny:
+		return "deny-all"
+	case egress.Allow:
+		return "allow-all"
+	default:
+		return string(action)
+	}
 }

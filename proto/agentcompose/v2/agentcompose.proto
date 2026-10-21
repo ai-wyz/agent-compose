@@ -480,7 +480,8 @@ message AgentNetworkPolicyReport {
   // False when the declaration cannot refuse anything: an allow default with
   // no denial. True for a deny default or any declared denial.
   bool restricts = 4;
-  // The action applied to traffic no declared entry matches.
+  // The compose mode applied to traffic no declared entry matches:
+  // "allow-all" or "deny-all".
   string default = 5;
   // The declared allowances, in declaration order.
   repeated DeclaredNetworkAllowance allow = 6;

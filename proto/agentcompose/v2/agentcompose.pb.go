@@ -2301,7 +2301,8 @@ type AgentNetworkPolicyReport struct {
 	// False when the declaration cannot refuse anything: an allow default with
 	// no denial. True for a deny default or any declared denial.
 	Restricts bool `protobuf:"varint,4,opt,name=restricts,proto3" json:"restricts,omitempty"`
-	// The action applied to traffic no declared entry matches.
+	// The compose mode applied to traffic no declared entry matches:
+	// "allow-all" or "deny-all".
 	Default string `protobuf:"bytes,5,opt,name=default,proto3" json:"default,omitempty"`
 	// The declared allowances, in declaration order.
 	Allow []*DeclaredNetworkAllowance `protobuf:"bytes,6,rep,name=allow,proto3" json:"allow,omitempty"`

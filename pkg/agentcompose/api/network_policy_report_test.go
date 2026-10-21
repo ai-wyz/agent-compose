@@ -41,8 +41,8 @@ func TestNetworkPolicyReportsToProtoCarriesTheDeclaredAccount(t *testing.T) {
 	if report.GetAgent() != "worker" || report.GetDriver() != "docker" || !report.GetRestricts() || !report.GetMediated() || !report.GetEnforced() {
 		t.Fatalf("mapped report = %+v, want the declared, mediated default-deny account", report)
 	}
-	if report.GetDefault() != string(egress.Deny) || report.GetMechanism() != "forward_proxy" || report.GetStrength() != "allowlist" {
-		t.Fatalf("mapped report = %+v, want the default action and the proxy mechanism", report)
+	if report.GetDefault() != "deny-all" || report.GetMechanism() != "forward_proxy" || report.GetStrength() != "allowlist" {
+		t.Fatalf("mapped report = %+v, want the deny-all mode and the proxy mechanism", report)
 	}
 	allow := report.GetAllow()
 	if len(allow) != 1 || allow[0].GetEndpoint() != "api.github.com:443/https" || !allow[0].GetInspectable() {
