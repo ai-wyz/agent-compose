@@ -135,7 +135,12 @@ type detachStopFakeRuntime struct {
 	terminated       bool
 	terminatedMarker string
 	stopErr          error
-	terminateErr     error
+	// stopExitCode, when non-zero, makes the stop exec return a non-zero exit
+	// code with a nil error, as the drivers do for a guest CLI that exited
+	// non-zero (writeStop failed).
+	stopExitCode int
+	stopStderr   string
+	terminateErr error
 	// stopBlocks makes the stop request hang until its context expires, as
 	// when the guest or supervisor does not respond.
 	stopBlocks bool
@@ -155,7 +160,13 @@ func (r *detachStopFakeRuntime) ExecStream(ctx context.Context, _ *domain.Sandbo
 			<-ctx.Done()
 			return domain.ExecResult{}, ctx.Err()
 		}
-		return domain.ExecResult{}, r.stopErr
+		if r.stopErr != nil {
+			return domain.ExecResult{}, r.stopErr
+		}
+		if r.stopExitCode != 0 {
+			return domain.ExecResult{ExitCode: r.stopExitCode, Stderr: r.stopStderr}, nil
+		}
+		return domain.ExecResult{}, nil
 	}
 	if len(spec.Args) > 0 && spec.Args[0] == "attach" {
 		if r.attachRecords != nil {
@@ -274,7 +285,7 @@ func TestFollowDetachedCommandTerminatesTreeWhenStopFails(t *testing.T) {
 	cancel() // user stop
 
 	result := <-done
-	if result.Err == nil || !strings.Contains(result.Err.Error(), "stop request failed") {
+	if result.Err == nil || !strings.Contains(result.Err.Error(), "stop request") {
 		t.Fatalf("err = %v, want stop-failed error", result.Err)
 	}
 	terminated, marker := rt.termination()
@@ -342,7 +353,7 @@ func TestFollowDetachedCommandTerminatesTreeWithFreshContextAfterStopTimeout(t *
 	cancel() // user stop; the stop request then times out
 
 	result := <-done
-	if result.Err == nil || !strings.Contains(result.Err.Error(), "stop request failed") {
+	if result.Err == nil || !strings.Contains(result.Err.Error(), "stop request") {
 		t.Fatalf("err = %v, want stop-failed error", result.Err)
 	}
 	rt.mu.Lock()
@@ -353,5 +364,117 @@ func TestFollowDetachedCommandTerminatesTreeWithFreshContextAfterStopTimeout(t *
 	}
 	if ctxErr != nil {
 		t.Fatalf("TerminateProcessTree got an expired context: %v", ctxErr)
+	}
+}
+
+func TestFollowDetachedCommandTerminatesTreeWhenStopExitsNonZero(t *testing.T) {
+	// A guest whose writeStop fails exits non-zero; the driver returns that as a
+	// nil error, so the daemon must read the exit code to notice the stop did
+	// not land and fall back to marker termination.
+	rt := &detachStopFakeRuntime{stopExitCode: 1, stopStderr: "no space left on device"}
+	ctx, cancel := context.WithCancel(context.Background())
+	opts := DetachedTask{
+		Config:      &config.Config{},
+		Runtime:     rt,
+		Sandbox:     &domain.Sandbox{},
+		VMState:     domain.VMState{},
+		ExecutionID: "exec-1",
+	}
+
+	done := make(chan detachedExecutionResult, 1)
+	go func() { done <- followDetachedCommand(ctx, opts) }()
+	cancel() // user stop; the stop exec then reports a non-zero exit
+
+	result := <-done
+	if result.Err == nil || !strings.Contains(result.Err.Error(), "stop request") {
+		t.Fatalf("err = %v, want stop-failed error", result.Err)
+	}
+	if !strings.Contains(result.Err.Error(), "no space left on device") {
+		t.Fatalf("err = %v, want guest stderr surfaced", result.Err)
+	}
+	if !strings.Contains(result.Err.Error(), "guest exited 1") {
+		t.Fatalf("err = %v, want the exit code surfaced", result.Err)
+	}
+	terminated, marker := rt.termination()
+	if !terminated {
+		t.Fatal("TerminateProcessTree was not called after the stop exited non-zero")
+	}
+	if marker != "exec-1" {
+		t.Fatalf("terminated marker = %q, want exec-1", marker)
+	}
+}
+
+func TestFollowDetachedCommandTerminatesTreeWhenStopDoesNotLand(t *testing.T) {
+	previous := detachStopTimeout
+	detachStopTimeout = 50 * time.Millisecond
+	t.Cleanup(func() { detachStopTimeout = previous })
+
+	// The stop request "succeeds" (nil error, zero exit) but the supervisor
+	// never stops the task, so no exit record arrives: the follower must time
+	// out, terminate the tree by marker, and finalize the run instead of
+	// blocking forever on the outcome channel.
+	rt := &detachStopFakeRuntime{}
+	ctx, cancel := context.WithCancel(context.Background())
+	opts := DetachedTask{
+		Config:      &config.Config{},
+		Runtime:     rt,
+		Sandbox:     &domain.Sandbox{},
+		VMState:     domain.VMState{},
+		ExecutionID: "exec-1",
+	}
+
+	done := make(chan detachedExecutionResult, 1)
+	go func() { done <- followDetachedCommand(ctx, opts) }()
+	cancel() // user stop; the stop lands but the task never exits
+
+	select {
+	case result := <-done:
+		if result.Err == nil || !strings.Contains(result.Err.Error(), "did not stop within") {
+			t.Fatalf("err = %v, want stop-timeout error", result.Err)
+		}
+		terminated, marker := rt.termination()
+		if !terminated {
+			t.Fatal("TerminateProcessTree was not called after the stop did not land")
+		}
+		if marker != "exec-1" {
+			t.Fatalf("terminated marker = %q, want exec-1", marker)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("followDetachedCommand blocked on a stop that never lands")
+	}
+}
+
+// startFakeRuntime reports a fixed exit code for any exec, so
+// startDetachedCommand can be exercised without a real driver.
+type startFakeRuntime struct {
+	exitCode int
+	stderr   string
+}
+
+func (r *startFakeRuntime) ExecStream(_ context.Context, _ *domain.Sandbox, _ domain.VMState, _ domain.ExecSpec, _ domain.ExecStreamWriter) (domain.ExecResult, error) {
+	return domain.ExecResult{ExitCode: r.exitCode, Stderr: r.stderr}, nil
+}
+
+func TestStartDetachedCommandSurfacesNonZeroExit(t *testing.T) {
+	// `start --detach` failure (ready timeout, spawn failure, unwritable state
+	// dir) surfaces only as a non-zero exit code with a nil error; the daemon
+	// must surface the guest stderr instead of proceeding to a doomed attach.
+	rt := &startFakeRuntime{exitCode: 1, stderr: "spawn supervisor: EACCES"}
+	result := startDetachedCommand(context.Background(), DetachedTask{
+		Config:      &config.Config{},
+		Runtime:     rt,
+		Sandbox:     &domain.Sandbox{},
+		VMState:     domain.VMState{},
+		ExecutionID: "exec-1",
+		TaskArgs:    []string{"exec", "--request-file", "/tmp/req.json"},
+	})
+	if result.Err == nil {
+		t.Fatal("start exited non-zero but reported no error")
+	}
+	if !strings.Contains(result.Err.Error(), "start detached execution") {
+		t.Fatalf("err = %v, want start context", result.Err)
+	}
+	if !strings.Contains(result.Err.Error(), "spawn supervisor: EACCES") {
+		t.Fatalf("err = %v, want guest stderr surfaced", result.Err)
 	}
 }

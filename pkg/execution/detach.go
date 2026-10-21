@@ -52,6 +52,9 @@ type DetachAttachRecord struct {
 	Reason     string `json:"reason,omitempty"`
 	StopReason string `json:"stopReason,omitempty"`
 	Signal     string `json:"signal,omitempty"`
+	// Detail carries a free-form cause for an abnormal exit (e.g. a journal
+	// write failure), written by the supervisor with the exit record.
+	Detail string `json:"detail,omitempty"`
 }
 
 // IsExit reports whether the record is the terminal exit record.
@@ -100,6 +103,9 @@ type DetachExitResult struct {
 	// StopReason is set when Reason is DetachExitStopped.
 	StopReason string
 	Signal     string
+	// Detail carries the cause for an abnormal exit, when the supervisor
+	// recorded one.
+	Detail string
 }
 
 // DetachExitResultFor maps an exit record to its typed result.
@@ -109,6 +115,7 @@ func DetachExitResultFor(record DetachAttachRecord) DetachExitResult {
 		Reason:     DetachExitReason(record.Reason),
 		StopReason: record.StopReason,
 		Signal:     record.Signal,
+		Detail:     record.Detail,
 	}
 }
 
@@ -127,7 +134,8 @@ func ExecResultFromDetachExit(exit DetachExitResult) (domain.ExecResult, error) 
 	case DetachExitSignal:
 		return domain.ExecResult{ExitCode: exit.ExitCode}, fmt.Errorf("detached execution terminated by signal %s", firstNonEmpty(exit.Signal, "unknown"))
 	case DetachExitAbnormal:
-		return domain.ExecResult{ExitCode: -1}, errors.New("detached execution died unmanaged: supervisor gone without an exit record")
+		detail := firstNonEmpty(exit.Detail, "supervisor gone without an exit record")
+		return domain.ExecResult{ExitCode: -1}, fmt.Errorf("detached execution died unmanaged: %s", detail)
 	case DetachExitCompleted:
 		fallthrough
 	default:
@@ -193,6 +201,13 @@ func BuildDetachStartSpec(config *appconfig.Config, executionID string, opts Det
 		Args:    []string{"-lc", command},
 		Cwd:     config.GuestWorkspacePath,
 		Marker:  executionID,
+		// The start exec spawns the detached supervisor and only waits for its
+		// ready record. On a daemon shutdown mid-start the driver must kill the
+		// exec itself, not the whole marker tree: the marker is the execution id
+		// and is inherited by the supervisor and task, which must survive to be
+		// re-attached by the next daemon. The marker is still injected so the
+		// later TerminateProcessTree fallback can reach the whole tree.
+		KillOnlyOnCancel: true,
 	}
 }
 

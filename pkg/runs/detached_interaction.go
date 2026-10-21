@@ -50,11 +50,11 @@ type detachedInteractionOptions struct {
 func startDetachedInteraction(ctx context.Context, opts detachedInteractionOptions) (driverpkg.RuntimeInteraction, error) {
 	startSpec := execution.BuildDetachStartSpec(opts.Task.Config, opts.Task.ExecutionID, execution.DetachStartOptions{TaskTimeout: opts.Task.TaskTimeout, Stdin: true, RawCommand: opts.RawCommand}, opts.Task.TaskArgs)
 	startSpec.Env = opts.Task.Env
-	if _, err := opts.Task.Runtime.ExecStream(ctx, opts.Task.Sandbox, opts.Task.VMState, startSpec, nil); err != nil {
+	if result, err := opts.Task.Runtime.ExecStream(ctx, opts.Task.Sandbox, opts.Task.VMState, startSpec, nil); err != nil || result.ExitCode != 0 {
 		if detachIsShutdown(ctx) {
 			return nil, ErrRunDisconnected
 		}
-		return nil, fmt.Errorf("start detached interactive execution: %w", err)
+		return nil, detachControlExecErr(result, err, "start detached interactive execution")
 	}
 	return openDetachedInteraction(ctx, opts)
 }
@@ -158,11 +158,16 @@ func (d *detachedInteraction) watch() {
 	defer cancelStop()
 	stopSpec := execution.BuildDetachStopSpec(d.task.Config, d.task.ExecutionID, reason)
 	stopSpec.Env = d.task.Env
-	if _, err := d.task.Runtime.ExecStream(stopCtx, d.task.Sandbox, d.task.VMState, stopSpec, nil); err != nil {
+	stopResult, stopErr := d.task.Runtime.ExecStream(stopCtx, d.task.Sandbox, d.task.VMState, stopSpec, nil)
+	if stopErr != nil || stopResult.ExitCode != 0 {
+		stopErr = detachControlExecErr(stopResult, stopErr, "detached execution stop request")
 		terminateCtx, cancelTerminate := context.WithTimeout(context.WithoutCancel(d.runCtx), detachStopTimeout)
 		terminateErr := terminateDetachedProcessTree(terminateCtx, d.task)
 		cancelTerminate()
-		d.cancelAttach(errors.Join(fmt.Errorf("detached execution stop request failed: %w", err), terminateErr))
+		if terminateErr != nil {
+			stopErr = errors.Join(stopErr, terminateErr)
+		}
+		d.cancelAttach(stopErr)
 	}
 	// Otherwise the supervisor stops the task and the attach delivers its exit.
 }

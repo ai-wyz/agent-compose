@@ -87,7 +87,7 @@ func executeDetachedCommand(ctx context.Context, opts DetachedTask) detachedExec
 func startDetachedCommand(ctx context.Context, opts DetachedTask) detachedExecutionResult {
 	startSpec := execution.BuildDetachStartSpec(opts.Config, opts.ExecutionID, execution.DetachStartOptions{TaskTimeout: opts.TaskTimeout}, opts.TaskArgs)
 	startSpec.Env = opts.Env
-	if _, err := opts.Runtime.ExecStream(ctx, opts.Sandbox, opts.VMState, startSpec, nil); err != nil {
+	if result, err := opts.Runtime.ExecStream(ctx, opts.Sandbox, opts.VMState, startSpec, nil); err != nil || result.ExitCode != 0 {
 		if detachIsShutdown(ctx) {
 			// The daemon shut down before the task detached. Whether or not the
 			// supervisor was spawned, the run must be left running for the next
@@ -97,7 +97,7 @@ func startDetachedCommand(ctx context.Context, opts DetachedTask) detachedExecut
 		if ctx.Err() != nil {
 			return detachedExecutionResult{Err: ctx.Err()}
 		}
-		return detachedExecutionResult{Err: fmt.Errorf("start detached execution: %w", err)}
+		return detachedExecutionResult{Err: detachControlExecErr(result, err, "start detached execution")}
 	}
 	return detachedExecutionResult{}
 }
@@ -161,11 +161,13 @@ func followDetachedJournal(ctx context.Context, opts DetachedTask) detachedExecu
 		defer cancelStop()
 		stopSpec := execution.BuildDetachStopSpec(opts.Config, opts.ExecutionID, reason)
 		stopSpec.Env = opts.Env
-		if _, stopErr := opts.Runtime.ExecStream(stopCtx, opts.Sandbox, opts.VMState, stopSpec, nil); stopErr != nil {
-			// The stop request could not reach the supervisor. Terminate the
-			// task's process tree directly by marker so it cannot outlive the
-			// run, then drop the follower with the combined failure.
-			stopErr = fmt.Errorf("detached execution stop request failed: %w", stopErr)
+		stopResult, stopErr := opts.Runtime.ExecStream(stopCtx, opts.Sandbox, opts.VMState, stopSpec, nil)
+		if stopErr != nil || stopResult.ExitCode != 0 {
+			// The stop request did not reach the supervisor: a transport error,
+			// or the guest CLI exited non-zero (its writeStop failed). Terminate
+			// the task's process tree directly by marker so it cannot outlive
+			// the run, then drop the follower with the combined failure.
+			stopErr = detachControlExecErr(stopResult, stopErr, "detached execution stop request")
 			// The stop request may have failed because stopCtx timed out, so the
 			// fallback gets its own budget instead of an already-expired context.
 			terminateCtx, cancelTerminate := context.WithTimeout(context.WithoutCancel(ctx), detachStopTimeout)
@@ -175,10 +177,33 @@ func followDetachedJournal(ctx context.Context, opts DetachedTask) detachedExecu
 				stopErr = errors.Join(stopErr, terminateErr)
 			}
 			cancelAttach(stopErr)
+			result := <-outcome
+			result.StopReason = reason
+			return result
 		}
-		result := <-outcome
-		result.StopReason = reason
-		return terminateAbnormalDetachedTask(ctx, opts, result)
+		// The stop request was delivered. The supervisor stops the task and the
+		// attach delivers its exit record. Bound the wait so a stuck supervisor
+		// (SIGSTOP, D state, an unresponsive waitForClose) cannot hold the run
+		// finalize open forever.
+		stopWatchCtx, cancelWatch := context.WithTimeout(context.WithoutCancel(ctx), detachStopTimeout)
+		defer cancelWatch()
+		select {
+		case result := <-outcome:
+			result.StopReason = reason
+			return terminateAbnormalDetachedTask(ctx, opts, result)
+		case <-stopWatchCtx.Done():
+			terminateCtx, cancelTerminate := context.WithTimeout(context.WithoutCancel(ctx), detachStopTimeout)
+			terminateErr := terminateDetachedProcessTree(terminateCtx, opts)
+			cancelTerminate()
+			timeoutErr := fmt.Errorf("detached execution did not stop within %s", detachStopTimeout)
+			if terminateErr != nil {
+				timeoutErr = errors.Join(timeoutErr, terminateErr)
+			}
+			cancelAttach(timeoutErr)
+			result := <-outcome
+			result.StopReason = reason
+			return result
+		}
 	case result := <-outcome:
 		return terminateAbnormalDetachedTask(ctx, opts, result)
 	}
@@ -229,6 +254,27 @@ func detachStopReason(ctx context.Context) string {
 		return execution.DetachStopReasonTimeout
 	}
 	return execution.DetachStopReasonUser
+}
+
+// detachControlExecErr reports whether a detach control-plane exec (start or
+// stop) succeeded. The guest CLI expresses failure by exiting non-zero, while
+// every driver returns a non-zero exit code with a nil error, so the exit code
+// must be checked explicitly. The guest's own stderr carries the reason.
+func detachControlExecErr(result domain.ExecResult, err error, op string) error {
+	if err != nil {
+		return fmt.Errorf("%s: %w", op, err)
+	}
+	if result.ExitCode == 0 {
+		return nil
+	}
+	detail := strings.TrimSpace(result.Stderr)
+	if detail == "" {
+		detail = strings.TrimSpace(result.Output)
+	}
+	if detail != "" {
+		return fmt.Errorf("%s: guest exited %d: %s", op, result.ExitCode, detail)
+	}
+	return fmt.Errorf("%s: guest exited %d", op, result.ExitCode)
 }
 
 // detachIsShutdown reports whether ctx's cancellation is the daemon shutdown
@@ -297,8 +343,10 @@ func (c *Controller) executeDetachedProjectRunCommand(ctx context.Context, input
 		TaskArgs:    taskArgs,
 		Env:         env,
 		TaskTimeout: remainingTimeout(ctx),
-		Cursor:      readDetachCursor(artifactsDir),
-		Writer:      input.Writer,
+		// A fresh start always begins at the journal start with a fresh
+		// execution id; only re-attach resumes from a persisted cursor.
+		Cursor: 0,
+		Writer: input.Writer,
 		PersistCursor: func(offset uint64) error {
 			return writeDetachCursor(artifactsDir, offset)
 		},

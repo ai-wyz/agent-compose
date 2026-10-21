@@ -60,6 +60,47 @@ func (r *dockerRuntime) terminateDockerExec(ctx context.Context, dockerClient *c
 	return nil
 }
 
+// terminateDockerExecLeader kills only the exec's own process (the leader),
+// leaving any detached descendants running. It backs KillOnlyOnCancel, where
+// the exec is a control-plane process (detach start/attach) whose detached
+// tree must survive a daemon disconnect. Unlike terminateDockerExec it must
+// not match the marker environment: the start exec shares its marker (the
+// execution id) with the supervisor and task, so a marker termination would
+// take the whole tree down with the exec.
+func (r *dockerRuntime) terminateDockerExecLeader(ctx context.Context, dockerClient *client.Client, containerID, execID string) error {
+	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), execTerminationTimeout)
+	defer cancel()
+	info, err := dockerClient.ContainerExecInspect(cleanupCtx, execID)
+	if err != nil {
+		return fmt.Errorf("inspect docker exec %s to terminate: %w", execID, err)
+	}
+	if info.Running && info.Pid > 0 {
+		control, err := dockerClient.ContainerExecCreate(cleanupCtx, containerID, containerapi.ExecOptions{
+			AttachStdout: true,
+			AttachStderr: true,
+			Cmd:          []string{"sh", "-c", fmt.Sprintf("kill -KILL %d 2>/dev/null || true", info.Pid)},
+			User:         "0",
+			WorkingDir:   "/",
+		})
+		if err != nil {
+			return fmt.Errorf("create docker exec leader termination: %w", err)
+		}
+		attach, err := dockerClient.ContainerExecAttach(cleanupCtx, control.ID, containerapi.ExecAttachOptions{})
+		if err != nil {
+			return fmt.Errorf("start docker exec leader termination %s: %w", control.ID, err)
+		}
+		if err := drainDockerControlExec(attach); err != nil {
+			return fmt.Errorf("read docker exec leader termination %s: %w", control.ID, err)
+		}
+	}
+	// The leader is gone; the exec reports itself exited once its process is
+	// reaped. A detached descendant in its own process group is not affected.
+	if _, err := r.waitForExecExit(cleanupCtx, dockerClient, execID); err != nil {
+		return err
+	}
+	return nil
+}
+
 // terminateDockerProcessTree runs the marker termination control exec against a
 // container. It has no dependence on a specific exec handle, so it also backs
 // ProcessTreeTerminator for a detached task whose supervisor died.

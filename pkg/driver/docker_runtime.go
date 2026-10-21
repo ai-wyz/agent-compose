@@ -595,7 +595,15 @@ func (r *dockerRuntime) execWithStream(ctx context.Context, request dockerExecRe
 	collector.finish()
 	if ctx.Err() != nil {
 		attachResp.Close()
-		terminationErr := r.terminateDockerExec(ctx, dockerClient, dockerExecTarget{ContainerID: containerInfo.ID, ExecID: execResp.ID, Marker: execMarker})
+		var terminationErr error
+		if spec.KillOnlyOnCancel {
+			// A control-plane exec (detach start/attach) whose marker is shared
+			// with the detached task tree: kill only the exec leader so the
+			// supervisor and task survive a daemon disconnect.
+			terminationErr = r.terminateDockerExecLeader(ctx, dockerClient, containerInfo.ID, execResp.ID)
+		} else {
+			terminationErr = r.terminateDockerExec(ctx, dockerClient, dockerExecTarget{ContainerID: containerInfo.ID, ExecID: execResp.ID, Marker: execMarker})
+		}
 		return ExecResult{}, execTerminationResultError(RuntimeDriverDocker, execResp.ID, ctx.Err(), terminationErr)
 	}
 	if copyErr != nil && !isDockerStreamClosed(copyErr) {

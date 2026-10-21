@@ -105,7 +105,6 @@ func (c *Controller) interactiveDetachedTask(run domain.ProjectRunRecord, sandbo
 		ExecutionID: executionID,
 		TaskArgs:    in.TaskArgs,
 		Env:         env,
-		Cursor:      readDetachCursor(artifactsDir),
 		PersistCursor: func(offset uint64) error {
 			return writeDetachCursor(artifactsDir, offset)
 		},
@@ -170,6 +169,7 @@ func (c *Controller) reattachInteractiveRun(transitionCtx, runCtx context.Contex
 	artifactsDir := projectRunCommandArtifactsDir(run, sandbox)
 	in := interactiveDetachStart{Runtime: runtime, Interaction: interactionRuntime, VMState: vmState, ArtifactsDir: artifactsDir}
 	task := c.interactiveDetachedTask(run, sandbox, in, run.ExecutionID)
+	task.Cursor = readDetachCursor(artifactsDir)
 	interaction, err := openDetachedInteraction(runCtx, detachedInteractionOptions{Task: task, Interaction: interactionRuntime, OperationID: run.RunID, Origin: "run_attach_resume"})
 	if errors.Is(err, ErrRunDisconnected) {
 		return run, nil

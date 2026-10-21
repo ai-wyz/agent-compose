@@ -52,6 +52,7 @@ func TestParseDetachAttachLine(t *testing.T) {
 		{"gap", `{"t":"gap","from":10,"to":20}`, DetachAttachRecord{Type: "gap", From: 10, To: 20}, false},
 		{"exit", `{"t":"exit","code":0,"reason":"completed"}`, DetachAttachRecord{Type: "exit", Code: 0, Reason: "completed"}, false},
 		{"exit stopped", `{"t":"exit","code":143,"reason":"stopped","stopReason":"user"}`, DetachAttachRecord{Type: "exit", Code: 143, Reason: "stopped", StopReason: "user"}, false},
+		{"exit abnormal with detail", `{"t":"exit","code":-1,"reason":"abnormal","detail":"EISDIR: illegal operation on a directory"}`, DetachAttachRecord{Type: "exit", Code: -1, Reason: "abnormal", Detail: "EISDIR: illegal operation on a directory"}, false},
 		{"unknown type", `{"t":"nope"}`, DetachAttachRecord{}, true},
 		{"malformed", `not json`, DetachAttachRecord{}, true},
 	}
@@ -102,6 +103,22 @@ func TestExecResultFromDetachExit(t *testing.T) {
 	}
 }
 
+func TestExecResultFromDetachExitSurfacesAbnormalDetail(t *testing.T) {
+	_, err := ExecResultFromDetachExit(DetachExitResult{
+		ExitCode: -1,
+		Reason:   DetachExitAbnormal,
+		Detail:   "EISDIR: illegal operation on a directory",
+	})
+	if err == nil || !strings.Contains(err.Error(), "EISDIR") {
+		t.Fatalf("err = %v, want the abnormal detail surfaced", err)
+	}
+	// Without a detail the error still names the fallback cause.
+	_, err = ExecResultFromDetachExit(DetachExitResult{ExitCode: -1, Reason: DetachExitAbnormal})
+	if err == nil || !strings.Contains(err.Error(), "supervisor gone without an exit record") {
+		t.Fatalf("err = %v, want the fallback abnormal cause", err)
+	}
+}
+
 func TestBuildDetachSpecs(t *testing.T) {
 	config := &appconfig.Config{}
 	appconfig.ApplyDefaultGuestPaths(config)
@@ -110,6 +127,9 @@ func TestBuildDetachSpecs(t *testing.T) {
 		spec := BuildDetachStartSpec(config, "exec-1", DetachStartOptions{}, []string{"exec", "--request-file", "/x"})
 		if spec.Marker != "exec-1" {
 			t.Fatalf("marker got %q want exec-1", spec.Marker)
+		}
+		if !spec.KillOnlyOnCancel {
+			t.Fatalf("start spec must set KillOnlyOnCancel so a shutdown does not kill the detached task tree")
 		}
 		if spec.Command != "sh" {
 			t.Fatalf("command got %q", spec.Command)

@@ -135,10 +135,13 @@ func WriteDetachCursorFile(path string, offset uint64) error {
 	return os.Rename(tmp, path)
 }
 
-// newDetachExecutionID returns a fresh execution id for a run that has none.
-func newDetachExecutionID(run domain.ProjectRunRecord) string {
-	if id := strings.TrimSpace(run.ExecutionID); id != "" {
-		return id
-	}
+// newDetachExecutionID returns a fresh execution id for a fresh detached start.
+//
+// A fresh start must never reuse an id already persisted on the run: a retry of
+// the same request (Connect replay, SDK caller, a client retry after a restart)
+// would otherwise re-enter the same guest execution directory and race a still
+// running supervisor for the same journal and state files. Re-attach is the only
+// path that reuses a persisted id, and it reads run.ExecutionID directly.
+func newDetachExecutionID(_ domain.ProjectRunRecord) string {
 	return uuid.NewString()
 }
