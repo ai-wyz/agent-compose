@@ -1032,7 +1032,7 @@ deny:
     port: 80
 ```
 
-daemon 策略对没有声明策略的 Agent 同样生效。Agent 声明只能收窄它，不能放宽：两个白名单取交集，超出 daemon 白名单的 Agent 放行项会被拒绝；daemon 的拒绝项始终保留。最终策略会进入 driver 边界和正向代理，准入报告也会包含它。修改文件需要重启 daemon。组合规则见 [Agent Compose YAML 手册](agent-compose-yaml-manual.html)。
+daemon 策略对没有声明策略的 Agent 同样生效。Agent 声明只能收窄它，不能放宽：两个白名单取交集，超出 daemon 白名单的 Agent 放行项会被拒绝；daemon 的拒绝项始终保留。最终策略会进入 driver 边界和正向代理。启动日志与准入报告会给出读入的文件路径和 SHA-256，报告还会给每条最终条目标出 `[daemon]`/`[agent]` 来源。修改文件需要重启 daemon。组合规则见 [Agent Compose YAML 手册](agent-compose-yaml-manual.html)。
 
 ## Agent 原生遥测
 
