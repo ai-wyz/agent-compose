@@ -874,3 +874,38 @@ func writeConnect(t *testing.T, connection net.Conn, target, user, secret string
 		t.Fatalf("writing CONNECT: %v", err)
 	}
 }
+
+// TestEgressProxyPrefersIPv4ForADualStackDestination pins the compatibility
+// choice: every answer is still recorded for policy matching and IPv6-only
+// names work, but a dual-stack name is dialed over IPv4 when that answer exists
+// so enabling IPv6 does not break a host with no IPv6 route.
+func TestEgressProxyPrefersIPv4ForADualStackDestination(t *testing.T) {
+	policies := &proxyTestPolicies{policies: []egress.Policy{egress.NewPolicy(egress.Allow)}}
+	var dialed string
+	proxyServer, _ := newTestEgressProxy(t, policies, func(options *EgressProxyOptions) {
+		options.LookupIP = func(context.Context, string) ([]net.IP, error) {
+			return []net.IP{net.ParseIP("2001:db8::1"), net.ParseIP("203.0.113.10")}, nil
+		}
+		options.Dial = func(_ context.Context, _, address string) (net.Conn, error) {
+			dialed = address
+			return nil, errors.New("no dialer configured for this test")
+		}
+	})
+	server := httptest.NewServer(proxyServer)
+	defer server.Close()
+
+	connection := dialProxy(t, server)
+	defer func() { _ = connection.Close() }()
+	writeConnect(t, connection, "dual.example:443", testSandboxID, testCredential)
+	response, err := http.ReadResponse(bufio.NewReader(connection), &http.Request{Method: http.MethodConnect})
+	if err != nil {
+		t.Fatalf("reading the response: %v", err)
+	}
+	defer func() { _ = response.Body.Close() }()
+	if response.StatusCode != http.StatusBadGateway {
+		t.Fatalf("CONNECT status = %d, want 502 after the policy allowed the destination", response.StatusCode)
+	}
+	if dialed != "203.0.113.10:443" {
+		t.Fatalf("dialed address = %q, want the IPv4 answer", dialed)
+	}
+}

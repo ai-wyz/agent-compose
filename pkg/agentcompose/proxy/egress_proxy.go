@@ -277,9 +277,11 @@ func (p *EgressProxy) authenticate(w http.ResponseWriter, r *http.Request) (stri
 }
 
 // resolve returns every address a destination has, IPv4 and IPv6 alike. The
-// proxy dials the first answer and records all of them for policy matching, so
-// an IPv6-only destination is reachable wherever the runtime network supports
-// it instead of being rejected for lacking an IPv4 answer.
+// proxy records all of them for policy matching and dials the first one, with
+// IPv4 answers placed first: a dual-stack name keeps the pre-IPv6 behavior when
+// IPv4 is available, while an IPv6-only destination is reachable wherever the
+// runtime network supports it instead of being rejected for lacking an IPv4
+// answer.
 func (p *EgressProxy) resolve(ctx context.Context, host string) ([]net.IP, error) {
 	if literal := net.ParseIP(strings.Trim(host, "[]")); literal != nil {
 		return []net.IP{literal}, nil
@@ -290,12 +292,19 @@ func (p *EgressProxy) resolve(ctx context.Context, host string) ([]net.IP, error
 	if err != nil {
 		return nil, err
 	}
-	addresses := make([]net.IP, 0, len(ips))
+	ipv4 := make([]net.IP, 0, len(ips))
+	ipv6 := make([]net.IP, 0, len(ips))
 	for _, address := range ips {
-		if address != nil {
-			addresses = append(addresses, address)
+		if address == nil {
+			continue
 		}
+		if four := address.To4(); four != nil {
+			ipv4 = append(ipv4, four)
+			continue
+		}
+		ipv6 = append(ipv6, address)
 	}
+	addresses := append(ipv4, ipv6...)
 	if len(addresses) == 0 {
 		return nil, fmt.Errorf("no address for %q", host)
 	}
