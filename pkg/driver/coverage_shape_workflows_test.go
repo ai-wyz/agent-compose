@@ -178,6 +178,15 @@ func TestIntegrationRuntimeNetworkPolicyWorkflows(t *testing.T) {
 	t.Run("no new privileges warning", TestExecOutputFilterReportsNoNewPrivilegesWarning)
 	t.Run("security facts merge", TestExecSecurityFactsMergeAccumulates)
 	t.Run("interaction writer projects frames", TestDockerInteractionWriterProjectsFramesAndReportsStderr)
+	t.Run("report undeclared is not deny", TestReportAgentNetworkPolicyUndeclaredIsNotDeny)
+	t.Run("report allow list does not restrict", TestReportAgentNetworkPolicyAllowListWithoutDenyDoesNotRestrict)
+	t.Run("report deny list", TestReportAgentNetworkPolicyDenyListIsReported)
+	t.Run("report mediated deny is enforced", TestReportAgentNetworkPolicyMediatedDenyIsEnforced)
+	t.Run("report names what is unapplied", TestReportAgentNetworkPolicyNamesWhatTheMechanismLeavesUnapplied)
+	t.Run("report refuses invalid declaration", TestReportAgentNetworkPolicyRefusesAnInvalidDeclaration)
+	t.Run("admission report agrees with creation gate", TestAdmissionReportAgreesWithTheCreationGate)
+	t.Run("admission report cannot see unapplied deny domains", TestAdmissionReportCannotSeeUnappliedDenyDomains)
+	t.Run("report names every mechanism", TestReportAgentNetworkPolicyNamesEveryMechanism)
 }
 
 func TestE2ERuntimeNetworkPolicyWorkflows(t *testing.T) {
