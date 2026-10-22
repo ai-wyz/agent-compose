@@ -1,8 +1,11 @@
 package app
 
 import (
+	"errors"
 	"strings"
 	"testing"
+
+	"connectrpc.com/connect"
 
 	"github.com/chaitin/agent-compose/pkg/compose"
 	appconfig "github.com/chaitin/agent-compose/pkg/config"
@@ -227,5 +230,19 @@ func TestAgentNetworkPolicyReportsCarryPolicyProvenance(t *testing.T) {
 	}
 	if report.DaemonPolicySource != config.GlobalNetworkPolicyInfo.Path || report.DaemonPolicySHA256 != config.GlobalNetworkPolicyInfo.SHA256 {
 		t.Fatalf("daemon policy identity = %q %q, want %q %q", report.DaemonPolicySource, report.DaemonPolicySHA256, config.GlobalNetworkPolicyInfo.Path, config.GlobalNetworkPolicyInfo.SHA256)
+	}
+}
+
+// TestNetworkPolicyConnectErrorClassifiesTheDeclaration pins that a report the
+// daemon cannot derive is answered as a declaration problem. The project has
+// already been applied when the report is built, so CodeInternal would both
+// misclassify the cause and suggest a retry.
+func TestNetworkPolicyConnectErrorClassifiesTheDeclaration(t *testing.T) {
+	err := networkPolicyConnectError(errors.New(`agent "worker": allowance api.example.com:443 is outside the daemon-wide policy`))
+	if code := connect.CodeOf(err); code != connect.CodeInvalidArgument {
+		t.Fatalf("connect code = %v, want %v", code, connect.CodeInvalidArgument)
+	}
+	if !strings.Contains(err.Error(), "outside the daemon-wide policy") {
+		t.Fatalf("error = %v, want the declaration failure preserved", err)
 	}
 }

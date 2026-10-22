@@ -128,7 +128,7 @@ func (d projectControllerDelegate) ValidateProject(ctx context.Context, req *con
 	}
 	reports, err := d.networkPolicyReports(normalized.Spec)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, err)
+		return nil, networkPolicyConnectError(err)
 	}
 	return connect.NewResponse(&agentcomposev2.ValidateProjectResponse{
 		Valid:           result.Valid,
@@ -161,17 +161,26 @@ func (d projectControllerDelegate) ApplyProject(ctx context.Context, req *connec
 // applyResponse accounts for the declared network policies of the project the
 // daemon just accepted. The reports come from the normalized spec the revision
 // persisted, so the report describes the project as stored rather than the
-// request as submitted. A report that cannot be derived is a server-side failure
-// rather than an omission: the project could not compile a policy for that
-// declaration either.
+// request as submitted. A report that cannot be derived is returned rather than
+// omitted: the project could not compile a policy for that declaration either, and
+// the error names the declaration the caller has to fix.
 func (d projectControllerDelegate) applyResponse(result projects.ApplyResult) (*agentcomposev2.ApplyProjectResponse, error) {
 	response := applyProjectResponse(result)
 	reports, err := agentNetworkPolicyReports(result.RevisionSpec, d.mediation, d.config)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, err)
+		return nil, networkPolicyConnectError(err)
 	}
 	response.NetworkPolicies = api.NetworkPolicyReportsToProto(reports)
 	return response, nil
+}
+
+// networkPolicyConnectError classifies a report derivation failure. It can only
+// come from the declaration or from how it layers under the daemon-wide policy,
+// both of which the caller can fix, so the answer is InvalidArgument rather than
+// Internal. The project has already been applied when applyResponse runs, so
+// answering Internal would also suggest a retry cannot help.
+func networkPolicyConnectError(err error) error {
+	return connect.NewError(connect.CodeInvalidArgument, err)
 }
 
 // networkPolicyReports accounts for the declared network policies of a spec the
