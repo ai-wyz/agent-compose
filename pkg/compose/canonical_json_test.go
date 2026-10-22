@@ -114,3 +114,31 @@ func TestParseCanonicalJSONLegacyDenyDefaultIsActionable(t *testing.T) {
 		t.Fatalf("EgressDeclaration() error = %v, want the deny-all migration error", err)
 	}
 }
+
+// TestParseCanonicalJSONAcceptsLegacyDefaultProtocol covers the value every
+// spec stored by an older daemon carries: normalization always wrote the
+// field's default, so rejecting it would make existing projects unloadable
+// without any change in meaning. A spec that named a protocol stays rejected.
+func TestParseCanonicalJSONAcceptsLegacyDefaultProtocol(t *testing.T) {
+	body := []byte(`{"name":"legacy","agents":[{"name":"worker","policy":{"network":{"default":"deny-all","allow":[{"host":"api.example.com","port":443,"protocol":"any","allowed_ips":["203.0.113.0/24"]}]}},"sandbox":{"network":{"default":"deny-all","allow":[{"host":"10.0.0.0/8","port":22,"protocol":"ANY"}]}}}]}`)
+	parsed, err := ParseCanonicalJSON(body)
+	if err != nil {
+		t.Fatalf("ParseCanonicalJSON() error = %v, want the legacy default protocol to load", err)
+	}
+	if len(parsed.Agents) != 1 || parsed.Agents[0].Policy == nil || parsed.Agents[0].Policy.Network == nil {
+		t.Fatalf("parsed policy = %+v, want the network block", parsed.Agents)
+	}
+	allow := parsed.Agents[0].Policy.Network.Allow
+	if len(allow) != 1 || allow[0].Host != "api.example.com" || allow[0].Port != 443 || len(allow[0].AllowedIPs) != 1 {
+		t.Fatalf("parsed allow = %+v, want the declaration without the removed field", allow)
+	}
+	// The parsed spec is the current representation, so re-encoding it must not
+	// emit the removed field again.
+	canonical, err := parsed.MarshalCanonicalJSON(false)
+	if err != nil {
+		t.Fatalf("MarshalCanonicalJSON() error = %v", err)
+	}
+	if bytes.Contains(canonical, []byte("protocol")) {
+		t.Fatalf("re-encoded canonical spec still carries the removed field:\n%s", canonical)
+	}
+}

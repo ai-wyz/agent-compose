@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/chaitin/agent-compose/pkg/egress"
 	domain "github.com/chaitin/agent-compose/pkg/model"
 )
 
@@ -94,9 +95,12 @@ func applyHistoricalSchedulerDefaults(agents []orderedAgentSpec) {
 
 // rejectRemovedNetworkFields turns a legacy canonical spec's removed protocol
 // field into an actionable migration error. The field is no longer represented
-// in the ordered types, so decoding would silently drop it; a spec written by
-// an older daemon must be rejected rather than accepted with an unstated
-// semantic change.
+// in the ordered types, so decoding would silently drop it; a spec that named a
+// protocol must be rejected rather than accepted with an unstated semantic
+// change. The field's own default, "any", is the exception: normalization always
+// wrote it, every spec stored by an older daemon therefore carries it, and
+// dropping it leaves the meaning unchanged, so requiring a re-apply for that
+// value alone would make existing projects unloadable for no behavior change.
 func rejectRemovedNetworkFields(data []byte) error {
 	var shape struct {
 		Agents []struct {
@@ -130,16 +134,28 @@ func rejectRemovedNetworkFields(data []byte) error {
 				continue
 			}
 			for index, entry := range spec.Network.Allow {
-				if _, ok := entry["protocol"]; ok {
+				if protocol, ok := entry["protocol"]; ok && !removedProtocolIsAny(protocol) {
 					return fmt.Errorf("canonical project spec agent %q %s.network.allow[%d] still carries the removed protocol field; remove it and re-apply the project", agent.Name, candidate.name, index)
 				}
 			}
 			for index, entry := range spec.Network.Deny {
-				if _, ok := entry["protocol"]; ok {
+				if protocol, ok := entry["protocol"]; ok && !removedProtocolIsAny(protocol) {
 					return fmt.Errorf("canonical project spec agent %q %s.network.deny[%d] still carries the removed protocol field; remove it and re-apply the project", agent.Name, candidate.name, index)
 				}
 			}
 		}
 	}
 	return nil
+}
+
+// removedProtocolIsAny reports whether a legacy entry's protocol value is the
+// field's default. The comparison is case-insensitive and tolerant of padding
+// because the value is data written by older releases, not input this decode
+// validates; a value it cannot read as a string is not the default.
+func removedProtocolIsAny(raw json.RawMessage) bool {
+	var value string
+	if err := json.Unmarshal(raw, &value); err != nil {
+		return false
+	}
+	return strings.EqualFold(strings.TrimSpace(value), string(egress.ProtocolAny))
 }
