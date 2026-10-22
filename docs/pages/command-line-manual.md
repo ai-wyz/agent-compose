@@ -1036,7 +1036,7 @@ The following commands or capabilities are not published as stable CLI features 
 
 ## Daemon-wide Network Policy
 
-Set `EGRESS_GLOBAL_POLICY_FILE` in the daemon environment to a YAML file that declares an outer outbound network policy for every sandbox. The file has the same `default`, `allow`, and `deny` body as an agent's `policy.network` block, without the `network:` wrapper. The daemon reads it once at startup; an unreadable file, an unknown field, or an invalid value fails startup.
+Set `EGRESS_GLOBAL_POLICY_FILE` in the daemon environment to a YAML file that declares an outer outbound network policy for every sandbox. The file has the same `default`, `allow`, and `deny` body as an agent's `policy.network` block, without the `network:` wrapper. It must state `default` explicitly (`allow-all` or `deny-all`); omitting it fails startup instead of inheriting the compose "omitted means allow-all" rule. The daemon reads it once at startup; an unreadable file, an unknown field, a missing `default`, or an invalid value fails startup.
 
 ```dotenv
 EGRESS_GLOBAL_POLICY_FILE=/data/work/global-network-policy.yaml

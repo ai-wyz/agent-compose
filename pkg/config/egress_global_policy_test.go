@@ -67,6 +67,7 @@ func TestLoadGlobalNetworkPolicyRejectsInvalidConfig(t *testing.T) {
 		body string
 	}{
 		{name: "empty", body: ""},
+		{name: "missing default", body: "allow:\n  - host: api.example.com\n    port: 443\n"},
 		{name: "unknown field", body: "default: allow-all\nprotcol: https\n"},
 		{name: "invalid default", body: "default: deny\n"},
 		{name: "protocol field removed", body: "default: allow-all\nallow:\n  - host: api.example.com\n    port: 443\n    protocol: https\n"},
@@ -82,8 +83,15 @@ func TestLoadGlobalNetworkPolicyRejectsInvalidConfig(t *testing.T) {
 			if err == nil {
 				t.Fatal("loadGlobalNetworkPolicy() accepted an invalid file")
 			}
-			if tt.name == "protocol field removed" && !strings.Contains(err.Error(), "protocol was removed") {
-				t.Fatalf("error = %q, want the protocol migration message", err)
+			switch tt.name {
+			case "protocol field removed":
+				if !strings.Contains(err.Error(), "protocol was removed") {
+					t.Fatalf("error = %q, want the protocol migration message", err)
+				}
+			case "missing default":
+				if !strings.Contains(err.Error(), "default is required") {
+					t.Fatalf("error = %q, want the explicit-default message", err)
+				}
 			}
 		})
 	}

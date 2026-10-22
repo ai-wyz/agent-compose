@@ -1014,7 +1014,7 @@ agent-compose config --quiet
 
 ## Daemon 全局网络策略
 
-在 daemon 环境中设置 `EGRESS_GLOBAL_POLICY_FILE`，指向一个 YAML 文件，为所有 sandbox 声明外层出网策略。文件内容与 Agent 的 `policy.network` 块相同，包含 `default`、`allow`、`deny`，不需要外层 `network:`。daemon 在启动时读取一次；文件不可读、包含未知字段或值非法都会导致启动失败。
+在 daemon 环境中设置 `EGRESS_GLOBAL_POLICY_FILE`，指向一个 YAML 文件，为所有 sandbox 声明外层出网策略。文件内容与 Agent 的 `policy.network` 块相同，包含 `default`、`allow`、`deny`，不需要外层 `network:`。必须显式写出 `default`（`allow-all` 或 `deny-all`）；省略 `default` 会直接导致启动失败，而不会沿用 compose 中“省略即 allow-all”的规则。daemon 在启动时读取一次；文件不可读、包含未知字段、缺少 `default` 或值非法都会导致启动失败。
 
 ```dotenv
 EGRESS_GLOBAL_POLICY_FILE=/data/work/global-network-policy.yaml

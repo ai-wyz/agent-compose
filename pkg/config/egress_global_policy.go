@@ -35,8 +35,12 @@ type GlobalNetworkPolicyInfo struct {
 // loadGlobalNetworkPolicy reads the daemon-wide policy once at startup. An
 // unset variable means no daemon policy and preserves the undeclared behavior
 // exactly. A configured file is parsed with unknown fields rejected so a typo
-// cannot silently broaden the policy, then goes through the same compose
-// normalization every agent declaration uses.
+// cannot silently broaden the policy. It must also state its default
+// explicitly: unlike an agent block, a daemon-wide file is the security
+// boundary, and inheriting the compose "omitted means allow-all" rule would
+// turn a file that declares only allowances into an unrestricted policy. After
+// that check it goes through the same compose normalization every agent
+// declaration uses.
 //
 // It also returns the file identity so admission reports can say which daemon
 // policy they were computed against. The digest covers the bytes that were
@@ -71,6 +75,9 @@ func loadGlobalNetworkPolicy() (*egress.NetworkDeclaration, GlobalNetworkPolicyI
 			return nil, info, fmt.Errorf("%s %q must contain exactly one YAML document", EgressGlobalPolicyFileEnv, path)
 		}
 		return nil, info, fmt.Errorf("parse %s %q: %w", EgressGlobalPolicyFileEnv, path, err)
+	}
+	if strings.TrimSpace(spec.Default) == "" {
+		return nil, info, fmt.Errorf("validate %s %q: default is required; set it to %q or %q so the daemon boundary is explicit", EgressGlobalPolicyFileEnv, path, compose.SandboxNetworkDefaultAllowAll, compose.SandboxNetworkDefaultDenyAll)
 	}
 	normalized, err := compose.NormalizeSandboxNetworkSpec("daemon network policy", &spec)
 	if err != nil {

@@ -106,6 +106,26 @@ func TestLayerNetworkDeclarations(t *testing.T) {
 	}
 }
 
+func TestLayerNetworkDeclarationsDeduplicatesSharedDenials(t *testing.T) {
+	// A daemon and an agent can both deny the same endpoint. The effective
+	// policy is unambiguous, and the driver boundary rejects duplicate denials,
+	// so layering must collapse the shared entry instead of failing the sandbox.
+	deny := DenyEntry{Host: "metadata.example.com", Port: 80, Protocol: ProtocolAny}
+	outer := &NetworkDeclaration{Default: Allow, Deny: []DenyEntry{deny}}
+	inner := &NetworkDeclaration{
+		Default: Deny,
+		Allow:   []AllowEntry{{Host: "api.example.com", Port: 443, Protocol: ProtocolAny}},
+		Deny:    []DenyEntry{deny},
+	}
+	layered, err := LayerNetworkDeclarations(outer, inner)
+	if err != nil {
+		t.Fatalf("LayerNetworkDeclarations() error = %v", err)
+	}
+	if len(layered.Deny) != 1 || !reflect.DeepEqual(layered.Deny[0], deny) {
+		t.Fatalf("layered deny = %+v, want the shared denial once", layered.Deny)
+	}
+}
+
 func TestLayerNetworkDeclarationsCarriesOuterAllowedIPs(t *testing.T) {
 	outer := &NetworkDeclaration{Default: Deny, Allow: []AllowEntry{{
 		Host: "api.example.com", Port: 443, Protocol: ProtocolAny, AllowedIPs: []string{"203.0.113.0/24"},

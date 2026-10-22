@@ -117,7 +117,10 @@ file itself is trusted.
 The daemon now implements the first slice of operator ownership:
 `EGRESS_GLOBAL_POLICY_FILE` is loaded outside the project, applies to every
 sandbox even when the agent declares nothing, and is intersected with the agent
-declaration using the same allowlist/denylist rules described above. An agent
+declaration using the same allowlist/denylist rules described above. The global
+file must state its `default` explicitly; an omitted default is a startup error
+rather than an implicit allow-all, because inheriting that compose rule would
+turn an allow-only file into an unrestricted boundary. An agent
 allowance that is not provably inside a daemon allowlist is refused rather than
 silently widening the boundary. What remains from the full feature is a daemon
 policy record with its own generation and RPC surface, and provenance in the

@@ -1166,7 +1166,7 @@ policy:
 
 #### Daemon 全局策略
 
-部署可以在 daemon 环境中设置 `EGRESS_GLOBAL_POLICY_FILE`，指向一个 YAML 文件。文件内容与 `policy.network` 的 `default`、`allow`、`deny` 相同（不需要外层 `network:` 键）。daemon 在启动时读取一次；文件不可读、包含未知字段或值非法都会导致启动失败，而不是悄悄放宽策略。在仓库提供的 Compose 部署中，可以把文件放在挂载的数据目录下并指向它，例如 `EGRESS_GLOBAL_POLICY_FILE=/data/work/global-network-policy.yaml`。daemon 启动日志会给出读入的文件路径与 SHA-256，准入报告也携带同一身份，运维可以据此确认运行中的 daemon 使用的是不是预期的文件；修改文件后需要重启 daemon 才会重新读取。
+部署可以在 daemon 环境中设置 `EGRESS_GLOBAL_POLICY_FILE`，指向一个 YAML 文件。文件内容与 `policy.network` 的 `default`、`allow`、`deny` 相同（不需要外层 `network:` 键）。文件必须显式写出 `default`；省略 `default` 会直接导致启动失败，而不会沿用 compose 中“省略即 allow-all”的规则。daemon 在启动时读取一次；文件不可读、包含未知字段、缺少 `default` 或值非法都会导致启动失败，而不是悄悄放宽策略。在仓库提供的 Compose 部署中，可以把文件放在挂载的数据目录下并指向它，例如 `EGRESS_GLOBAL_POLICY_FILE=/data/work/global-network-policy.yaml`。daemon 启动日志会给出读入的文件路径与 SHA-256，准入报告也携带同一身份，运维可以据此确认运行中的 daemon 使用的是不是预期的文件；修改文件后需要重启 daemon 才会重新读取。
 
 ```yaml
 default: deny-all

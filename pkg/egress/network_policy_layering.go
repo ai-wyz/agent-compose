@@ -41,7 +41,7 @@ func LayerNetworkDeclarations(outer, inner *NetworkDeclaration) (*NetworkDeclara
 
 	layered := &NetworkDeclaration{
 		Default: Deny,
-		Deny:    append(cloneDenyEntries(outer.Deny), inner.Deny...),
+		Deny:    mergeDenyEntries(outer.Deny, inner.Deny),
 	}
 	switch {
 	case outer.Default == Allow:
@@ -233,6 +233,37 @@ func cloneAllowEntries(entries []AllowEntry) []AllowEntry {
 func cloneAllowEntry(entry AllowEntry) AllowEntry {
 	entry.AllowedIPs = append([]string(nil), entry.AllowedIPs...)
 	return entry
+}
+
+// mergeDenyEntries keeps one entry per destination when both layers deny the
+// same endpoint. A duplicate would otherwise reach the driver boundary, which
+// rejects duplicate denials as an ambiguous declaration and prevents the
+// sandbox from starting even though the effective policy is unambiguous.
+func mergeDenyEntries(outer, inner []DenyEntry) []DenyEntry {
+	if len(outer) == 0 && len(inner) == 0 {
+		return nil
+	}
+	merged := make([]DenyEntry, 0, len(outer)+len(inner))
+	seen := make(map[string]struct{}, len(outer)+len(inner))
+	for _, entries := range [][]DenyEntry{outer, inner} {
+		for _, entry := range entries {
+			key := denyEntryKey(entry)
+			if _, duplicate := seen[key]; duplicate {
+				continue
+			}
+			seen[key] = struct{}{}
+			merged = append(merged, entry)
+		}
+	}
+	return merged
+}
+
+func denyEntryKey(entry DenyEntry) string {
+	endpoint, err := NewEndpoint(entry.Host, entry.Port, entry.Protocol)
+	if err != nil {
+		return fmt.Sprintf("%s\x00%d\x00%s", entry.Host, entry.Port, entry.Protocol)
+	}
+	return endpoint.Name()
 }
 
 func cloneDenyEntries(entries []DenyEntry) []DenyEntry {

@@ -313,3 +313,27 @@ func TestNewSandboxNetworkPolicyRejectsInvalidDenials(t *testing.T) {
 		t.Fatal("NewSandboxNetworkPolicy accepted duplicate denials")
 	}
 }
+
+func TestSandboxNetworkPolicyFromLayeredDeclarationAcceptsSharedDenial(t *testing.T) {
+	// The daemon and the agent may both deny the same endpoint. Layering
+	// collapses the duplicate, and the driver compiler must accept the result
+	// instead of failing sandbox creation with a duplicate-entry error.
+	deny := egress.DenyEntry{Host: "metadata.example.com", Port: 80, Protocol: egress.ProtocolAny}
+	outer := &egress.NetworkDeclaration{Default: egress.Allow, Deny: []egress.DenyEntry{deny}}
+	inner := &egress.NetworkDeclaration{
+		Default: egress.Deny,
+		Allow:   []egress.AllowEntry{{Host: "api.example.com", Port: 443, Protocol: egress.ProtocolAny}},
+		Deny:    []egress.DenyEntry{deny},
+	}
+	layered, err := egress.LayerNetworkDeclarations(outer, inner)
+	if err != nil {
+		t.Fatalf("LayerNetworkDeclarations() error = %v", err)
+	}
+	policy, err := SandboxNetworkPolicyFromDeclaration(layered, nil, nil)
+	if err != nil {
+		t.Fatalf("SandboxNetworkPolicyFromDeclaration() error = %v", err)
+	}
+	if len(policy.Deny) != 1 {
+		t.Fatalf("deny = %+v, want the shared denial once", policy.Deny)
+	}
+}

@@ -157,3 +157,63 @@ func (s *networkDeclarationStoreStub) ListProjectAgentsByIDs(context.Context, []
 	}
 	return s.agents, nil
 }
+
+func TestResolveNetworkDeclarationRejectsRemovedProtocolInPersistedSpec(t *testing.T) {
+	// Canonical specs written before protocol was removed still contain it.
+	// Decoding such a spec as any protocol would silently widen a named
+	// protocol allowance, so resolution must fail closed and tell the operator
+	// which stored entry is stale.
+	tests := map[string]string{
+		"policy allow":    `{"name":"worker","policy":{"network":{"default":"deny-all","allow":[{"host":"api.example.com","port":80,"protocol":"https"}]}}}`,
+		"deprecated deny": `{"name":"worker","sandbox":{"network":{"deny":[{"host":"metadata.example.com","port":80,"protocol":"tcp"}]}}}`,
+	}
+	for name, specJSON := range tests {
+		t.Run(name, func(t *testing.T) {
+			resolver, err := NewSandboxRunTargetResolver(&networkDeclarationStoreStub{agents: map[string]domain.ProjectAgentRecord{
+				"agent-1": {ID: "agent-1", ProjectID: "project-1", AgentName: "worker", SpecJSON: specJSON},
+			}})
+			if err != nil {
+				t.Fatalf("NewSandboxRunTargetResolver returned error: %v", err)
+			}
+			sandbox := sandboxWithTags("sandbox-1", domain.SandboxTag{Name: domain.AgentSandboxTagID, Value: "agent-1"})
+
+			_, err = resolver.ResolveNetworkDeclaration(context.Background(), sandbox)
+			if err == nil {
+				t.Fatal("ResolveNetworkDeclaration accepted a persisted spec with the removed protocol field")
+			}
+			if !strings.Contains(err.Error(), "protocol") || !strings.Contains(err.Error(), "removed network entry protocol") {
+				t.Fatalf("error = %q, want the protocol migration message", err)
+			}
+		})
+	}
+}
+
+func TestResolveNetworkDeclarationAcceptsAnyProtocolInPersistedSpec(t *testing.T) {
+	// Every canonical spec written before the removal carries protocol, and the
+	// field default "any" leaves the entry's meaning unchanged. Rejecting it
+	// would break every upgrade instead of only entries that narrowed the
+	// proxy scheme.
+	tests := map[string]string{
+		"any":       `{"name":"worker","policy":{"network":{"default":"deny-all","allow":[{"host":"api.example.com","port":80,"protocol":"any"}]}}}`,
+		"uppercase": `{"name":"worker","policy":{"network":{"default":"deny-all","allow":[{"host":"api.example.com","port":80,"protocol":"ANY"}]}}}`,
+	}
+	for name, specJSON := range tests {
+		t.Run(name, func(t *testing.T) {
+			resolver, err := NewSandboxRunTargetResolver(&networkDeclarationStoreStub{agents: map[string]domain.ProjectAgentRecord{
+				"agent-1": {ID: "agent-1", ProjectID: "project-1", AgentName: "worker", SpecJSON: specJSON},
+			}})
+			if err != nil {
+				t.Fatalf("NewSandboxRunTargetResolver returned error: %v", err)
+			}
+			sandbox := sandboxWithTags("sandbox-1", domain.SandboxTag{Name: domain.AgentSandboxTagID, Value: "agent-1"})
+
+			declaration, err := resolver.ResolveNetworkDeclaration(context.Background(), sandbox)
+			if err != nil {
+				t.Fatalf("ResolveNetworkDeclaration returned error: %v", err)
+			}
+			if declaration == nil || len(declaration.Allow) != 1 || declaration.Allow[0].Protocol != egress.ProtocolAny {
+				t.Fatalf("declaration = %#v, want the entry with any protocol", declaration)
+			}
+		})
+	}
+}

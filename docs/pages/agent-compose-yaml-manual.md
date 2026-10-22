@@ -1204,7 +1204,7 @@ policy:
 
 #### Daemon-wide policy
 
-A deployment can set `EGRESS_GLOBAL_POLICY_FILE` in the daemon environment to a YAML file with the same `default`, `allow`, and `deny` body as `policy.network` (without a wrapping `network:` key). The daemon reads it once at startup; an unreadable file, an unknown field, or an invalid value fails startup instead of silently running wider. In the shipped Compose deployment, put the file under the mounted data directory and point at it, for example `EGRESS_GLOBAL_POLICY_FILE=/data/work/global-network-policy.yaml`. The daemon logs the loaded file and its SHA-256 at startup, and admission reports carry the same identity, so an operator can compare a running daemon with the file they expected; restart the daemon to load edited bytes.
+A deployment can set `EGRESS_GLOBAL_POLICY_FILE` in the daemon environment to a YAML file with the same `default`, `allow`, and `deny` body as `policy.network` (without a wrapping `network:` key). The file must state `default` explicitly; an omitted default fails startup instead of inheriting the compose "omitted means allow-all" rule. The daemon reads it once at startup; an unreadable file, an unknown field, a missing `default`, or an invalid value fails startup instead of silently running wider. In the shipped Compose deployment, put the file under the mounted data directory and point at it, for example `EGRESS_GLOBAL_POLICY_FILE=/data/work/global-network-policy.yaml`. The daemon logs the loaded file and its SHA-256 at startup, and admission reports carry the same identity, so an operator can compare a running daemon with the file they expected; restart the daemon to load edited bytes.
 
 ```yaml
 default: deny-all
