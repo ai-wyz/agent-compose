@@ -63,3 +63,86 @@ func TestIPv6PolicyMatchesDirectAndResolvedAddresses(t *testing.T) {
 		t.Fatal("Decide() allowed an IPv6 destination outside the range")
 	}
 }
+
+// TestCIDRPolicyAppliesTheDeclaredPortAndProtocol pins that a CIDR destination
+// stays a destination: the port and protocol an entry declares are part of what
+// it names, so resolving an address inside the range cannot widen the entry to
+// another port. The reverse direction matters too: a CIDR denial must not
+// over-block traffic to the same address on a port it did not name.
+func TestCIDRPolicyAppliesTheDeclaredPortAndProtocol(t *testing.T) {
+	allowInsideRange := NewPolicy(Deny, Rule{
+		ID:     "network.allow",
+		Match:  MatchEndpoint,
+		Names:  []string{FormatEndpointPattern("10.0.0.0/8", 443, ProtocolAny)},
+		Action: Allow,
+	})
+	allowHTTPSOnly := NewPolicy(Deny, Rule{
+		ID:     "network.allow",
+		Match:  MatchEndpoint,
+		Names:  []string{FormatEndpointPattern("10.0.0.0/8", 443, ProtocolHTTPS)},
+		Action: Allow,
+	})
+	denyOn22 := NewPolicy(Allow, Rule{
+		ID:     "network.deny",
+		Match:  MatchEndpoint,
+		Names:  []string{FormatEndpointPattern("10.0.0.0/8", 22, ProtocolTCP)},
+		Action: Deny,
+	})
+	tests := []struct {
+		name        string
+		policy      Policy
+		request     Request
+		wantAllowed bool
+	}{
+		{
+			name:        "allow CIDR does not cover a direct address on another port",
+			policy:      allowInsideRange,
+			request:     Request{Name: "10.1.2.3:22/tcp", ResolvedIPs: []string{"10.1.2.3"}},
+			wantAllowed: false,
+		},
+		{
+			name:        "allow CIDR does not cover a name resolving inside the range on another port",
+			policy:      allowInsideRange,
+			request:     Request{Name: "service.example:22/tcp", ResolvedIPs: []string{"10.1.2.3"}},
+			wantAllowed: false,
+		},
+		{
+			name:        "allow CIDR covers the declared port for a name resolving inside the range",
+			policy:      allowInsideRange,
+			request:     Request{Name: "service.example:443/https", ResolvedIPs: []string{"10.1.2.3"}},
+			wantAllowed: true,
+		},
+		{
+			name:        "allow CIDR still denies an address outside the range",
+			policy:      allowInsideRange,
+			request:     Request{Name: "service.example:443/https", ResolvedIPs: []string{"203.0.113.7"}},
+			wantAllowed: false,
+		},
+		{
+			name:        "allow CIDR with an https protocol does not cover another protocol",
+			policy:      allowHTTPSOnly,
+			request:     Request{Name: "service.example:443/tcp", ResolvedIPs: []string{"10.1.2.3"}},
+			wantAllowed: false,
+		},
+		{
+			name:        "deny CIDR does not over-block another port on the same address",
+			policy:      denyOn22,
+			request:     Request{Name: "service.example:443/https", ResolvedIPs: []string{"10.1.2.3"}},
+			wantAllowed: true,
+		},
+		{
+			name:        "deny CIDR refuses the port it declares",
+			policy:      denyOn22,
+			request:     Request{Name: "service.example:22/tcp", ResolvedIPs: []string{"10.1.2.3"}},
+			wantAllowed: false,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := Decide(tt.policy, tt.request)
+			if got.Allowed() != tt.wantAllowed {
+				t.Fatalf("Decide(%s) = %+v, want allowed=%v", tt.request.Name, got, tt.wantAllowed)
+			}
+		})
+	}
+}

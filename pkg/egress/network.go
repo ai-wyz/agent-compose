@@ -289,14 +289,38 @@ func parseEndpointPattern(value string) (endpointPattern, error) {
 	return endpointPattern{host: normalizedHost, port: port, protocol: normalizedProtocol}, nil
 }
 
-func (p endpointPattern) matchesResolvedIPs(addresses []string, action Action) bool {
-	_, network, err := net.ParseCIDR(p.host)
-	if err != nil || len(addresses) == 0 {
+// matches reports whether the pattern names the request's destination. The
+// declared port and protocol are part of that destination, so they are checked
+// once, before either the host match or the resolved-address match: a CIDR
+// allowance for 10.0.0.0/8:443 covers that range only on the declared port, not
+// on any port a request happens to resolve into it.
+func (p endpointPattern) matches(target Endpoint, resolvedIPs []string, action Action) bool {
+	if p.port != target.Port {
 		return false
 	}
-	// An allowance constrained by a CIDR must cover every answer, because the
-	// proxy may dial any of them. A denial only needs one answer inside the
-	// range to refuse the destination.
+	if p.protocol != ProtocolAny && p.protocol != target.Protocol {
+		return false
+	}
+	if endpointHostMatches(p.host, target.Host) {
+		return true
+	}
+	return p.matchesResolvedAddresses(resolvedIPs, action)
+}
+
+// matchesResolvedAddresses reports whether the pattern's CIDR host covers the
+// addresses the request resolved to. The caller has already matched the port and
+// protocol, so an address match cannot widen the pattern past the destination it
+// declares. An allowance constrained by a CIDR must cover every answer, because
+// the proxy may dial any of them. A denial only needs one answer inside the
+// range to refuse the destination.
+func (p endpointPattern) matchesResolvedAddresses(addresses []string, action Action) bool {
+	if len(addresses) == 0 {
+		return false
+	}
+	_, network, err := net.ParseCIDR(p.host)
+	if err != nil {
+		return false
+	}
 	matched := 0
 	for _, address := range addresses {
 		literal := net.ParseIP(strings.Trim(strings.TrimSpace(address), "[]"))
@@ -308,16 +332,6 @@ func (p endpointPattern) matchesResolvedIPs(addresses []string, action Action) b
 		return matched == len(addresses)
 	}
 	return matched > 0
-}
-
-func (p endpointPattern) matches(target Endpoint) bool {
-	if p.port != target.Port {
-		return false
-	}
-	if p.protocol != ProtocolAny && p.protocol != target.Protocol {
-		return false
-	}
-	return endpointHostMatches(p.host, target.Host)
 }
 
 // endpointHostMatches matches a declared host pattern against the host a request

@@ -159,7 +159,7 @@ func (r Rule) matchesEndpoint(request Request) bool {
 		if err != nil {
 			continue
 		}
-		if pattern.matches(target) || pattern.matchesResolvedIPs(request.ResolvedIPs, r.Action) {
+		if pattern.matches(target, request.ResolvedIPs, r.Action) {
 			return true
 		}
 	}
