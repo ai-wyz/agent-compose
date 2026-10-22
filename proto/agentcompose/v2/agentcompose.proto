@@ -524,8 +524,10 @@ message AgentNetworkPolicyReport {
 message DeclaredNetworkAllowance {
   // The canonical host:port/* pattern.
   string endpoint = 1;
-  reserved 2;
-  reserved "inspectable";
+  // Deprecated: kept for wire compatibility with clients built before the entry
+  // protocol was removed. Reports never set it: entries match any protocol now,
+  // so no allowance is L7-inspected and the reported value is always false.
+  bool inspectable = 2 [deprecated = true];
   // The canonical CIDR ranges the name may resolve to. Empty when the
   // declaration left the addresses unconstrained.
   repeated string allowed_ips = 3;
@@ -1052,8 +1054,10 @@ message SandboxNetworkAllowSpec {
   // instead; normalization expands it into one message per port, so the wire
   // representation always carries a single port here.
   int32 port = 2;
-  reserved 3;
-  reserved "protocol";
+  // Deprecated: kept for wire compatibility with clients built before protocol
+  // matching was removed. Entries match any protocol now, and the daemon rejects
+  // a non-empty value so an old client cannot silently widen its declaration.
+  string protocol = 3 [deprecated = true];
   // Optional. The IP addresses or CIDR ranges this entry's host may resolve to,
   // canonicalized as CIDRs. Empty leaves the addresses unconstrained. It is
   // part of the normalized spec the client hashes, so it must travel with the

@@ -2497,6 +2497,12 @@ type DeclaredNetworkAllowance struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// The canonical host:port/* pattern.
 	Endpoint string `protobuf:"bytes,1,opt,name=endpoint,proto3" json:"endpoint,omitempty"`
+	// Deprecated: kept for wire compatibility with clients built before the entry
+	// protocol was removed. Reports never set it: entries match any protocol now,
+	// so no allowance is L7-inspected and the reported value is always false.
+	//
+	// Deprecated: Marked as deprecated in agentcompose/v2/agentcompose.proto.
+	Inspectable bool `protobuf:"varint,2,opt,name=inspectable,proto3" json:"inspectable,omitempty"`
 	// The canonical CIDR ranges the name may resolve to. Empty when the
 	// declaration left the addresses unconstrained.
 	AllowedIps []string `protobuf:"bytes,3,rep,name=allowed_ips,json=allowedIps,proto3" json:"allowed_ips,omitempty"`
@@ -2542,6 +2548,14 @@ func (x *DeclaredNetworkAllowance) GetEndpoint() string {
 		return x.Endpoint
 	}
 	return ""
+}
+
+// Deprecated: Marked as deprecated in agentcompose/v2/agentcompose.proto.
+func (x *DeclaredNetworkAllowance) GetInspectable() bool {
+	if x != nil {
+		return x.Inspectable
+	}
+	return false
 }
 
 func (x *DeclaredNetworkAllowance) GetAllowedIps() []string {
@@ -6835,6 +6849,12 @@ type SandboxNetworkAllowSpec struct {
 	// instead; normalization expands it into one message per port, so the wire
 	// representation always carries a single port here.
 	Port int32 `protobuf:"varint,2,opt,name=port,proto3" json:"port,omitempty"`
+	// Deprecated: kept for wire compatibility with clients built before protocol
+	// matching was removed. Entries match any protocol now, and the daemon rejects
+	// a non-empty value so an old client cannot silently widen its declaration.
+	//
+	// Deprecated: Marked as deprecated in agentcompose/v2/agentcompose.proto.
+	Protocol string `protobuf:"bytes,3,opt,name=protocol,proto3" json:"protocol,omitempty"`
 	// Optional. The IP addresses or CIDR ranges this entry's host may resolve to,
 	// canonicalized as CIDRs. Empty leaves the addresses unconstrained. It is
 	// part of the normalized spec the client hashes, so it must travel with the
@@ -6886,6 +6906,14 @@ func (x *SandboxNetworkAllowSpec) GetPort() int32 {
 		return x.Port
 	}
 	return 0
+}
+
+// Deprecated: Marked as deprecated in agentcompose/v2/agentcompose.proto.
+func (x *SandboxNetworkAllowSpec) GetProtocol() string {
+	if x != nil {
+		return x.Protocol
+	}
+	return ""
 }
 
 func (x *SandboxNetworkAllowSpec) GetAllowedIps() []string {
@@ -21782,12 +21810,13 @@ const file_agentcompose_v2_agentcompose_proto_rawDesc = "" +
 	"\x14daemon_policy_source\x18\x10 \x01(\tR\x12daemonPolicySource\x120\n" +
 	"\x14daemon_policy_sha256\x18\x11 \x01(\tR\x12daemonPolicySha256\x12\x1c\n" +
 	"\tunapplied\x18\v \x03(\tR\tunapplied\x12\x18\n" +
-	"\awarning\x18\f \x01(\tR\awarning\"\x84\x01\n" +
+	"\awarning\x18\f \x01(\tR\awarning\"\x97\x01\n" +
 	"\x18DeclaredNetworkAllowance\x12\x1a\n" +
-	"\bendpoint\x18\x01 \x01(\tR\bendpoint\x12\x1f\n" +
+	"\bendpoint\x18\x01 \x01(\tR\bendpoint\x12$\n" +
+	"\vinspectable\x18\x02 \x01(\bB\x02\x18\x01R\vinspectable\x12\x1f\n" +
 	"\vallowed_ips\x18\x03 \x03(\tR\n" +
 	"allowedIps\x12\x18\n" +
-	"\asources\x18\x04 \x03(\tR\asourcesJ\x04\b\x02\x10\x03R\vinspectable\"`\n" +
+	"\asources\x18\x04 \x03(\tR\asources\"`\n" +
 	"\x15DeclaredNetworkDenial\x12\x1a\n" +
 	"\bendpoint\x18\x01 \x01(\tR\bendpoint\x12\x18\n" +
 	"\asources\x18\x03 \x03(\tR\asourcesJ\x04\b\x02\x10\x03R\vinspectable\"\xd4\x01\n" +
@@ -22182,12 +22211,13 @@ const file_agentcompose_v2_agentcompose_proto_rawDesc = "" +
 	"\x12SandboxNetworkSpec\x12\x18\n" +
 	"\adefault\x18\x01 \x01(\tR\adefault\x12>\n" +
 	"\x05allow\x18\x02 \x03(\v2(.agentcompose.v2.SandboxNetworkAllowSpecR\x05allow\x12;\n" +
-	"\x04deny\x18\x03 \x03(\v2'.agentcompose.v2.SandboxNetworkDenySpecR\x04deny\"r\n" +
+	"\x04deny\x18\x03 \x03(\v2'.agentcompose.v2.SandboxNetworkDenySpecR\x04deny\"\x82\x01\n" +
 	"\x17SandboxNetworkAllowSpec\x12\x12\n" +
 	"\x04host\x18\x01 \x01(\tR\x04host\x12\x12\n" +
-	"\x04port\x18\x02 \x01(\x05R\x04port\x12\x1f\n" +
+	"\x04port\x18\x02 \x01(\x05R\x04port\x12\x1e\n" +
+	"\bprotocol\x18\x03 \x01(\tB\x02\x18\x01R\bprotocol\x12\x1f\n" +
 	"\vallowed_ips\x18\x04 \x03(\tR\n" +
-	"allowedIpsJ\x04\b\x03\x10\x04R\bprotocol\"P\n" +
+	"allowedIps\"P\n" +
 	"\x16SandboxNetworkDenySpec\x12\x12\n" +
 	"\x04host\x18\x01 \x01(\tR\x04host\x12\x12\n" +
 	"\x04port\x18\x02 \x01(\x05R\x04portJ\x04\b\x03\x10\x04R\bprotocol\"\xfb\x01\n" +

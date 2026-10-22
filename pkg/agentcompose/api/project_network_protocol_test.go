@@ -12,8 +12,9 @@ import (
 
 // legacyEntryProtocol encodes the removed field the way a client built before its
 // removal sends it: field 3 of the allow or deny entry, as a length-delimited
-// string. The generated type reserves the number, so the decoder keeps the bytes
-// only as unknown fields.
+// string. The allow entry keeps a deprecated field for wire compatibility, so
+// decoding preserves the value there; the deny entry reserves the number, so its
+// value stays in unknown fields.
 func legacyEntryProtocolBytes(protocol string) []byte {
 	raw := protowire.AppendTag(nil, legacyNetworkProtocolField, protowire.BytesType)
 	return protowire.AppendString(raw, protocol)

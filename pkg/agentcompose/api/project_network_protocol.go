@@ -12,15 +12,17 @@ import (
 
 // legacyNetworkProtocolField is the field number the removed network entry
 // protocol used in SandboxNetworkAllowSpec and SandboxNetworkDenySpec. The
-// generated types reserve it, so a client built against the old contract still
-// sends it but the decoder can only keep it in unknown fields.
+// allow message keeps it as a deprecated compatibility slot, so decoding
+// preserves the value; the deny message reserves it, so a client built against
+// the old contract can only leave it in unknown fields.
 const legacyNetworkProtocolField = 3
 
 // LegacyNetworkProtocolIssues reports network entries that still carry the
-// removed entry protocol. The generated types reserve the field, so decoding
-// drops it and the daemon would apply an entry wider than the client declared
-// without any error. The field's default, "any", is accepted because it leaves the
-// entry unchanged; that is also what keeps a client that never chose a protocol
+// removed entry protocol. The field is kept on the allow entry for wire
+// compatibility, but a named value would silently widen the entry because it
+// now matches any protocol, so the daemon rejects it instead of applying it.
+// The field's default, "any", is accepted because it leaves the entry
+// unchanged; that is also what keeps a client that never chose a protocol
 // working during an upgrade.
 //
 // The issue paths use the YAML block name, "policy", so they match the path the
@@ -33,7 +35,9 @@ func LegacyNetworkProtocolIssues(agents []*agentcomposev2.AgentSpec) []*agentcom
 			continue
 		}
 		for entryIndex, entry := range network.GetAllow() {
-			if protocol, ok := unknownEntryProtocol(entry); ok && !legacyProtocolIsAny(protocol) {
+			// The deprecated field is read only to reject a value that would
+			// otherwise widen the entry; it is never honored.
+			if protocol := entry.GetProtocol(); protocol != "" && !legacyProtocolIsAny(protocol) { //nolint:staticcheck // Wire-compatibility field, rejected rather than applied.
 				issues = append(issues, legacyProtocolIssue(
 					fmt.Sprintf("agents[%d].policy.network.allow[%d].protocol", index, entryIndex), protocol))
 			}
@@ -61,8 +65,9 @@ func legacyProtocolIsAny(protocol string) bool {
 }
 
 // unknownEntryProtocol reads the removed field from a message's unknown fields.
-// It returns false when the field is absent or cannot be read, which leaves the
-// entry to the normal validation path.
+// The deny entry uses it because that message reserves the number; it returns
+// false when the field is absent or cannot be read, which leaves the entry to
+// the normal validation path.
 func unknownEntryProtocol(message proto.Message) (string, bool) {
 	raw := message.ProtoReflect().GetUnknown()
 	for len(raw) > 0 {
