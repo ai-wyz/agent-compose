@@ -98,9 +98,9 @@ go run ./cmd/agent-compose --file examples/agent-compose/docker-policy-library/a
 
 ## Docker 驱动与 `default: deny-all`
 
-`reviewer` 声明了 `default: deny-all`。Docker 驱动无法在保持引擎自身 LLM facade 和 telemetry 端点可达的同时表达这些 allow 规则，因此引擎会**拒绝创建**这个 sandbox，并给出带驱动名的错误，而不是静默地以不受限出网运行。`config` 和 `up` 不会创建 sandbox，所以可以成功；真正 `run` `reviewer` 时会 fail closed。
+`reviewer` 声明了 `default: deny-all`。Docker 驱动自身无法安装该过滤，但 daemon 的正向代理位于 sandbox 的流量路径上：sandbox 会带上代理环境变量，`api.github.com:443` 被放行，其他目标一律拒绝。`config` 和 `up` 仍然不需要模型或 API key 即可成功；真正 `run` `reviewer` 时是过滤出网，而不是 fail closed。
 
-如需真正运行，请使用 `builder` 或 `adhoc`，或把 `locked-down` 改成 `default: allow-all`（声明仍会被校验、哈希和保存，只是不会拒绝任何流量）。
+如果 guest 无法通过代理连通 daemon，该声明会被报告为未执行，sandbox 以更宽的出网运行，除非部署设置了 `EGRESS_UNENFORCEABLE_POLICY=refuse`。若需要访问声明未点名的目标，请使用 `builder` 或 `adhoc`，或把 `locked-down` 改成 `default: allow-all`（声明仍会被校验、哈希和保存，只是不会拒绝任何流量）。
 
 ## 清理
 
