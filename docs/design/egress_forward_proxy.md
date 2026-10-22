@@ -140,7 +140,7 @@ fixture on an address the proxy's bypass list does not cover.
 | 1 | no `policy` block | reaches a public host and an arbitrary host address, and carries 0 `*_proxy` variables | pass | pass | not covered |
 | 2 | `default: allow-all` with an allow list | the unlisted public host still reaches 200 | pass | pass | not covered |
 | 2a | `default: allow-all` with a denial | the denied host is refused, an unlisted host still reaches 200 | not in this run | not in this run | not covered |
-| 3 | `default: deny-all` + allow `api.github.com:443 https` | allowed host 200, `example.com` refused | pass | pass | not covered |
+| 3 | `default: deny-all` + allow `api.github.com:443` | allowed host 200, `example.com` refused | pass | pass | not covered |
 | 4 | the same declaration on port 6443 | refused under the engine's control-plane port rule | pass | pass | not covered |
 | 5 | `default: deny-all` + allow an address literal | the literal reaches the fixture; an uncovered port on it is refused | pass | pass | not covered |
 | 6 | the same entry with `allowed_ips` covering the address | the fixture is allowed | pass | pass | not covered |
@@ -149,10 +149,12 @@ fixture on an address the proxy's bypass list does not cover.
 | 9 | an edit that adds an allowance to a running sandbox | the running sandbox observes it per request | pass | pass | not covered |
 | 10 | any refused row | the daemon records the denial and the rule that produced it | pass | pass for the proxy-mediated rows; the SDK mechanism's own refusals are silent | not covered |
 
-The denylist row is not yet part of the executed KVM matrix; the declaration
+The denylist row is part of the execution matrix
+(`TestE2EDockerNetworkPolicyExecutionMatrix`), but the run recorded above predates
+it, so this table does not yet claim it for a real driver. The declaration
 compiles to the same decision model, with denials placed ahead of allowances and
-engine endpoints ahead of both. It is covered by unit tests and by the
-forward-proxy path, and needs a real-driver row before this matrix can claim it.
+engine endpoints ahead of both, and is covered by unit tests and by the
+forward-proxy path until that row is executed.
 
 Mechanism per driver:
 
