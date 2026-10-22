@@ -62,9 +62,10 @@ type NetworkPolicyReport struct {
 	// Deny lists the declared refusals.
 	Deny []DeclaredDenial
 	// EngineAutoAllowed lists the engine-owned endpoints that the compiled
-	// policy allows ahead of every declared entry. It is empty unless the
-	// default is deny, because that is the only case where they exist as an
-	// exemption.
+	// policy allows ahead of every declared entry. It is populated whenever the
+	// declaration restricts (an allowlist default or a declared denial), because
+	// that is when the compiler emits the engine's own rules; it is empty when
+	// nothing restricts and the rules would be no-ops.
 	EngineAutoAllowed []AutoAllowedEndpoint
 }
 
