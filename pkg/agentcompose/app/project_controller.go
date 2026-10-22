@@ -279,6 +279,7 @@ func parseProjectRequest(spec *agentcomposev2.ProjectSpec) (*compose.ProjectSpec
 		return nil, []projects.ValidationIssue{{Path: "spec", Message: "project spec is required"}}, nil
 	}
 	raw, protoIssues := api.ProjectSpecYAMLShape(spec)
+	protoIssues = append(protoIssues, api.LegacyNetworkProtocolIssues(spec.GetAgents())...)
 	if len(protoIssues) > 0 {
 		return nil, validationIssuesFromProto(protoIssues), nil
 	}

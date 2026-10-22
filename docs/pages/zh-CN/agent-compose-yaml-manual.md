@@ -1118,7 +1118,7 @@ Daemon 还会记录每个 runtime 创建时所依据的出网策略。启动 san
 | `allow` | list | 空 | 显式放行项。只在白名单模式（`default: deny-all`）下起限制作用，或作为未被拒绝时的例外。 |
 | `deny` | list | 空 | 显式拒绝项。在两种模式下都起限制作用，并在所有放行项之前应用。 |
 
-旧文件迁移只需处理两处：已删除的 `default: deny` 现在会报 `network default "deny" is no longer supported; use "deny-all"`；`allow` 或 `deny` 项内的 `protocol` 会报 `protocol was removed from network entries`。已存 canonical spec 中若带非默认值 `any` 的 `protocol`，读取时会带 agent 名和条目路径拒绝，删除该字段后重新 apply 即可；默认值 `any` 会被接受并丢弃，条目语义不变。现在条目匹配任意协议。被删除的字段从未让引擎检查 L7 载荷，但它确实收窄了条目覆盖的代理协议：声明 `https` 的条目只匹配正向代理判定为 https 的请求。去掉该字段后，条目覆盖同一 host 和 port 上的任意协议，因此依赖该区分的声明会被拒绝，而不是被静默迁移。
+旧文件迁移只需处理两处：已删除的 `default: deny` 现在会报 `network default "deny" is no longer supported; use "deny-all"`；`allow` 或 `deny` 项内的 `protocol` 会报 `protocol was removed from network entries`。已存 canonical spec 中若带非默认值 `any` 的 `protocol`，读取时会带 agent 名和条目路径拒绝，删除该字段后重新 apply 即可；默认值 `any` 会被接受并丢弃，条目语义不变。旧版客户端若在 API 请求中发送非 `any` 的 `protocol`，会被拒绝，因为协议类型已不再包含该字段。现在条目匹配任意协议。被删除的字段从未让引擎检查 L7 载荷，但它确实收窄了条目覆盖的代理协议：声明 `https` 的条目只匹配正向代理判定为 https 的请求。去掉该字段后，条目覆盖同一 host 和 port 上的任意协议，因此依赖该区分的声明会被拒绝，而不是被静默迁移。
 
 每个 `allow` 项：
 
