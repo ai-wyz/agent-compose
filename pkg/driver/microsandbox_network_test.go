@@ -252,3 +252,41 @@ func TestPlanMicrosandboxNetworkRebindProtectionFollowsTheSetting(t *testing.T) 
 		}
 	}
 }
+
+// TestPlanMicrosandboxNetworkKeepsCIDRDestinations pins that a CIDR entry reaches
+// the SDK as a CIDR destination. The SDK accepts a range in Destination, and the
+// plan must not drop or rewrite it: dropping it would silently widen or narrow the
+// declaration while the admission report claimed the allowlist was installed.
+func TestPlanMicrosandboxNetworkKeepsCIDRDestinations(t *testing.T) {
+	policy, err := SandboxNetworkPolicyFromDeclaration(&egress.NetworkDeclaration{
+		Default: egress.Deny,
+		Allow:   []egress.AllowEntry{mustAllow(t, "10.0.0.0/8", 443, egress.ProtocolAny)},
+		Deny:    []egress.DenyEntry{{Host: "192.168.0.0/16", Port: 22, Protocol: egress.ProtocolTCP}},
+	}, nil, nil)
+	if err != nil {
+		t.Fatalf("SandboxNetworkPolicyFromDeclaration() error = %v", err)
+	}
+	plan, err := planMicrosandboxNetwork(&policy, true)
+	if err != nil {
+		t.Fatalf("planMicrosandboxNetwork() error = %v", err)
+	}
+	want := []microsandboxNetworkRule{
+		{Action: "deny", Destination: "192.168.0.0/16", Port: "22", Protocol: "tcp"},
+		{Action: "allow", Destination: "10.0.0.0/8", Port: "443", Protocol: ""},
+	}
+	if !reflect.DeepEqual(plan.Rules, want) {
+		t.Fatalf("rules = %+v, want the CIDR denial before the CIDR allowance", plan.Rules)
+	}
+}
+
+func TestMicrosandboxDestinationKeepsCIDR(t *testing.T) {
+	for _, host := range []string{"10.0.0.0/8", "2001:db8::/32"} {
+		got, err := microsandboxDestination(host)
+		if err != nil {
+			t.Fatalf("microsandboxDestination(%q) error = %v", host, err)
+		}
+		if got != host {
+			t.Fatalf("microsandboxDestination(%q) = %q, want the range unchanged", host, got)
+		}
+	}
+}
