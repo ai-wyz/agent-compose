@@ -517,13 +517,13 @@ func TestE2EDockerDeclaredPolicyFailsClosedWithoutAReachableProxy(t *testing.T) 
 	if err == nil {
 		t.Fatalf("a declaration the engine cannot enforce started anyway: %s", strings.TrimSpace(output))
 	}
-	if !strings.Contains(output, "cannot enforce the declared default-deny network policy") {
+	if !strings.Contains(output, "cannot enforce the declared restricting network policy") {
 		t.Fatalf("the refusal did not name the unenforceable declaration: %s", strings.TrimSpace(output))
 	}
 	// The refusal has to name the driver whose limit produced it, not just the
 	// declaration: the design doc records that this test pins both, and a
 	// refusal that stopped naming the driver would otherwise pass silently.
-	if !strings.Contains(output, `driver "docker" cannot enforce the declared default-deny network policy`) {
+	if !strings.Contains(output, `driver "docker" cannot enforce the declared restricting network policy`) {
 		t.Fatalf("the refusal did not name the driver that cannot enforce the declaration: %s", strings.TrimSpace(output))
 	}
 	if strings.Contains(output, "SHOULD-NEVER-RUN") {
