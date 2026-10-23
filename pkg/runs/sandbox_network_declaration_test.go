@@ -217,3 +217,25 @@ func TestResolveNetworkDeclarationAcceptsAnyProtocolInPersistedSpec(t *testing.T
 		})
 	}
 }
+
+func TestResolveNetworkDeclarationScansPastAnyProtocolInPersistedSpec(t *testing.T) {
+	// Old canonical specs carry protocol on every entry. The first entry's
+	// default "any" must not stop the scan before a later named value, or that
+	// later entry would silently widen to any protocol.
+	const specJSON = `{"name":"worker","policy":{"network":{"default":"deny-all","allow":[{"host":"api.example.com","port":80,"protocol":"any"},{"host":"api.example.com","port":443,"protocol":"https"}]}}}`
+	resolver, err := NewSandboxRunTargetResolver(&networkDeclarationStoreStub{agents: map[string]domain.ProjectAgentRecord{
+		"agent-1": {ID: "agent-1", ProjectID: "project-1", AgentName: "worker", SpecJSON: specJSON},
+	}})
+	if err != nil {
+		t.Fatalf("NewSandboxRunTargetResolver returned error: %v", err)
+	}
+	sandbox := sandboxWithTags("sandbox-1", domain.SandboxTag{Name: domain.AgentSandboxTagID, Value: "agent-1"})
+
+	_, err = resolver.ResolveNetworkDeclaration(context.Background(), sandbox)
+	if err == nil {
+		t.Fatal("ResolveNetworkDeclaration accepted a later named protocol after an any entry")
+	}
+	if !strings.Contains(err.Error(), "policy.network.allow[1].protocol") {
+		t.Fatalf("error = %q, want the later named entry's path", err)
+	}
+}

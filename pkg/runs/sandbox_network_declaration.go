@@ -50,7 +50,7 @@ func networkDeclarationFromAgentSpecJSON(raw string) (*egress.NetworkDeclaration
 	if trimmed == "" {
 		return nil, nil
 	}
-	if path, protocol, present := legacyNetworkProtocolIssue([]byte(trimmed)); present && !persistedProtocolIsAny(protocol) {
+	if path, protocol, present := legacyNetworkProtocolIssue([]byte(trimmed)); present {
 		return nil, fmt.Errorf("decode agent network declaration: %s carries the removed network entry protocol %q; network entries match any protocol now, so remove it from the project and re-apply the stored spec", path, protocol)
 	}
 	var spec compose.NormalizedAgentSpec
@@ -91,13 +91,14 @@ type persistedNetworkEntryProtocol struct {
 	Protocol json.RawMessage `json:"protocol"`
 }
 
-// legacyNetworkProtocolIssue reports where a persisted spec still carries the
-// removed protocol field and what value it held. The current normalized types do
+// legacyNetworkProtocolIssue reports the first persisted entry whose removed
+// protocol value changed the entry's meaning. The current normalized types do
 // not have that field, so a plain json.Unmarshal would discard it and accept the
-// declaration with ProtocolAny. The caller rejects a value that changed the
-// entry's meaning, while the field's default "any" is accepted and dropped.
-// Both the current policy key and its deprecated sandbox spelling are
-// inspected.
+// declaration with ProtocolAny. The caller rejects the returned value, while
+// entries whose value is the field's default "any" are skipped and dropped. A
+// canonical spec written before the removal carries the field on every entry,
+// so scanning must continue past "any" to find a later named value. Both the
+// current policy key and its deprecated sandbox spelling are inspected.
 func legacyNetworkProtocolIssue(raw []byte) (string, string, bool) {
 	var probe persistedNetworkProtocol
 	if err := json.Unmarshal(raw, &probe); err != nil {
@@ -117,14 +118,18 @@ func legacyNetworkProtocolIssue(raw []byte) (string, string, bool) {
 			continue
 		}
 		for index, entry := range block.block.Network.Allow {
-			if protocol, present := persistedProtocolValue(entry.Protocol); present {
-				return fmt.Sprintf("%s.network.allow[%d].protocol", block.name, index), protocol, true
+			protocol, present := persistedProtocolValue(entry.Protocol)
+			if !present || persistedProtocolIsAny(protocol) {
+				continue
 			}
+			return fmt.Sprintf("%s.network.allow[%d].protocol", block.name, index), protocol, true
 		}
 		for index, entry := range block.block.Network.Deny {
-			if protocol, present := persistedProtocolValue(entry.Protocol); present {
-				return fmt.Sprintf("%s.network.deny[%d].protocol", block.name, index), protocol, true
+			protocol, present := persistedProtocolValue(entry.Protocol)
+			if !present || persistedProtocolIsAny(protocol) {
+				continue
 			}
+			return fmt.Sprintf("%s.network.deny[%d].protocol", block.name, index), protocol, true
 		}
 	}
 	return "", "", false
